@@ -34,9 +34,7 @@ from datetime import datetime
 try:
     from jobspy import scrape_jobs
     JOBSPY_AVAILABLE = True
-except ImportError:
-    # If jobspy fails to install (can happen on some systems), we log a
-    # warning and continue — the other sources still work.
+except (ImportError, Exception):
     JOBSPY_AVAILABLE = False
     logging.warning("jobspy not available — LinkedIn/Indeed/Google sources disabled")
 
