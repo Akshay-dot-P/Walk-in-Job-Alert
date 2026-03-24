@@ -3,12 +3,22 @@
 # =============================================================================
 # Sends each raw listing to Groq (Llama 3) for AI scoring and structured
 # data extraction.
+
+
 #
 # CHANGES FROM v1:
 #   - Retry logic with exponential backoff on Groq 429 (rate limit)
 #   - sleep(3) between calls to stay under 30 req/min free tier limit
 #   - Better error logging (prints response body on failure)
 #   - min_score filter now also checks for entry-level in AI response
+
+
+
+
+
+
+
+
 # =============================================================================
 
 import os
@@ -49,9 +59,76 @@ Scoring guide:
 is_entry_level: set true if experience required is 0-1 years, fresher, junior, trainee, or not mentioned.
 Set false if experience required is 2+ years or title has Senior/Lead/Manager/Principal.
 
-
-
 Listing:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 {listing_text}"""
 
 
@@ -134,10 +211,6 @@ def score_listing(listing: dict) -> dict | None:
         f"DESCRIPTION: {listing.get('description', '')[:2000]}"
     )
 
-
-
-
-
     try:
         raw = call_groq(PROMPT.format(listing_text=text))
 
@@ -153,8 +226,67 @@ def score_listing(listing: dict) -> dict | None:
 
         d = json.loads(raw[start:end])
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         return {
             "scraped_at":        datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             "source":            listing.get("source", ""),
             "url":               listing.get("job_url", ""),
             "job_title":         d.get("job_title",   listing.get("title", "")),
@@ -172,12 +304,29 @@ def score_listing(listing: dict) -> dict | None:
             "status":            "pending",
         }
 
+
+
+
+
+
+
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse error for '{listing.get('title')}': {e}")
+
+
+
         return None
+
     except Exception as e:
         logger.error(f"Scoring error for '{listing.get('title')}': {e}")
+
         return None
+
+
+
+
+
+
 
 
 def score_all(listings: list, min_score: int = 5) -> list:
@@ -193,6 +342,7 @@ def score_all(listings: list, min_score: int = 5) -> list:
     for i, listing in enumerate(listings, start=1):
         title = (listing.get("title") or "?")[:50]
         logger.info(f"Scoring {i}/{total}: {title}")
+
 
         result = score_listing(listing)
 
@@ -226,4 +376,10 @@ def score_all(listings: list, min_score: int = 5) -> list:
         time.sleep(SLEEP_BETWEEN_CALLS)
 
     logger.info(f"Scoring complete: {len(scored)}/{total} passed")
+
+
+
+
+
+
     return scored
