@@ -25,7 +25,6 @@ import os
 import json
 import logging
 import re
-from groq import Groq
 from config import GROQ_MODEL
 
 logger = logging.getLogger(__name__)
@@ -35,7 +34,6 @@ logger = logging.getLogger(__name__)
 # The API key comes from the environment variable set in GitHub Actions.
 # Never hardcode API keys in source code — they end up in git history forever.
 # ---------------------------------------------------------------------------
-client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 
 
 # =============================================================================
