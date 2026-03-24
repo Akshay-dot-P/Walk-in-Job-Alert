@@ -37,7 +37,7 @@ KNOWN_MNCS = [
 
 MIN_LEGITIMACY_SCORE = 5
 
-GROQ_MODEL = "llama3-8b-8192"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 SHEET_COLUMNS = [
     "scraped_at", "job_title", "company", "company_tier",
