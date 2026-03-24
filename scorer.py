@@ -1,65 +1,20 @@
 # =============================================================================
-# scorer.py
-# =============================================================================
-# This module takes raw listing text and asks an AI (Groq's Llama 3) to
-# do two things simultaneously:
-#   1. Extract structured fields (date, time, address, contact) from messy text
-#   2. Score the listing's legitimacy from 1-10
-#
-# Why use AI here instead of regex?
-# Indian job listing text is inconsistent. One listing says:
-#   "Walk-In on 15th April 2025 from 10 AM to 5 PM at Prestige Tech Park"
-# Another says:
-#   "date-16/04/25, timing 10:00, venue-near metro station brigade road"
-# Another says:
-#   "venue: below-mentioned address contact hr dept"
-# Regex would need 50+ patterns to handle all these variations.
-# An LLM reads them all correctly with one instruction.
-#
-# We use Groq because their free tier gives 14,400 requests/day with
-# Llama 3 — that's far more than we'll ever use. Claude API would cost
-# money. OpenAI would too. Groq is the right choice for a free pipeline.
+# scorer.py — uses direct HTTP requests instead of groq SDK
 # =============================================================================
 
 import os
 import json
 import logging
 import re
-from groq import Groq
+import time
+import requests
+from datetime import datetime
 from config import GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Initialize the Groq client once at module load time.
-# The API key comes from the environment variable set in GitHub Actions.
-# Never hardcode API keys in source code — they end up in git history forever.
-# ---------------------------------------------------------------------------
-client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-
-# =============================================================================
-# THE PROMPT TEMPLATE
-# =============================================================================
-# This is the most important piece of the scorer. The quality of AI output
-# depends almost entirely on the clarity of your instructions.
-#
-# Key prompt engineering decisions made here:
-#
-# 1. "Return ONLY a valid JSON object, no other text" — without this instruction,
-#    the model sometimes wraps output in ```json ``` code fences or adds
-#    "Here is the extracted data:" before the JSON. That breaks JSON parsing.
-#
-# 2. Specific scoring criteria with numbers — vague instructions like
-#    "score from 1 to 10" produce inconsistent results. Explicit criteria
-#    like "9-10: known MNC with full address" anchors the model.
-#
-# 3. Listing the red flags explicitly — the model knows what to look for
-#    and will call them out reliably rather than making up its own criteria.
-#
-# 4. Truncating to 2000 chars — LLMs have context windows, and Groq's free
-#    tier limits tokens per minute. 2000 chars is enough for extraction.
-# =============================================================================
 SCORING_PROMPT = """You are an expert at analyzing Indian job market listings, 
 especially in Bangalore/Bengaluru tech sector. 
 
@@ -114,15 +69,49 @@ JOB LISTING TO ANALYZE:
 {listing_text}"""
 
 
-# =============================================================================
-# FUNCTION: Score a single listing
-# =============================================================================
-# Takes a raw listing dict (from sources.py) and returns an enriched dict
-# with all the AI-extracted fields added to it.
-# =============================================================================
+def call_groq(prompt: str) -> str:
+    """Call Groq API directly via HTTP — no SDK needed."""
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY environment variable is not set")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a structured data extractor. "
+                    "You ONLY output valid JSON. No markdown. No explanation. "
+                    "No preamble. Just raw JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        "temperature": 0.1,
+        "max_tokens": 600,
+    }
+
+    response = requests.post(
+        GROQ_API_URL,
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
 def score_listing(listing: dict) -> dict | None:
-    # Build the text we send to the AI by combining all fields we have.
-    # More context = better extraction accuracy.
     listing_text = (
         f"SOURCE: {listing.get('source', '')}\n"
         f"JOB TITLE: {listing.get('title', '')}\n"
@@ -132,76 +121,27 @@ def score_listing(listing: dict) -> dict | None:
         f"DESCRIPTION:\n{listing.get('description', '')[:2000]}"
     )
 
-    # Format the prompt with the actual listing text.
-    # We use .format() here because the prompt template uses {listing_text}.
-    # The double braces {{ }} in the template become single braces { } after
-    # .format() is called — that's Python's way to include literal braces
-    # in a format string.
     prompt = SCORING_PROMPT.format(listing_text=listing_text)
 
     try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    # The system message sets the AI's overall behavior for the
-                    # entire conversation. We reinforce the JSON-only instruction
-                    # here too because models sometimes ignore it if only in the user message.
-                    "content": (
-                        "You are a structured data extractor. You ONLY output valid JSON. "
-                        "No markdown. No explanation. No preamble. Just raw JSON."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
-            ],
-            temperature=0.1,
-            # temperature controls randomness. 0.0 = fully deterministic (same
-            # input always gives same output). We use 0.1 to allow slight
-            # variation while keeping outputs consistent and structured.
-            max_tokens=600,
-            # 600 tokens is enough for our JSON response (~450 words).
-            # Limiting tokens prevents the model from rambling and keeps
-            # our Groq usage within the free tier limits.
-        )
+        raw_text = call_groq(prompt)
 
-        # The response object has this structure:
-        # response.choices[0].message.content = the text the AI generated
-        raw_text = response.choices[0].message.content.strip()
-
-        # -----------------------------------------------------------------------
-        # JSON CLEANUP
-        # Despite our instructions, the model occasionally wraps output in
-        # ```json ... ``` markdown code fences. We strip those defensively.
-        # We also handle the case where it adds a brief sentence before the JSON.
-        # -----------------------------------------------------------------------
-
-        # Remove ```json and ``` if present
+        # Strip markdown fences if model added them
         raw_text = re.sub(r"```json\s*", "", raw_text)
         raw_text = re.sub(r"```\s*", "", raw_text)
 
-        # If the model added text before the JSON, find the first { and start there
+        # Find JSON boundaries
         first_brace = raw_text.find("{")
         if first_brace > 0:
             raw_text = raw_text[first_brace:]
-
-        # Similarly, find the last } and cut anything after it
         last_brace = raw_text.rfind("}")
         if last_brace >= 0:
             raw_text = raw_text[: last_brace + 1]
 
-        # Parse the cleaned JSON string into a Python dict
         scored_data = json.loads(raw_text)
 
-        # Merge the original listing fields with the AI-extracted fields.
-        # If the AI extracted a better title, it overwrites the original.
-        # We keep "url" and "source" from the original since the AI
-        # doesn't generate these.
         result = {
-            "scraped_at":        _now_str(),
+            "scraped_at":        datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
             "source":            listing.get("source", ""),
             "url":               listing.get("url", ""),
             "job_title":         scored_data.get("job_title", listing.get("title", "")),
@@ -224,61 +164,30 @@ def score_listing(listing: dict) -> dict | None:
         return result
 
     except json.JSONDecodeError as e:
-        # This happens when the AI returned text that isn't valid JSON.
-        # We log the raw text so you can inspect it and improve the prompt.
-        logger.error(f"JSON parse error for listing '{listing.get('title')}': {e}")
-        logger.error(f"Raw AI response was: {raw_text[:300]}")
+        logger.error(f"JSON parse error for '{listing.get('title')}': {e}")
         return None
-
     except Exception as e:
-        # Covers: Groq API errors (rate limit, network error, auth failure)
         logger.error(f"Groq API error: {e}")
         return None
 
 
-# =============================================================================
-# FUNCTION: Score all listings in a batch
-# =============================================================================
-# Scores every listing that passes the minimum threshold and returns
-# only the ones with legitimacy_score >= min_score.
-# =============================================================================
 def score_all(listings: list, min_score: int = 5) -> list:
     scored = []
-
     logger.info(f"Sending {len(listings)} listings to Groq for scoring...")
 
     for i, listing in enumerate(listings):
         logger.info(f"Scoring {i+1}/{len(listings)}: {listing.get('title', '?')[:50]}")
-
         result = score_listing(listing)
 
         if result is None:
-            continue  # AI failed on this one — skip it
+            continue
 
         if result["legitimacy_score"] < min_score:
-            logger.info(
-                f"  -> Dropped (score {result['legitimacy_score']} < threshold {min_score})"
-            )
+            logger.info(f"  -> Dropped (score {result['legitimacy_score']} < {min_score})")
             continue
 
         scored.append(result)
+        time.sleep(2)  # stay within Groq free tier rate limit
 
-        # Rate limiting: Groq's free tier allows 30 requests per minute.
-        # 2 seconds between calls = max 30/minute. We stay just within the limit.
-        # Without this sleep, a batch of 20 listings could trigger rate limiting.
-        import time
-        time.sleep(2)
-
-    logger.info(f"Scoring complete: {len(scored)} listings passed the threshold")
+    logger.info(f"Scoring complete: {len(scored)} listings passed threshold")
     return scored
-
-
-# =============================================================================
-# HELPER: Current UTC time as ISO string
-# =============================================================================
-def _now_str() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-
-# Import datetime here since we used it in _now_str above
-from datetime import datetime
