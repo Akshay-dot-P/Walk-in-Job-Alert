@@ -247,4 +247,4 @@ def gather_all_listings() -> list[dict]:
         f"IndeedIndia={len(indeed_listings)}, "
         f"GoogleJobs={len(google_listings)})"
     )
-    return unique_listings.  
+    return unique_listings
