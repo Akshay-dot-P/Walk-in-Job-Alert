@@ -40,8 +40,9 @@ jobs:
       - name: Run walk-in scanner
         run: python scanner.py
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
 
