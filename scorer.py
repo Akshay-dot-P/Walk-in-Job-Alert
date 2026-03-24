@@ -33,7 +33,7 @@ import re
 import time
 import requests
 
-from datetime import datetime
+from datetime import datetime, timezone
 from config import GROQ_MODEL
 
 logger = logging.getLogger(__name__)
@@ -56,9 +56,16 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 #   - Wait = RETRY_WAIT_BASE × attempt_number (10s, 20s, 30s, 40s).
 # ---------------------------------------------------------------------------
 BATCH_SIZE            = 5
-SLEEP_BETWEEN_BATCHES = 15   # seconds
-MAX_RETRIES           = 4
-RETRY_WAIT_BASE       = 10   # seconds
+SLEEP_BETWEEN_BATCHES = 15   # seconds between batches (4 calls/min max)
+MAX_RETRIES           = 5
+RETRY_WAIT_BASE       = 15   # seconds — used only if Retry-After header is absent
+
+# How long to wait before the very first Groq call.
+# Groq's token bucket refills per-minute. If the previous GitHub Actions run
+# finished recently (e.g. a manual re-run after a failed run), the bucket may
+# still be partially depleted. A 20s cold-start lets it partially refill so
+# batch 1 doesn't immediately 429.
+COLD_START_DELAY = 20  # seconds
 
 # ---------------------------------------------------------------------------
 # Prompt — asks the model to score a numbered list of listings in one shot.
@@ -148,10 +155,18 @@ def call_groq(prompt: str) -> str:
             )
 
             if r.status_code == 429:
-                wait = RETRY_WAIT_BASE * attempt
+                # Prefer the Retry-After header Groq sends — it tells us exactly
+                # how many seconds until the token bucket refills. Fall back to
+                # exponential backoff only if the header is absent.
+                retry_after = r.headers.get("Retry-After") or r.headers.get("x-ratelimit-reset-requests")
+                try:
+                    wait = int(float(retry_after)) + 2  # +2s safety buffer
+                except (TypeError, ValueError):
+                    wait = RETRY_WAIT_BASE * attempt
                 logger.warning(
                     f"Groq 429 rate limit — waiting {wait}s "
-                    f"(attempt {attempt}/{MAX_RETRIES})"
+                    f"(attempt {attempt}/{MAX_RETRIES}, "
+                    f"Retry-After={retry_after!r})"
                 )
                 time.sleep(wait)
                 continue
@@ -214,7 +229,7 @@ def _parse_batch_response(raw: str, batch: list[dict]) -> list[dict | None]:
 def _build_result(listing: dict, d: dict) -> dict:
     """Merge a raw listing with the AI-scored dict into the canonical format."""
     return {
-        "scraped_at":          datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "scraped_at":          datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "source":              listing.get("source", ""),
         "url":                 listing.get("job_url", ""),
         "job_title":           d.get("job_title",   listing.get("title", "")),
@@ -258,6 +273,12 @@ def score_all(listings: list, min_score: int = 5) -> list:
         f"Scoring {total} listings in {len(batches)} batches "
         f"of up to {BATCH_SIZE} (sleep {SLEEP_BETWEEN_BATCHES}s between batches)"
     )
+
+    # Cold-start delay: let Groq's token bucket partially refill before the
+    # first call. Protects against back-to-back runs (e.g. manual re-trigger
+    # after a failed job) hitting the rate limit immediately on batch 1.
+    logger.info(f"Cold-start delay: waiting {COLD_START_DELAY}s before first Groq call...")
+    time.sleep(COLD_START_DELAY)
 
     for batch_num, batch in enumerate(batches, start=1):
         batch_indices_str = f"{(batch_num-1)*BATCH_SIZE+1}–{min(batch_num*BATCH_SIZE, total)}"
