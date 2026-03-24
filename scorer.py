@@ -25,7 +25,7 @@ import os
 import json
 import logging
 import re
-
+from groq import Groq
 
 
 from config import GROQ_MODEL
