@@ -8,21 +8,11 @@
 #   - LinkedIn     (via JobSpy) — working, stable
 #   - Indeed India (via JobSpy, country_indeed="India") — replaces Naukri
 #   - Google Jobs  (via JobSpy) — aggregates Naukri/Glassdoor/TimesJobs/etc.
-#                                  without hitting them directly; best free
-#                                  Naukri alternative available
 #
-# WHY NAUKRI WAS REMOVED:
-#   Naukri returns HTTP 406 + reCAPTCHA for all automated requests. There is
-#   no free workaround — rotating proxies or headless browsers require paid
-#   services and are fragile. Instead, Google Jobs surfaces the same Naukri
-#   listings (and more) without any bot protection, making it the ideal
-#   drop-in replacement.
-#
-# ADDING MORE SOURCES LATER:
-#   To add Glassdoor or Bayt (Gulf), just add them to the site_name list in
-#   their respective scrape_jobs call below. Both are supported by JobSpy
-#   but rate-limit more aggressively, so they are kept separate with their
-#   own try/except blocks.
+# FILTERS APPLIED BEFORE SCORING:
+#   - is_tech_role()       — keeps only tech/security/GRC/risk roles
+#   - is_entry_level()     — keeps only 0-1 yr experience listings
+#   - is_bangalore()       — keeps only Bangalore/Bengaluru listings
 # =============================================================================
 
 import logging
@@ -31,10 +21,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Import JobSpy. If it's not installed the error surfaces clearly at startup
-# rather than silently at scrape time.
-# ---------------------------------------------------------------------------
 try:
     from jobspy import scrape_jobs
 except ImportError as e:
@@ -42,30 +28,156 @@ except ImportError as e:
         "python-jobspy is not installed. Run: pip install python-jobspy"
     ) from e
 
-
 # ---------------------------------------------------------------------------
-# CONFIG — edit these to match your walk-in search criteria.
-# These are kept here (not in config.py) so each source call can be tuned
-# independently without touching the shared config.
+# CONFIG
 # ---------------------------------------------------------------------------
 
-# The search term sent to every job board.
-# Tip: keep it broad for walk-ins; AI scoring in Phase 2 filters the noise.
-SEARCH_TERM = "walk in interview"
-
-# Location string understood by all boards. For Indeed India this narrows
-# results to the subregion; for Google Jobs it biases the geo ranking.
-LOCATION = "India"
-
-# How many hours back to look. 24h keeps results fresh for daily runs.
-HOURS_OLD = 24
-
-# Max results per source. JobSpy caps at ~1000 per search regardless.
-RESULTS_WANTED = 50
-
-# Delay in seconds between source calls. Helps avoid triggering rate limits
-# when running multiple scrapes in the same GitHub Actions job.
+SEARCH_TERM     = "walk in interview"
+LOCATION        = "Bangalore, India"
+HOURS_OLD       = 24
+RESULTS_WANTED  = 50
 INTER_SOURCE_DELAY = 3
+
+# ---------------------------------------------------------------------------
+# FILTER KEYWORDS
+# ---------------------------------------------------------------------------
+
+# Tech + Security + GRC + Risk roles to KEEP
+TECH_TITLE_KEYWORDS = [
+    # Software / Engineering
+    "software engineer", "software developer", "sde", "backend", "frontend",
+    "full stack", "fullstack", "full-stack", "python developer", "java developer",
+    "node developer", "react developer", "angular developer",
+
+    # Cloud / Infrastructure
+    "cloud engineer", "cloud developer", "cloud architect", "aws", "azure", "gcp",
+    "devops", "devsecops", "platform engineer", "infrastructure engineer",
+    "site reliability", "sre", "kubernetes", "docker", "terraform", "ansible",
+
+    # Security / Cybersecurity
+    "security analyst", "security engineer", "information security", "infosec",
+    "cybersecurity", "cyber security", "application security", "appsec",
+    "network security", "soc analyst", "soc engineer", "threat analyst",
+    "penetration tester", "pen tester", "vulnerability analyst", "vapt",
+    "security operations", "incident response", "malware analyst",
+    "blue team", "red team", "purple team", "security consultant",
+
+    # GRC / Risk / Compliance
+    "grc", "governance", "risk and compliance", "risk analyst", "risk engineer",
+    "compliance analyst", "compliance engineer", "it audit", "it risk",
+    "third party risk", "vendor risk", "tprm", "iso 27001", "pci dss",
+    "data privacy", "data protection", "dpo", "gdpr", "privacy analyst",
+    "audit analyst", "internal audit", "it compliance",
+
+    # Data / AI
+    "data engineer", "data analyst", "data scientist", "ml engineer",
+    "machine learning", "ai engineer", "etl developer", "bi developer",
+    "business intelligence", "power bi developer", "tableau developer",
+
+    # General Tech
+    "it analyst", "systems analyst", "network engineer", "database administrator",
+    "dba", "it support engineer", "technical analyst",
+]
+
+# Non-tech roles to EXCLUDE even if they sneak past keyword match
+EXCLUDE_TITLE_KEYWORDS = [
+    "sales", "store manager", "retail", "customer service", "customer care",
+    "telecaller", "bpo", "voice process", "non voice", "accounts",
+    "accountant", "finance executive", "hr executive", "recruiter",
+    "logistics", "supply chain", "warehouse", "delivery", "driver",
+    "teacher", "faculty", "trainer", "content writer", "graphic designer",
+    "marketing", "seo", "social media", "field executive", "insurance",
+    "banking", "loan", "mortgage", "real estate", "civil engineer",
+    "mechanical", "electrical engineer", "hardware engineer",
+]
+
+# Entry level indicators — job must contain at least one of these OR
+# have 0/1 year experience mentioned
+ENTRY_LEVEL_TITLE_KEYWORDS = [
+    "fresher", "freshers", "entry level", "entry-level", "junior", "jr.",
+    "associate", "trainee", "graduate", "intern", "0-1", "0 - 1",
+    "0 to 1", "1 year", "1 years", "up to 1", "less than 1",
+]
+
+# Experience patterns that indicate senior roles — used to EXCLUDE
+SENIOR_EXPERIENCE_KEYWORDS = [
+    "3+ years", "3 years", "4 years", "5 years", "6 years", "7 years",
+    "8 years", "10 years", "senior", "lead ", "principal", "staff ",
+    "manager", "director", "head of", "vp ", "vice president",
+    "3-5 years", "4-6 years", "5-7 years", "5-8 years", "5+ years",
+    "minimum 3", "minimum 4", "minimum 5", "at least 3", "at least 5",
+]
+
+BANGALORE_KEYWORDS = [
+    "bangalore", "bengaluru", "blr",
+    "koramangala", "whitefield", "electronic city",
+    "indiranagar", "hsr layout", "btm layout",
+    "marathahalli", "sarjapur", "bellandur",
+    "hebbal", "yeshwanthpur", "jayanagar",
+    "jp nagar", "manyata", "ecospace",
+    "bagmane", "brookefield",
+]
+
+# ---------------------------------------------------------------------------
+# FILTER FUNCTIONS
+# ---------------------------------------------------------------------------
+
+def is_tech_role(listing: dict) -> bool:
+    """
+    Returns True if the listing is a tech/security/GRC/risk role.
+    Checks title first (high signal), then first 300 chars of description.
+    Also excludes clearly non-tech roles even if they pass keyword match.
+    """
+    title = (listing.get("title") or "").lower()
+    desc  = (listing.get("description") or "").lower()[:300]
+    combined = title + " " + desc
+
+    # Hard exclude non-tech roles by title
+    if any(kw in title for kw in EXCLUDE_TITLE_KEYWORDS):
+        return False
+
+    # Must match at least one tech keyword in title or description
+    return any(kw in combined for kw in TECH_TITLE_KEYWORDS)
+
+
+def is_entry_level(listing: dict) -> bool:
+    """
+    Returns True if the listing appears to be entry level (0-1 years exp).
+    Strategy:
+      - If title contains a senior/lead/manager keyword → exclude
+      - If description mentions 3+ years experience → exclude
+      - If title or description contains fresher/junior/associate → include
+      - Otherwise → include by default (benefit of the doubt for walk-ins,
+        which are often open to freshers even when not stated)
+    """
+    title = (listing.get("title") or "").lower()
+    desc  = (listing.get("description") or "").lower()[:500]
+
+    # Hard exclude senior roles by title
+    for kw in ["senior", "lead ", "principal", "staff ", "manager",
+               "director", "head of", "vp ", "vice president"]:
+        if kw in title:
+            return False
+
+    # Exclude if description mentions clearly senior experience
+    for kw in SENIOR_EXPERIENCE_KEYWORDS:
+        if kw in desc:
+            return False
+
+    return True
+
+
+def is_bangalore(listing: dict) -> bool:
+    """
+    Returns True if the listing is in Bangalore/Bengaluru.
+    Checks location field first, then title and description.
+    """
+    location = (listing.get("location") or "").lower()
+    title    = (listing.get("title") or "").lower()
+    desc     = (listing.get("description") or "").lower()[:300]
+    combined = location + " " + title + " " + desc
+
+    return any(kw in combined for kw in BANGALORE_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +188,8 @@ def _jobspy_to_listing(row: Any, source_label: str) -> dict:
     """
     Convert a single pandas Series row from JobSpy into the flat dict format
     expected by scorer.py.
-
-    Only fields that are reliably populated across all boards are extracted.
-    The scorer's AI prompt will handle missing/None values gracefully.
     """
     def _safe(val):
-        """Return None instead of NaN/NaT so JSON serialisation doesn't choke."""
         import pandas as pd
         if val is None:
             return None
@@ -93,24 +201,41 @@ def _jobspy_to_listing(row: Any, source_label: str) -> dict:
         return val
 
     return {
-        "source":       source_label,
-        "title":        _safe(row.get("title")),
-        "company":      _safe(row.get("company")),
-        "location":     _safe(row.get("location")),
-        "job_type":     _safe(row.get("job_type")),
-        "date_posted":  str(_safe(row.get("date_posted")) or ""),
-        "description":  _safe(row.get("description")) or "",
-        "job_url":      _safe(row.get("job_url")),
-        "is_remote":    _safe(row.get("is_remote")),
+        "source":      source_label,
+        "title":       _safe(row.get("title")),
+        "company":     _safe(row.get("company")),
+        "location":    _safe(row.get("location")),
+        "job_type":    _safe(row.get("job_type")),
+        "date_posted": str(_safe(row.get("date_posted")) or ""),
+        "description": _safe(row.get("description")) or "",
+        "job_url":     _safe(row.get("job_url")),
+        "is_remote":   _safe(row.get("is_remote")),
     }
 
 
+def _apply_filters(listings: list[dict], source_label: str) -> list[dict]:
+    """
+    Apply all three filters and log a breakdown of what was dropped and why.
+    """
+    total = len(listings)
+    after_tech     = [l for l in listings if is_tech_role(l)]
+    after_entry    = [l for l in after_tech if is_entry_level(l)]
+    after_location = [l for l in after_entry if is_bangalore(l)]
+
+    logger.info(
+        f"{source_label} filter: {total} raw "
+        f"→ {len(after_tech)} tech "
+        f"→ {len(after_entry)} entry-level "
+        f"→ {len(after_location)} bangalore"
+    )
+    return after_location
+
+
+# ---------------------------------------------------------------------------
+# Scrapers
+# ---------------------------------------------------------------------------
+
 def _scrape_linkedin() -> list[dict]:
-    """
-    Scrape LinkedIn for walk-in job postings in India.
-    LinkedIn is the most reliable source but rate-limits hard after ~10 pages
-    (~100 results). RESULTS_WANTED is intentionally kept modest.
-    """
     logger.info("JobSpy:LinkedIn — starting scrape")
     try:
         df = scrape_jobs(
@@ -119,30 +244,20 @@ def _scrape_linkedin() -> list[dict]:
             location=LOCATION,
             results_wanted=RESULTS_WANTED,
             hours_old=HOURS_OLD,
-            linkedin_fetch_description=True,   # richer descriptions for AI scorer
+            linkedin_fetch_description=True,
         )
         if df is None or df.empty:
             logger.warning("JobSpy:LinkedIn — returned 0 results")
             return []
-        listings = [_jobspy_to_listing(row, "LinkedIn") for _, row in df.iterrows()]
-        logger.info(f"JobSpy:LinkedIn — {len(listings)} listings collected")
-        return listings
+        raw = [_jobspy_to_listing(row, "LinkedIn") for _, row in df.iterrows()]
+        logger.info(f"JobSpy:LinkedIn — {len(raw)} raw listings")
+        return _apply_filters(raw, "LinkedIn")
     except Exception as exc:
         logger.error(f"JobSpy:LinkedIn — failed: {exc}")
         return []
 
 
 def _scrape_indeed_india() -> list[dict]:
-    """
-    Scrape Indeed India (in.indeed.com) via JobSpy.
-
-    country_indeed="India" tells JobSpy to hit the Indian Indeed domain
-    instead of indeed.com, which avoids US-centric results and gives us
-    the same listing pool that Naukri users see (many companies cross-post).
-
-    Indeed India has no meaningful bot protection from GitHub Actions IPs
-    as of 2025-2026; no proxies needed.
-    """
     logger.info("JobSpy:Indeed India — starting scrape")
     try:
         df = scrape_jobs(
@@ -151,92 +266,52 @@ def _scrape_indeed_india() -> list[dict]:
             location=LOCATION,
             results_wanted=RESULTS_WANTED,
             hours_old=HOURS_OLD,
-            country_indeed="India",            # ← key param; hits in.indeed.com
+            country_indeed="India",
         )
         if df is None or df.empty:
             logger.warning("JobSpy:Indeed India — returned 0 results")
             return []
-        listings = [_jobspy_to_listing(row, "Indeed India") for _, row in df.iterrows()]
-        logger.info(f"JobSpy:Indeed India — {len(listings)} listings collected")
-        return listings
+        raw = [_jobspy_to_listing(row, "Indeed India") for _, row in df.iterrows()]
+        logger.info(f"JobSpy:Indeed India — {len(raw)} raw listings")
+        return _apply_filters(raw, "Indeed India")
     except Exception as exc:
         logger.error(f"JobSpy:Indeed India — failed: {exc}")
         return []
 
 
 def _scrape_google_jobs() -> list[dict]:
-    """
-    Scrape Google Jobs for walk-in listings in India.
-
-    Google Jobs is the single best replacement for Naukri because:
-      - It aggregates listings FROM Naukri, TimesJobs, Glassdoor India,
-        Shine, Freshersworld, and company career pages simultaneously.
-      - It has no meaningful CAPTCHA barrier for programmatic access via
-        JobSpy's implementation.
-      - The google_search_term lets us be very specific: we ask for recent
-        walk-in drives in India, which is the exact query a job seeker would
-        type into Google Jobs.
-
-    NOTE: google_search_term is the ONLY filtering param for Google Jobs.
-    All other JobSpy params (hours_old, location, job_type, etc.) are
-    ignored for this source — filtering happens through the query string.
-    """
     logger.info("JobSpy:Google Jobs — starting scrape")
 
-    # Build a query that mimics what a real user types when searching for
-    # walk-in drives on Google. Specific phrasing gets much better results
-    # than a generic keyword.
-    google_query = (
-        "walk in interview OR walk-in drive OR walk in drive jobs India today"
-    )
+    # Multiple targeted queries — Google Jobs needs specific phrasing
+    google_queries = [
+        "walk in interview software engineer cloud devops Bangalore today 2026",
+        "walkin drive fresher junior software engineer Bengaluru 2026",
+        "walk in interview security analyst GRC risk compliance Bangalore 2026",
+        "walk in interview SRE devops cloud engineer entry level Bangalore 2026",
+    ]
 
-    try:
-        df = scrape_jobs(
-            site_name=["google"],
-            search_term=SEARCH_TERM,           # fallback term (not used by google)
-            google_search_term=google_query,   # ← this is what Google Jobs uses
-            location=LOCATION,
-            results_wanted=RESULTS_WANTED,
-        )
-        if df is None or df.empty:
-            logger.warning("JobSpy:Google Jobs — returned 0 results")
-            return []
-        listings = [_jobspy_to_listing(row, "Google Jobs") for _, row in df.iterrows()]
-        logger.info(f"JobSpy:Google Jobs — {len(listings)} listings collected")
-        return listings
-    except Exception as exc:
-        logger.error(f"JobSpy:Google Jobs — failed: {exc}")
-        return []
+    all_raw = []
+    for query in google_queries:
+        try:
+            df = scrape_jobs(
+                site_name=["google"],
+                search_term=SEARCH_TERM,
+                google_search_term=query,
+                location=LOCATION,
+                results_wanted=RESULTS_WANTED,
+            )
+            if df is None or df.empty:
+                logger.warning(f"JobSpy:Google Jobs — 0 results for: {query[:60]}")
+                continue
+            raw = [_jobspy_to_listing(row, "Google Jobs") for _, row in df.iterrows()]
+            logger.info(f"JobSpy:Google Jobs — {len(raw)} raw for: {query[:60]}")
+            all_raw.extend(raw)
+            time.sleep(2)
+        except Exception as exc:
+            logger.error(f"JobSpy:Google Jobs — failed for query '{query[:60]}': {exc}")
 
-
-# ---------------------------------------------------------------------------
-# Optional future sources (commented out — uncomment to enable)
-# ---------------------------------------------------------------------------
-
-# def _scrape_glassdoor() -> list[dict]:
-#     """
-#     Glassdoor India. Works via JobSpy but requires a valid Glassdoor login
-#     session cookie (GLASSDOOR_SESSION env var) on some IPs. Rate limits
-#     aggressively. Enable once you have a session cookie configured.
-#     """
-#     logger.info("JobSpy:Glassdoor — starting scrape")
-#     try:
-#         df = scrape_jobs(
-#             site_name=["glassdoor"],
-#             search_term=SEARCH_TERM,
-#             location=LOCATION,
-#             results_wanted=RESULTS_WANTED,
-#             hours_old=HOURS_OLD,
-#         )
-#         if df is None or df.empty:
-#             logger.warning("JobSpy:Glassdoor — returned 0 results")
-#             return []
-#         listings = [_jobspy_to_listing(row, "Glassdoor") for _, row in df.iterrows()]
-#         logger.info(f"JobSpy:Glassdoor — {len(listings)} listings collected")
-#         return listings
-#     except Exception as exc:
-#         logger.error(f"JobSpy:Glassdoor — failed: {exc}")
-#         return []
+    logger.info(f"JobSpy:Google Jobs — {len(all_raw)} total raw listings")
+    return _apply_filters(all_raw, "Google Jobs")
 
 
 # ---------------------------------------------------------------------------
@@ -245,32 +320,22 @@ def _scrape_google_jobs() -> list[dict]:
 
 def gather_all_listings() -> list[dict]:
     """
-    Run all active scrapers in sequence and return a combined, de-duped list
-    of raw listing dicts.
-
-    Each scraper is isolated in its own try/except inside its function, so
-    a failure in one source never prevents the others from running.
-
-    De-duplication here is URL-based (cheap and fast). The storage layer in
-    Phase 3 does a more thorough dedup against the Sheets history.
+    Run all scrapers, apply filters, deduplicate by URL, and return.
     """
     all_listings: list[dict] = []
 
-    # --- LinkedIn ---
     linkedin_listings = _scrape_linkedin()
     all_listings.extend(linkedin_listings)
     time.sleep(INTER_SOURCE_DELAY)
 
-    # --- Indeed India (primary Naukri replacement) ---
     indeed_listings = _scrape_indeed_india()
     all_listings.extend(indeed_listings)
     time.sleep(INTER_SOURCE_DELAY)
 
-    # --- Google Jobs (secondary Naukri replacement; aggregates many boards) ---
     google_listings = _scrape_google_jobs()
     all_listings.extend(google_listings)
 
-    # URL-based dedup: keep the first occurrence of each URL.
+    # URL-based dedup
     seen_urls: set[str] = set()
     unique_listings: list[dict] = []
     for listing in all_listings:
@@ -281,8 +346,8 @@ def gather_all_listings() -> list[dict]:
         unique_listings.append(listing)
 
     logger.info(
-        f"gather_all_listings complete: {len(all_listings)} raw → "
-        f"{len(unique_listings)} after URL dedup "
+        f"gather_all_listings complete: "
+        f"{len(all_listings)} filtered → {len(unique_listings)} after URL dedup "
         f"(LinkedIn={len(linkedin_listings)}, "
         f"IndeedIndia={len(indeed_listings)}, "
         f"GoogleJobs={len(google_listings)})"
