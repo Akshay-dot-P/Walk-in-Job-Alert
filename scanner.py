@@ -1,24 +1,22 @@
 # =============================================================================
 # scanner.py
 # =============================================================================
-# This is the entry point — the file GitHub Actions runs.
-# It does one thing: call the other modules in the right order and handle
-# errors gracefully so one bad source doesn't kill the whole pipeline.
+# Entry point — the file GitHub Actions runs.
+# Orchestrates the four phases in order:
 #
-# The flow is:
-#   1. Scrape all sources      → list of raw listing dicts
-#   2. Score with Groq AI      → list of enriched, scored dicts
-#   3. Save new ones to Sheets → list of only truly new dicts 
-#   4. Notify via Telegram     → one message per new listing
+#   1. Scrape   → sources.py  → raw listing dicts
+#   2. Score    → scorer.py   → enriched + filtered dicts (batch Groq calls)
+#   3. Store    → storage.py  → deduplicated against Google Sheets
+#   4. Notify   → notifier.py → one Telegram message per new listing
 #
-# Think of this file as a conductor: it doesn't play any instruments itself,
-# it just tells each section when to play. All the real logic lives in the
-# imported modules (sources.py, scorer.py, storage.py, notifier.py).
+# This file contains no scraping/scoring/storage logic itself.
+# It is a conductor: it calls each module in sequence, handles empty results
+# gracefully, and prints a clean summary at the end visible in GH Actions logs.
 # =============================================================================
 
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sources  import gather_all_listings
 from scorer   import score_all
@@ -27,63 +25,64 @@ from notifier import notify_all
 from config   import MIN_LEGITIMACY_SCORE
 
 # ---------------------------------------------------------------------------
-# Configure logging for the main script.
-# The format includes milliseconds (%f) so when debugging timing issues you
-# can see exactly how long each phase took.
+# Logging — millisecond precision so you can see timing across phases
+# in the GitHub Actions log viewer without extra tooling.
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
-        logging.StreamHandler(sys.stdout),  # print to console (visible in GitHub Actions logs)
+        logging.StreamHandler(sys.stdout),
     ],
 )
 logger = logging.getLogger(__name__)
 
 
 def main():
+    # Use timezone-aware UTC (datetime.utcnow() is deprecated in Python 3.12+)
+    started_at = datetime.now(timezone.utc)
+
     logger.info("=" * 60)
-    logger.info(f"Walk-In Scanner started at {datetime.utcnow().isoformat()}")
+    logger.info(f"Walk-In Scanner started at {started_at.isoformat()}")
     logger.info("=" * 60)
 
     # ------------------------------------------------------------------
-    # PHASE 1: SCRAPING
-    # Collect raw listings from all sources. This phase is the most likely
-    # to have partial failures — one source might be down, another might
-    # be blocked. gather_all_listings() handles all those failures internally
-    # and always returns a list (possibly empty, never raises an exception).
+    # PHASE 1 — SCRAPING
+    # Sources: LinkedIn + Indeed India + Google Jobs (Naukri removed —
+    # blocked by 406 + reCAPTCHA with no reliable free workaround).
+    # gather_all_listings() handles per-source failures internally and
+    # always returns a list — never raises.
     # ------------------------------------------------------------------
     logger.info("\n--- PHASE 1: Scraping all sources ---")
     raw_listings = gather_all_listings()
 
     if not raw_listings:
-        logger.info("No relevant listings found in any source. Exiting.")
-        # sys.exit(0) = success exit (job ran fine, just nothing to do)
-        # Using exit(0) rather than just returning from main() is a convention
-        # in CLI scripts to make the exit status visible in GitHub Actions logs.
+        logger.info("No listings found across any source. Exiting.")
         sys.exit(0)
 
     logger.info(f"Phase 1 complete: {len(raw_listings)} raw listings collected")
 
     # ------------------------------------------------------------------
-    # PHASE 2: AI SCORING
-    # Send each listing to Groq for structured extraction and legitimacy
-    # scoring. score_all() drops listings below MIN_LEGITIMACY_SCORE.
+    # PHASE 2 — AI SCORING (batch mode)
+    # Listings are sent to Groq in batches of 5 to stay within the
+    # free tier's 6,000 token/minute and 30 request/minute limits.
+    # score_all() drops listings below MIN_LEGITIMACY_SCORE and any
+    # that the AI flags as non-entry-level (senior/manager roles).
     # ------------------------------------------------------------------
     logger.info("\n--- PHASE 2: AI scoring and extraction ---")
     scored_listings = score_all(raw_listings, min_score=MIN_LEGITIMACY_SCORE)
 
     if not scored_listings:
-        logger.info("No listings passed the legitimacy threshold. Exiting.")
+        logger.info("No listings passed the legitimacy/entry-level threshold. Exiting.")
         sys.exit(0)
 
     logger.info(f"Phase 2 complete: {len(scored_listings)} listings passed scoring")
 
     # ------------------------------------------------------------------
-    # PHASE 3: DEDUPLICATION + STORAGE
-    # Check against Google Sheets for listings we've already seen.
-    # Save new ones. Returns only the brand-new listings.
+    # PHASE 3 — DEDUPLICATION + STORAGE
+    # Checks each scored listing against the URL history in Google Sheets.
+    # Saves new ones and returns only the truly new subset.
     # ------------------------------------------------------------------
     logger.info("\n--- PHASE 3: Deduplication and storage ---")
     new_listings = save_new_listings(scored_listings)
@@ -95,32 +94,26 @@ def main():
     logger.info(f"Phase 3 complete: {len(new_listings)} new listings to alert about")
 
     # ------------------------------------------------------------------
-    # PHASE 4: NOTIFICATION
-    # Send one Telegram message per new listing, plus a summary header.
+    # PHASE 4 — TELEGRAM NOTIFICATION
+    # Sends one message per new listing plus a summary header.
+    # notify_all() handles Telegram API errors internally.
     # ------------------------------------------------------------------
     logger.info("\n--- PHASE 4: Sending Telegram notifications ---")
     notify_all(new_listings, total_scraped=len(raw_listings))
 
     # ------------------------------------------------------------------
-    # FINAL SUMMARY
-    # A clean summary at the end makes it easy to audit runs in the
-    # GitHub Actions log viewer without scrolling through everything.
+    # SUMMARY — visible at a glance in the GitHub Actions log viewer
     # ------------------------------------------------------------------
+    elapsed = (datetime.now(timezone.utc) - started_at).seconds
     logger.info("\n" + "=" * 60)
     logger.info("SCAN COMPLETE")
     logger.info(f"  Raw listings scraped:   {len(raw_listings)}")
     logger.info(f"  Passed AI scoring:      {len(scored_listings)}")
     logger.info(f"  New (not duplicates):   {len(new_listings)}")
     logger.info(f"  Telegram alerts sent:   {len(new_listings)}")
+    logger.info(f"  Total runtime:          {elapsed}s")
     logger.info("=" * 60)
 
 
-# ---------------------------------------------------------------------------
-# Standard Python entry point guard.
-# The condition `if __name__ == "__main__"` means: only run main() when this
-# file is executed directly (python scanner.py), NOT when it's imported by
-# another module. This makes scanner.py importable for testing without
-# accidentally triggering the full pipeline on import.
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     main()
