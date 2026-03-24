@@ -75,7 +75,6 @@ jobs:
           # cache: 'pip' tells this action to cache the pip package downloads
           # between runs. This means the second run onwards will install packages
           # much faster (seconds instead of a minute+).
-          cache: 'pip'
 
       # -----------------------------------------------------------------------
       # STEP 3: Install Python dependencies
