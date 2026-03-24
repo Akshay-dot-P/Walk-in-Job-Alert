@@ -1,0 +1,138 @@
+# =============================================================================
+# .github/workflows/walkin_alert.yml
+# =============================================================================
+# This file tells GitHub Actions WHAT to run, WHEN to run it, and HOW to
+# set up the environment. It lives in a special directory (.github/workflows/)
+# that GitHub watches automatically.
+#
+# YAML is sensitive to indentation — use 2 spaces everywhere, never tabs.
+# Each level of nesting is 2 more spaces. A single wrong space will break
+# the entire workflow.
+# =============================================================================
+
+name: Walk-In Job Scanner  # Displayed in GitHub Actions UI
+
+on:
+  # -------------------------------------------------------------------------
+  # SCHEDULE TRIGGER
+  # Cron syntax: minute  hour  day-of-month  month  day-of-week
+  # "*/30 * * * *" = every 30 minutes, every hour, every day
+  #
+  # IMPORTANT: GitHub Actions cron runs in UTC. India is UTC+5:30.
+  # Most walk-in listings are posted between 9 AM - 6 PM IST,
+  # which is 3:30 AM - 12:30 PM UTC.
+  # If you want to only scan during Indian business hours to save quota,
+  # use: "*/30 3-13 * * 1-5"
+  #   (every 30 min, hours 3-13 UTC, Monday-Friday only)
+  # For now we run all day to catch after-hours postings too.
+  # -------------------------------------------------------------------------
+  schedule:
+    - cron: '*/30 * * * *'
+
+  # -------------------------------------------------------------------------
+  # MANUAL TRIGGER
+  # workflow_dispatch lets you click "Run workflow" in the GitHub Actions UI
+  # without waiting for the next scheduled run. Essential for testing.
+  # -------------------------------------------------------------------------
+  workflow_dispatch:
+
+jobs:
+  scan:
+    # ubuntu-latest = the latest Ubuntu LTS version (currently 22.04).
+    # GitHub provides this for free. The machine is a 2-core runner with
+    # 7 GB RAM — more than enough for our Python script.
+    runs-on: ubuntu-latest
+
+    # -------------------------------------------------------------------------
+    # TIMEOUT
+    # If the script hangs (e.g. a scraper stuck waiting forever), GitHub would
+    # keep the machine running and consume your free minutes quota.
+    # timeout-minutes: 10 kills the job after 10 minutes no matter what.
+    # Our script should finish in under 3 minutes normally.
+    # -------------------------------------------------------------------------
+    timeout-minutes: 10
+
+    steps:
+      # -----------------------------------------------------------------------
+      # STEP 1: Check out the repository
+      # "actions/checkout" is an official GitHub Action that clones your repo
+      # onto the runner machine. Without this, the runner has no code to run.
+      # @v4 = version 4 of this action (pinned for stability).
+      # -----------------------------------------------------------------------
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # STEP 2: Set up Python
+      # "actions/setup-python" installs the specified Python version.
+      # 3.12 is the current stable release. We specify the exact minor version
+      # so the environment is reproducible — "3.x" would silently upgrade.
+      # -----------------------------------------------------------------------
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          # cache: 'pip' tells this action to cache the pip package downloads
+          # between runs. This means the second run onwards will install packages
+          # much faster (seconds instead of a minute+).
+          cache: 'pip'
+
+      # -----------------------------------------------------------------------
+      # STEP 3: Install Python dependencies
+      # pip install -r requirements.txt installs all packages listed in our
+      # requirements file with their pinned versions.
+      #
+      # --no-cache-dir: don't use pip's local cache (already handled by
+      # the setup-python action above — this prevents confusion)
+      # --upgrade: upgrade pip itself first to avoid warnings about old pip
+      # -----------------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+
+      # -----------------------------------------------------------------------
+      # STEP 4: Run the scanner
+      # This is the actual work. "run: python scanner.py" executes our main
+      # script. All environment variables in the "env:" block are injected
+      # as actual environment variables in the process.
+      #
+      # ${{ secrets.SECRET_NAME }} syntax reads from your repo's secrets.
+      # These are encrypted by GitHub and never appear in logs.
+      # Set them at: repo → Settings → Secrets and variables → Actions → New secret
+      # -----------------------------------------------------------------------
+      - name: Run walk-in scanner
+        run: python scanner.py
+        env:
+          # Your Groq API key from console.groq.com
+          # Secret name in GitHub: GROQ_API_KEY
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
+          # Your Telegram bot token from BotFather
+          # Secret name in GitHub: TELEGRAM_TOKEN
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+
+          # Your Telegram chat ID (the number you got from /getUpdates)
+          # Secret name in GitHub: TELEGRAM_CHAT_ID
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          # The entire Google service account JSON, pasted as one line
+          # Secret name in GitHub: GOOGLE_CREDS_JSON
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
+
+      # -----------------------------------------------------------------------
+      # STEP 5: Upload logs as artifact (optional but very useful)
+      # If the run fails, you can download the log file from GitHub Actions UI.
+      # "if: always()" means this step runs even if the previous step failed —
+      # which is exactly when you need the logs most.
+      # -----------------------------------------------------------------------
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-log-${{ github.run_number }}
+          # The Python script writes to stdout which GitHub Actions captures.
+          # If you redirect to a file (python scanner.py > run.log), upload here.
+          path: run.log
+          retention-days: 7  # keep logs for 7 days, then auto-delete
+          if-no-files-found: ignore  # don't fail if log file doesn't exist
