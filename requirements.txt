@@ -1,5 +1,5 @@
 jobspy==0.31.0
-groq>=0.13.0
+groq==0.13.0
 gspread==6.1.2
 google-auth==2.29.0
 requests==2.32.3
