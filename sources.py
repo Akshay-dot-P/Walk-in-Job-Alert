@@ -115,61 +115,78 @@ def fetch_google_news():
 # SOURCE 2: Naukri — extract JSON from embedded script tags
 # ---------------------------------------------------------------------------
 def fetch_naukri():
-    logger.info("Fetching Naukri (HTML parse)...")
+    logger.info("Fetching Naukri (API)...")
     results = []
-
     session = requests.Session()
-    session.headers.update(BROWSER_HEADERS)
-
-    urls = [
-        "https://www.naukri.com/walk-in-jobs-in-bangalore?k=walk+in+cloud+sde+sre+security&l=bangalore",
-        "https://www.naukri.com/walk-in-jobs-in-bangalore?k=walk+in+software+engineer+developer&l=bangalore",
+    
+    searches = [
+        "walk in interview cloud engineer bangalore",
+        "walk in interview software developer bangalore",
+        "walk in interview devops SRE bangalore",
+        "walkin drive security analyst bangalore",
     ]
-
-    for url in urls:
+    
+    for keyword in searches:
         try:
-            r = session.get(url, timeout=15)
-            logger.info(f"Naukri status {r.status_code} for {url[30:70]}")
+            url = "https://www.naukri.com/jobapi/v4/search"
+            params = {
+                "noOfResults": 20,
+                "urlType": "search_by_key_loc",
+                "searchType": "adv",
+                "keyword": keyword,
+                "location": "bangalore",
+                "jobAge": 1,
+                "src": "jobsearchDesk",
+                "pageNo": 1,
+                "experience": 0,
+            }
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "appid": "109",
+                "systemid": "109",
+                "gid": "LOCATION,INDUSTRY,EDUCATION,FAREA_ROLE",
+                "Referer": "https://www.naukri.com/",
+            }
+            r = session.get(url, params=params, headers=headers, timeout=15)
+            logger.info(f"Naukri API status: {r.status_code} for '{keyword}'")
+            
             if r.status_code != 200:
                 continue
-
-            content = r.text
-
-            # Naukri embeds job data as a JSON array inside a <script> tag
-            # Pattern: looks for JSON objects with "title" and "companyName"
-            # The data is inside window.__INITIAL_STATE__ or similar
-            script_blocks = re.findall(r'<script[^>]*>(.*?)</script>', content, re.DOTALL)
-            logger.info(f"Naukri: found {len(script_blocks)} script blocks")
-
-            jobs_found = 0
-            for block in script_blocks:
-                # Find all title+company pairs anywhere in script content
-                pairs = re.findall(
-                    r'"title"\s*:\s*"([^"]{5,80})".*?"companyName"\s*:\s*"([^"]{2,60})"',
-                    block, re.DOTALL
-                )
-                for title, company in pairs:
-                    jobs_found += 1
-                    if is_tech_in_blr(title, "", "bangalore"):
-                        results.append({
-                            "source": "naukri",
-                            "title": title,
-                            "company": company,
-                            "description": f"Walk-in for {title} at {company} in Bangalore",
-                            "url": url,
-                            "location": "Bangalore",
-                        })
-
-            logger.info(f"Naukri: parsed {jobs_found} jobs, {len(results)} relevant so far")
-
+                
+            data = r.json()
+            jobs = data.get("jobDetails", [])
+            logger.info(f"Naukri API: {len(jobs)} jobs returned")
+            
+            for job in jobs:
+                title = job.get("title", "")
+                company = job.get("companyName", "")
+                location = job.get("placeholders", [{}])
+                loc_text = "Bangalore"
+                for p in location:
+                    if p.get("type") == "location":
+                        loc_text = p.get("label", "Bangalore")
+                        break
+                
+                job_url = job.get("jdURL", "") or job.get("jobUrl", "")
+                desc = job.get("jobDescription", "")
+                
+                if is_tech_in_blr(title, desc, loc_text):
+                    results.append({
+                        "source": "naukri",
+                        "title": title,
+                        "company": company,
+                        "description": desc,
+                        "url": f"https://www.naukri.com{job_url}" if job_url.startswith("/") else job_url,
+                        "location": loc_text,
+                    })
+                    
         except Exception as e:
-            logger.error(f"Naukri error: {e}")
-
+            logger.error(f"Naukri API error for '{keyword}': {e}")
         time.sleep(2)
-
+    
     logger.info(f"Naukri total: {len(results)} relevant listings")
     return results
-
 
 # ---------------------------------------------------------------------------
 # SOURCE 3: JobSpy with broader terms (no "walk in" in query)
