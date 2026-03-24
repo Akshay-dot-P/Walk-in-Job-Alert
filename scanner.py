@@ -8,7 +8,7 @@
 # The flow is:
 #   1. Scrape all sources      → list of raw listing dicts
 #   2. Score with Groq AI      → list of enriched, scored dicts
-#   3. Save new ones to Sheets → list of only truly new dicts (deduped)
+#   3. Save new ones to Sheets → list of only truly new dicts 
 #   4. Notify via Telegram     → one message per new listing
 #
 # Think of this file as a conductor: it doesn't play any instruments itself,
