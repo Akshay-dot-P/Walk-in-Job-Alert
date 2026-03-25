@@ -2,6 +2,20 @@
 config.py — Central configuration for the Walk-In Job Alert scanner.
 """
 
+# ── Google Sheets columns (must match sheet header row exactly) ───────────────
+SHEET_COLUMNS = [
+    "title",
+    "company",
+    "location",
+    "url",
+    "date_posted",
+    "walk_in_date",
+    "walk_in_time",
+    "score",
+    "source",
+    "description_summary",
+]
+
 # ── AI Scoring ────────────────────────────────────────────────────────────────
 GROQ_MODEL = "llama-3.1-8b-instant"       # Current free-tier fast model (llama3-8b-8192 deprecated)
 SCORE_THRESHOLD = 6                        # Listings below this score are dropped
