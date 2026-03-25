@@ -7,10 +7,9 @@ import os
 SHEET_NAME     = "WalkIn Jobs Bangalore"
 WORKSHEET_NAME = "Jobs"
 
-# Matches your actual sheet header row exactly.
-# walk_in_date / walk_in_time REMOVED — project now scrapes online jobs, not walk-ins.
-# fit_for_fresher + reasoning ADDED — AI verdicts surfaced directly in the sheet
-# so you can filter and sort without reading every Telegram message.
+# Must match your actual Google Sheet header row exactly (case-sensitive).
+# walk_in_date / walk_in_time removed — project now scrapes online postings.
+# fit_for_fresher / reasoning removed — not in the actual sheet.
 SHEET_COLUMNS = [
     "scraped_at",
     "job_title",
@@ -19,8 +18,6 @@ SHEET_COLUMNS = [
     "location_address",
     "contact",
     "legitimacy_score",
-    "fit_for_fresher",   # "Yes" / "No" — can a 0-exp Sec+ holder realistically apply?
-    "reasoning",         # one-sentence AI explanation of the score
     "red_flags",
     "source",
     "url",
@@ -28,17 +25,24 @@ SHEET_COLUMNS = [
 ]
 
 # ── AI Scoring ────────────────────────────────────────────────────────────────
+# Why llama-3.1-8b-instant:
+#   - Free tier: 14,400 RPD and 131,072 TPM
+#   - Our usage: 9 batch calls × 3 runs/day = 27 calls/day (0.2% of limit)
+#   - Tokens/run: ~20,000 (well under 131,072 TPM)
+#   - llama-3.3-70b only has 1,000 RPD → retry storms blow it instantly
+#   - gemma2-9b has only 15,000 TPM → one run exceeds it
 GROQ_MODEL           = "llama-3.1-8b-instant"
 SCORE_THRESHOLD      = 6
 MIN_LEGITIMACY_SCORE = SCORE_THRESHOLD   # alias used by scanner.py
 
-# ── Secrets ───────────────────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN      = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+# ── Secrets (injected via GitHub Actions secrets / local .env) ────────────────
+TELEGRAM_BOT_TOKEN      = os.environ.get("TELEGRAM_TOKEN", "")       # matches workflow secret name
 TELEGRAM_CHAT_ID        = os.environ.get("TELEGRAM_CHAT_ID", "")
 GROQ_API_KEY            = os.environ.get("GROQ_API_KEY", "")
-GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDS_JSON", "")    # matches workflow secret name
 
 # ── Role Targeting ────────────────────────────────────────────────────────────
+# Matched case-insensitively against title + description.
 TARGET_ROLES = [
     # SOC / Blue Team
     "soc analyst", "soc l1", "soc l2", "security operations",
@@ -76,60 +80,26 @@ TARGET_ROLES = [
     "network security", "cloud security", "iam analyst",
     "identity access management", "dlp analyst", "pam",
     "zero trust", "firewall analyst",
+    # Threat Intelligence / DFIR
+    "threat intelligence", "cyber threat intelligence", "cti analyst",
+    "threat hunter", "dfir", "digital forensics", "forensic analyst",
+    "malware analyst", "incident handler",
+    # Endpoint / EDR
+    "endpoint security", "edr analyst", "xdr analyst", "endpoint detection",
+    # Vendor / Third-Party Risk
+    "vendor risk", "third party risk", "tprm", "supply chain risk",
+    # Cloud-native security
+    "aws security", "azure security", "gcp security",
+    "cloud compliance", "cloud governance", "casb analyst",
     # General InfoSec / Intern / Fresher
     "cybersecurity", "cyber security", "information security",
     "infosec", "security analyst", "security intern",
     "cybersecurity intern", "security trainee", "security fresher",
-    "cyber analyst",
-    # Threat Intelligence
-    "threat intelligence", "cyber threat intelligence", "cti analyst",
-    "threat hunter", "threat hunting", "ioc analyst",
-    # DFIR / Malware Analysis
-    "dfir", "digital forensics", "forensic analyst", "malware analyst",
-    "malware reverse engineering", "reverse engineer", "incident handler",
-    "memory forensics",
-    # Security Architecture
-    "security architect", "cloud security architect",
-    "enterprise security architect", "solution security architect",
-    # Endpoint / EDR
-    "endpoint security", "edr analyst", "xdr analyst",
-    "endpoint detection", "carbon black", "crowdstrike analyst",
-    # Third-Party / Vendor Risk
-    "vendor risk", "third party risk", "tprm",
-    "supply chain risk", "vendor assessment",
-    # OT / ICS / SCADA (niche but growing)
-    "ot security", "ics security", "scada security",
-    "operational technology security", "industrial cybersecurity",
-    # Cloud-native security (AWS/Azure/GCP specific)
-    "aws security", "azure security", "gcp security",
-    "cloud compliance", "cloud governance", "cnapp",
-    "casb analyst", "cloud posture",
-    # ── Internship / Entry-Level / Fresher ────────────────────────────────────
-    # These are the titles explicitly welcoming 0-experience candidates.
-    # Indian job portals use all of these phrasings — every variant is needed
-    # because portals like Naukri, LinkedIn India, and Indeed India each use
-    # different vocabulary for the same type of role.
-    "security intern", "infosec intern",
-    "soc intern", "it security intern", "network security intern",
-    "cloud security intern", "security operations intern",
-    "cyber fresher", "it security fresher",
-    "soc fresher", "security graduate trainee", "graduate security analyst",
-    "security associate trainee", "junior security analyst",
-    "junior soc analyst", "junior infosec analyst",
-    "junior cybersecurity analyst", "entry level security",
-    "entry level soc", "entry level analyst",
-    "security apprentice",
-    # Tier-1 SOC / helpdesk-adjacent titles reachable at 0 exp — important
-    # stepping-stone roles that Sec+ holders are specifically targeted for
-    "soc tier 1", "tier 1 soc", "l1 soc analyst", "soc analyst l1",
-    "security analyst l1", "security analyst level 1",
-    "it security support", "security helpdesk", "security support analyst",
-    # Common phrasing on Indian portals for no-experience roles
-    "fresher security analyst", "security analyst fresher",
-    "0-1 year security", "0-2 year security",
+    "cyber analyst", "junior soc analyst", "l1 soc analyst",
+    "entry level security", "entry level soc", "security apprentice",
 ]
 
-# ── Known MNCs (score bonus) ──────────────────────────────────────────────────
+# ── Known MNCs (give a score bonus in scorer.py) ──────────────────────────────
 KNOWN_MNCS = [
     "accenture", "ibm", "deloitte", "kpmg", "pwc", "ey", "ernst",
     "wipro", "infosys", "tcs", "hcl", "cognizant", "capgemini",
@@ -149,49 +119,7 @@ KNOWN_MNCS = [
     "bdo", "grant thornton",
 ]
 
-# ── Entry-Level / Fresher Targeting ──────────────────────────────────────────
-# These three lists are injected directly into the Groq AI scoring prompt,
-# giving the model an explicit rubric instead of asking it to guess.
-# Think of them as the AI's marking scheme — the more specific you make them,
-# the more consistent and useful the scores will be.
-
-# Jobs mentioning any of these phrases score HIGHER — they are reachable for
-# a Sec+ holder with 0 experience. The AI will also set fit_for_fresher=true.
-ENTRY_LEVEL_BOOST_KEYWORDS = [
-    "fresher", "freshers welcome", "freshers can apply",
-    "0 experience", "no experience required", "entry level", "entry-level",
-    "0-1 year", "0-2 years", "0 to 1 year", "0 to 2 years",
-    "recent graduate", "fresh graduate", "campus hire", "campus recruitment",
-    "trainee", "apprentice", "graduate program", "graduate trainee",
-    "security+", "sec+", "comptia security+", "comptia",
-    "certification preferred", "cert holders welcome",
-    "will train", "training provided", "on the job training",
-]
-
-# Jobs mentioning any of these are OUT OF REACH right now — the AI will lower
-# the score and set fit_for_fresher=false so these don't flood your alerts.
-# A job can be 100% legitimate and still be wrong for a 0-exp candidate.
-EXPERIENCE_MISMATCH_KEYWORDS = [
-    "5+ years", "6+ years", "7+ years", "8+ years", "10+ years",
-    "minimum 3 years", "minimum 4 years", "minimum 5 years",
-    "senior", "lead", "principal", "staff engineer",
-    "manager", "head of", "director", "vp ", "ciso",
-    "must have led", "proven track record of managing",
-]
-
-# Each red flag found lowers the score. Centralising these here means you only
-# need to update this list — the AI prompt picks them up automatically.
-RED_FLAG_KEYWORDS = [
-    "commission only", "own laptop required", "security deposit",
-    "registration fee", "processing fee", "pay to join", "pay to train",
-    "multi-level", "mlm", "network marketing",
-    "no salary mentioned", "earn from home", "unlimited income",
-    "whatsapp interview only", "contact on whatsapp to apply",
-    "no experience needed for senior",   # internal contradiction = red flag
-    "immediate joiner only",             # pressure tactic
-]
-
 # ── Scraper Behaviour ─────────────────────────────────────────────────────────
-MAX_JOB_AGE_DAYS  = 7    # ignore postings older than this many days
-MAX_JOBS_PER_RUN  = 50   # cap alerts per run to avoid Telegram flooding
-DEDUP_WINDOW_DAYS = 14   # skip a URL already seen in the last N days
+MAX_JOB_AGE_DAYS  = 7
+MAX_JOBS_PER_RUN  = 50
+DEDUP_WINDOW_DAYS = 14
