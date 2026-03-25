@@ -83,7 +83,6 @@ Listing:
 
 
 def _call_groq(prompt: str, max_retries: int = 3) -> str:
-@@ -68,7 +104,9 @@ def _call_groq(prompt: str, max_retries: int = 3) -> str:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
@@ -119,7 +118,7 @@ def score_listing(listing: dict) -> dict | None:
         }
     except Exception as exc:
         logger.error(f"Scoring failed for '{listing.get('title', '?')}': {exc}")
-@@ -144,10 +185,11 @@ def score_all(listings: list[dict], min_score: int = 5) -> list[dict]:
+def score_all(listings: list[dict], min_score: int = 5) -> list[dict]:
             time.sleep(2)
             continue
         score = result["legitimacy_score"]
