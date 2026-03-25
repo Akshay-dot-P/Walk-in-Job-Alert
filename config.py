@@ -1,34 +1,34 @@
 """
-config.py — Central configuration for the Walk-In Job Alert scanner.
-Every constant imported by scanner.py, scorer.py, storage.py, notifier.py
-lives here — single source of truth.
+config.py — Single source of truth for all constants.
 """
-
 import os
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────
 SHEET_NAME     = "WalkIn Jobs Bangalore"
 WORKSHEET_NAME = "Jobs"
 
+# Matches your actual sheet header row exactly.
+# walk_in_date / walk_in_time REMOVED per user request (online jobs, not walk-ins).
 SHEET_COLUMNS = [
-    "title",
+    "scraped_at",
+    "job_title",
     "company",
-    "location",
-    "url",
-    "date_posted",
-    "walk_in_date",
-    "walk_in_time",
-    "score",
+    "company_tier",
+    "location_address",
+    "contact",
+    "legitimacy_score",
+    "red_flags",
     "source",
-    "description_summary",
+    "url",
+    "status",
 ]
 
 # ── AI Scoring ────────────────────────────────────────────────────────────────
-GROQ_MODEL           = "llama-3.1-8b-instant"  # llama3-8b-8192 is deprecated
+GROQ_MODEL           = "llama-3.1-8b-instant"
 SCORE_THRESHOLD      = 6
-MIN_LEGITIMACY_SCORE = SCORE_THRESHOLD          # alias used by scanner.py
+MIN_LEGITIMACY_SCORE = SCORE_THRESHOLD   # alias used by scanner.py
 
-# ── Secrets (injected via GitHub Actions / .env) ──────────────────────────────
+# ── Secrets ───────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN      = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID        = os.environ.get("TELEGRAM_CHAT_ID", "")
 GROQ_API_KEY            = os.environ.get("GROQ_API_KEY", "")
@@ -77,13 +77,36 @@ TARGET_ROLES = [
     "infosec", "security analyst", "security intern",
     "cybersecurity intern", "security trainee", "security fresher",
     "cyber analyst",
+    # Threat Intelligence
+    "threat intelligence", "cyber threat intelligence", "cti analyst",
+    "threat hunter", "threat hunting", "ioc analyst",
+    # DFIR / Malware Analysis
+    "dfir", "digital forensics", "forensic analyst", "malware analyst",
+    "malware reverse engineering", "reverse engineer", "incident handler",
+    "memory forensics",
+    # Security Architecture
+    "security architect", "cloud security architect",
+    "enterprise security architect", "solution security architect",
+    # Endpoint / EDR
+    "endpoint security", "edr analyst", "xdr analyst",
+    "endpoint detection", "carbon black", "crowdstrike analyst",
+    # Third-Party / Vendor Risk
+    "vendor risk", "third party risk", "tprm",
+    "supply chain risk", "vendor assessment",
+    # OT / ICS / SCADA (niche but growing)
+    "ot security", "ics security", "scada security",
+    "operational technology security", "industrial cybersecurity",
+    # Cloud-native security (AWS/Azure/GCP specific)
+    "aws security", "azure security", "gcp security",
+    "cloud compliance", "cloud governance", "cnapp",
+    "casb analyst", "cloud posture",
 ]
 
 # ── Known MNCs (score bonus) ──────────────────────────────────────────────────
 KNOWN_MNCS = [
     "accenture", "ibm", "deloitte", "kpmg", "pwc", "ey", "ernst",
     "wipro", "infosys", "tcs", "hcl", "cognizant", "capgemini",
-    "tech mahindra", "mphasis", "hexaware", "niit technologies",
+    "tech mahindra", "mphasis", "hexaware",
     "palo alto", "crowdstrike", "mandiant", "microsoft", "cisco",
     "symantec", "mcafee", "fortinet", "secureworks", "qualys",
     "rapid7", "tenable", "check point", "cyberark", "sailpoint",
