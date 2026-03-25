@@ -93,7 +93,7 @@ def _call_groq(prompt: str, max_retries: int = 3) -> str:
     }
 
     for attempt in range(1, max_retries + 1):
-@@ -114,20 +152,23 @@ def score_listing(listing: dict) -> dict | None:
+def score_listing(listing: dict) -> dict | None:
         raw = _call_groq(USER_PROMPT.format(listing_text=text))
         d = _parse_json(raw)
         return {
