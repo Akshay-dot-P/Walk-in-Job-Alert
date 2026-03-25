@@ -83,7 +83,6 @@ Listing:
 
 
 def _call_groq(prompt: str, max_retries: int = 3) -> str:
-  def _call_groq(prompt: str, max_retries: int = 3) -> str:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
