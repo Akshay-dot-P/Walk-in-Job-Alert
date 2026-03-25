@@ -1,0 +1,6 @@
+python-jobspy==1.1.82
+gspread==6.1.2
+google-auth==2.29.0
+requests==2.32.3
+feedparser==6.0.11
+python-dateutil==2.9.0
