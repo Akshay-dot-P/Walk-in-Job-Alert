@@ -1,0 +1,47 @@
+name: Walk-In Job Scanner
+
+on:
+  # 3 runs per day in IST (UTC+5:30):
+  #   Morning   — 07:00 IST = 01:30 UTC
+  #   Afternoon — 13:00 IST = 07:30 UTC
+  #   Evening   — 19:00 IST = 13:30 UTC
+  schedule:
+    - cron: "30 1 * * *"   # 07:00 IST — morning run
+    - cron: "30 7 * * *"   # 13:00 IST — afternoon run
+    - cron: "30 13 * * *"  # 19:00 IST — evening run
+
+  # Keep manual trigger so you can test anytime from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scanner
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
+        run: python scanner.py
