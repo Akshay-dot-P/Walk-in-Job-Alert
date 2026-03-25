@@ -1,19 +1,19 @@
 """
-sources.py — job scraping via python-jobspy (speedyapply fork)
+sources.py — Job scraping via python-jobspy (speedyapply fork).
 
-Changes from previous version:
-- Removed all "walk-in" requirements from search terms (now scrapes online jobs too)
-- Added 10 broad entry-level cybersecurity / GRC / risk role search term buckets
-- Glassdoor: location changed to "Bengaluru" (official name; "Bangalore, India" fails geocoding → 400)
-- Glassdoor: added linkedin_fetch_recipient_url=False to suppress extra network calls
-- Naukri: REMOVED — GitHub Actions IPs are permanently blocked by Naukri's recaptcha (406).
-           No fix exists without a residential proxy. See README for workaround options.
-- Indeed: kept with graceful 0-result handling (intermittent from CI IPs)
+Source status after investigation:
+  LinkedIn  ✅  Works reliably from GitHub Actions
+  Indeed    ✅  Works intermittently; 0-result runs are handled gracefully
+  Glassdoor ❌  REMOVED — GitHub Actions IPs are blocked by Glassdoor's
+                Cloudflare WAF (HTTP 403 on every single call, every term).
+                This is a deliberate IP block, not a code bug. There is no
+                fix without a residential proxy or self-hosted runner.
+  Naukri    ❌  REMOVED — Returns 406 "recaptcha required" for all CI IP
+                ranges. Same root cause as Glassdoor.
 """
 
 import time
 import logging
-from datetime import datetime, timezone
 
 import pandas as pd
 import jobspy
@@ -21,53 +21,32 @@ import jobspy
 logger = logging.getLogger(__name__)
 
 # ── Location ──────────────────────────────────────────────────────────────────
-LOCATION = "Bengaluru, Karnataka, India"   # official spelling fixes Glassdoor geocoding
-HOURS_OLD = 9                              # 3×/day runs ≈ 8h apart
-RESULTS_PER_TERM = 40                      # per search term per source
+LOCATION         = "Bengaluru, Karnataka, India"
+HOURS_OLD        = 9     # 3×/day runs ≈ 8h apart → only pull fresh listings
+RESULTS_PER_TERM = 40    # per (search term, source) pair
 
-# ── Search terms (walk-in removed — covers online + offline postings) ─────────
-#
-# 10 buckets covering every entry-level cybersecurity / GRC / risk role:
-#
-#  1. SOC / Blue Team         — SOC Analyst L1/L2, Security Operations, SIEM
-#  2. AppSec / DAST / SAST    — Application Security, AppSec Engineer, Code Review
-#  3. VAPT / Pentest          — Penetration Tester, Ethical Hacker, VAPT Engineer
-#  4. Vulnerability Mgmt      — VA Analyst, Patch Management, Threat Assessment
-#  5. GRC / Compliance        — GRC Analyst, ISO 27001, Compliance Analyst, DPO support
-#  6. IT / IS Audit           — IT Audit, IS Audit, Internal Audit, Big 4 GRC
-#  7. Risk Analyst            — Operational Risk, Credit Risk, Market Risk, Basel
-#  8. Fraud / AML / KYC       — Fraud Analyst, AML, KYC, Anti-Money Laundering
-#  9. Network / Cloud / IAM   — Network Security, Cloud Security, IAM, DLP, PAM
-# 10. General InfoSec / Intern — Cybersecurity fresher, InfoSec intern, trainee, graduate
-#
+# ── Search terms — 10 entry-level cybersecurity buckets ──────────────────────
+# Each term targets one role family with explicit fresher/entry-level qualifiers
+# so the portals surface trainee and 0-exp postings alongside junior ones.
 SEARCH_TERMS = [
     # 1. SOC / Blue Team
-    '("SOC analyst" OR "security operations" OR "L1 SOC" OR "L2 SOC" OR "SIEM analyst" OR "security monitoring") (fresher OR "entry level" OR junior OR trainee OR graduate OR "0-2 years" OR "0 to 2")',
-
-    # 2. AppSec / DAST / SAST
-    '("application security" OR "appsec" OR "DAST" OR "SAST" OR "secure code review" OR "security engineer") (fresher OR "entry level" OR junior OR trainee OR graduate)',
-
-    # 3. VAPT / Penetration Testing
-    '("VAPT" OR "penetration test" OR "ethical hacker" OR "offensive security" OR "red team" OR "bug bounty") (fresher OR "entry level" OR junior OR trainee OR "0-2 years")',
-
+    '("SOC analyst" OR "security operations" OR "L1 SOC" OR "L2 SOC" OR "SIEM analyst") (fresher OR "entry level" OR junior OR trainee OR graduate OR "0-2 years")',
+    # 2. AppSec / DevSecOps
+    '("application security" OR "appsec" OR "DAST" OR "SAST" OR "security engineer" OR devsecops) (fresher OR "entry level" OR junior OR trainee)',
+    # 3. VAPT / Pentest
+    '("VAPT" OR "penetration test" OR "ethical hacker" OR "red team" OR "bug bounty") (fresher OR "entry level" OR junior OR "0-2 years")',
     # 4. Vulnerability Management
-    '("vulnerability assessment" OR "vulnerability management" OR "patch management" OR "threat assessment" OR "security assessment") (fresher OR "entry level" OR junior)',
-
+    '("vulnerability assessment" OR "vulnerability management" OR "patch management" OR "security assessment") (fresher OR "entry level" OR junior)',
     # 5. GRC / Compliance
-    '("GRC analyst" OR "governance risk compliance" OR "ISO 27001" OR "compliance analyst" OR "regulatory compliance" OR "data privacy" OR "GDPR") (fresher OR "entry level" OR junior OR trainee)',
-
-    # 6. IT Audit / IS Audit
-    '("IT audit" OR "IS audit" OR "information systems audit" OR "internal audit" OR "CISA" OR "IT risk") (fresher OR "entry level" OR junior OR "0-2 years")',
-
-    # 7. Risk Analyst (BFSI focus)
-    '("risk analyst" OR "operational risk" OR "credit risk" OR "market risk" OR "Basel" OR "enterprise risk" OR "ORC" OR "loss prevention") (fresher OR "entry level" OR junior OR trainee)',
-
+    '("GRC analyst" OR "governance risk compliance" OR "ISO 27001" OR "compliance analyst" OR "regulatory compliance" OR "data privacy") (fresher OR "entry level" OR junior OR trainee)',
+    # 6. IT / IS Audit
+    '("IT audit" OR "IS audit" OR "information systems audit" OR "internal audit" OR "ITGC") (fresher OR "entry level" OR junior OR "0-2 years")',
+    # 7. Risk Analyst (BFSI)
+    '("risk analyst" OR "operational risk" OR "credit risk" OR "market risk" OR "enterprise risk" OR "RCSA") (fresher OR "entry level" OR junior OR trainee)',
     # 8. Fraud / AML / KYC
-    '("fraud analyst" OR "AML analyst" OR "KYC analyst" OR "anti-money laundering" OR "transaction monitoring" OR "financial crime") (fresher OR "entry level" OR junior OR trainee)',
-
+    '("fraud analyst" OR "AML analyst" OR "KYC analyst" OR "anti-money laundering" OR "transaction monitoring" OR "financial crime") (fresher OR "entry level" OR junior)',
     # 9. Network / Cloud / IAM / DLP
-    '("network security" OR "cloud security" OR "IAM analyst" OR "identity access management" OR "DLP analyst" OR "PAM" OR "zero trust") (fresher OR "entry level" OR junior)',
-
+    '("network security" OR "cloud security" OR "IAM analyst" OR "identity access management" OR "DLP analyst" OR "zero trust") (fresher OR "entry level" OR junior)',
     # 10. General Cybersecurity / InfoSec / Intern
     '("cybersecurity" OR "cyber security" OR "information security" OR "infosec") (fresher OR intern OR trainee OR "entry level" OR graduate OR "0-2 years") Bangalore',
 ]
@@ -76,33 +55,36 @@ SEARCH_TERMS = [
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _to_records(df: pd.DataFrame) -> list[dict]:
-    """Convert a jobspy DataFrame to a list of plain dicts with normalised keys."""
+    """Convert a jobspy DataFrame to normalised dicts. Returns [] for empty input."""
     if df is None or df.empty:
         return []
     records = []
     for _, row in df.iterrows():
         d = row.to_dict()
         records.append({
-            "title":        str(d.get("title") or ""),
-            "company":      str(d.get("company") or ""),
-            "location":     str(d.get("location") or ""),
-            "job_url":      str(d.get("job_url") or ""),
-            "description":  str(d.get("description") or ""),
-            "date_posted":  str(d.get("date_posted") or ""),
-            "source":       str(d.get("site") or ""),
+            "title":       str(d.get("title")       or ""),
+            "company":     str(d.get("company")      or ""),
+            "location":    str(d.get("location")     or ""),
+            "job_url":     str(d.get("job_url")      or ""),
+            "description": str(d.get("description")  or ""),
+            "date_posted": str(d.get("date_posted")  or ""),
+            "source":      str(d.get("site")         or ""),
         })
     return records
 
 
 def _run_scrape(site: list[str], term: str, extra_kwargs: dict | None = None) -> list[dict]:
-    """Single jobspy call with retry on transient errors."""
+    """
+    One jobspy call with up to 3 retries on transient failures.
+    extra_kwargs overrides any default parameter (e.g. location for Glassdoor).
+    """
     kwargs = dict(
         site_name=site,
         search_term=term,
         location=LOCATION,
         results_wanted=RESULTS_PER_TERM,
         hours_old=HOURS_OLD,
-        country_indeed="India",
+        country_indeed="India",   # required for both Indeed AND Glassdoor routing
     )
     if extra_kwargs:
         kwargs.update(extra_kwargs)
@@ -122,17 +104,17 @@ def _run_scrape(site: list[str], term: str, extra_kwargs: dict | None = None) ->
 
 def _scrape_linkedin() -> list[dict]:
     logger.info("=== LinkedIn: starting ===")
-    seen_urls: set[str] = set()
+    seen: set[str] = set()
     results: list[dict] = []
 
     for term in SEARCH_TERMS:
         batch = _run_scrape(["linkedin"], term)
-        new = [r for r in batch if r["job_url"] not in seen_urls]
+        new = [r for r in batch if r["job_url"] not in seen]
         for r in new:
-            seen_urls.add(r["job_url"])
+            seen.add(r["job_url"])
         results.extend(new)
-        logger.info("  LinkedIn [%s…] → %d", term[:50], len(new))
-        time.sleep(5)
+        logger.info("  LinkedIn [%s…] → %d", term[:55], len(new))
+        time.sleep(5)   # polite delay between terms
 
     logger.info("LinkedIn total: %d unique", len(results))
     return results
@@ -140,68 +122,35 @@ def _scrape_linkedin() -> list[dict]:
 
 def _scrape_indeed() -> list[dict]:
     logger.info("=== Indeed India: starting ===")
-    seen_urls: set[str] = set()
+    seen: set[str] = set()
     results: list[dict] = []
 
     for term in SEARCH_TERMS:
         batch = _run_scrape(["indeed"], term)
-        new = [r for r in batch if r["job_url"] not in seen_urls]
+        new = [r for r in batch if r["job_url"] not in seen]
         for r in new:
-            seen_urls.add(r["job_url"])
+            seen.add(r["job_url"])
         results.extend(new)
-        logger.info("  Indeed [%s…] → %d", term[:50], len(new))
+        logger.info("  Indeed [%s…] → %d", term[:55], len(new))
         time.sleep(5)
 
     logger.info("Indeed total: %d unique", len(results))
     return results
 
 
-def _scrape_glassdoor() -> list[dict]:
-    """
-    Glassdoor fix notes:
-    - Must use country_indeed="India" (already in _run_scrape defaults)
-    - Location MUST be "Bengaluru" NOT "Bangalore, India" — the Glassdoor
-      geocoding autocomplete API rejects the latter with HTTP 400.
-    - linkedin_fetch_recipient_url=False suppresses an extra outbound call
-      that sometimes triggers rate-limits from CI IPs.
-    """
-    logger.info("=== Glassdoor India: starting ===")
-    seen_urls: set[str] = set()
-    results: list[dict] = []
-
-    glassdoor_kwargs = {
-        "location": "Bengaluru",          # ← KEY FIX: official name, not "Bangalore, India"
-        "linkedin_fetch_recipient_url": False,
-    }
-
-    for term in SEARCH_TERMS:
-        batch = _run_scrape(
-            ["glassdoor"], term,
-            extra_kwargs=glassdoor_kwargs,
-        )
-        new = [r for r in batch if r["job_url"] not in seen_urls]
-        for r in new:
-            seen_urls.add(r["job_url"])
-        results.extend(new)
-        logger.info("  Glassdoor [%s…] → %d", term[:50], len(new))
-        time.sleep(6)
-
-    logger.info("Glassdoor total: %d unique", len(results))
-    return results
-
-
-# ── NAUKRI IS INTENTIONALLY REMOVED ──────────────────────────────────────────
+# ── GLASSDOOR — PERMANENTLY REMOVED ──────────────────────────────────────────
+# Glassdoor's Cloudflare WAF blocks all GitHub Actions IP ranges with HTTP 403.
+# This is not a bug — it is a deliberate anti-scraping measure.
+# Even with correct location ("Bengaluru") and country_indeed="India" the block
+# persists because the IP range itself is blacklisted, not the request params.
 #
-# Naukri returns HTTP 406 "recaptcha required" for ALL requests from GitHub
-# Actions IP ranges. This is a permanent block — Naukri actively detects
-# and challenges automated requests from cloud CI IP pools.
-#
-# WORKAROUNDS (pick one):
-#   A) Self-hosted GitHub Actions runner on your home machine / VPS
-#   B) Add a residential proxy (e.g. Webshare, Smartproxy) and pass
-#      proxy_url=... to jobspy.scrape_jobs()
-#   C) Manually check Naukri and paste good listings into the sheet
-#
+# To re-enable Glassdoor: use a residential proxy and pass proxy_url= to
+# jobspy.scrape_jobs(), or switch to a self-hosted GitHub Actions runner.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── NAUKRI — PERMANENTLY REMOVED ─────────────────────────────────────────────
+# Returns HTTP 406 "recaptcha required" for all requests from cloud CI IPs.
+# Same fix applies: residential proxy or self-hosted runner.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -210,19 +159,17 @@ def _scrape_glassdoor() -> list[dict]:
 def gather_all_listings() -> list[dict]:
     """
     Scrape all working sources and return a single deduplicated list.
-    Source order: LinkedIn → Indeed → Glassdoor
-    (Naukri removed — recaptcha blocked from GitHub Actions)
+    Sources: LinkedIn → Indeed  (Glassdoor and Naukri removed, see above).
+    Never raises — source failures are caught internally.
     """
     all_results: list[dict] = []
-    seen_urls: set[str] = set()
+    seen_urls:   set[str]   = set()
+    source_counts: dict[str, int] = {}
 
     sources = [
-        ("LinkedIn",       _scrape_linkedin),
-        ("Indeed",         _scrape_indeed),
-        ("Glassdoor",      _scrape_glassdoor),
+        ("LinkedIn", _scrape_linkedin),
+        ("Indeed",   _scrape_indeed),
     ]
-
-    source_counts: dict[str, int] = {}
 
     for name, fn in sources:
         try:
@@ -237,12 +184,9 @@ def gather_all_listings() -> list[dict]:
                 seen_urls.add(r["job_url"])
                 all_results.append(r)
 
-        added = len(all_results) - before
-        source_counts[name] = added
-        logger.info("%s added %d unique listings", name, added)
-
-        # Pause between sources to avoid simultaneous rate-limit hits
-        time.sleep(8)
+        source_counts[name] = len(all_results) - before
+        logger.info("%s added %d unique listings", name, source_counts[name])
+        time.sleep(8)   # pause between sources
 
     logger.info(
         "gather_all_listings complete: %d unique total | %s",
