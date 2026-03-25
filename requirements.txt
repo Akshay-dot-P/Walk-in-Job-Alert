@@ -1,9 +1,8 @@
-# speedyapply fork — required for Naukri support (added in 1.1.80+)
-# Do NOT use the original cullenwatson/JobSpy fork — it lacks Naukri.
+# speedyapply fork — required for India/Naukri support (added in 1.1.80+)
+# Do NOT use the original cullenwatson/JobSpy fork — it lacks these fixes.
 python-jobspy>=1.1.80
 gspread==6.1.2
 google-auth==2.29.0
 requests==2.32.3
-feedparser==6.0.11
 python-dateutil==2.9.0
 pandas>=2.0.0
