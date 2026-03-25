@@ -1,23 +1,16 @@
 # =============================================================================
 # notifier.py
 # =============================================================================
-# Sends Telegram messages for each new verified walk-in listing.
+# Sends Telegram messages for each new job listing.
 #
-# How Telegram bots work:
-# You create a bot via BotFather (@BotFather). BotFather gives you a TOKEN.
-# To send messages, POST to:
-#   https://api.telegram.org/bot<TOKEN>/sendMessage
-# with JSON: { chat_id, text, parse_mode }
+# HTML parse mode is used instead of MarkdownV2 because MarkdownV2 requires
+# escaping almost every punctuation character in dynamic content, which is
+# fragile with AI-extracted text. HTML only needs &, <, > escaped (done
+# by the e() helper below).
 #
-# We use HTML parse mode (not MarkdownV2) because MarkdownV2 requires
-# escaping almost every punctuation character in dynamic content.
-# With HTML, only < > & need escaping, which we handle with e() below.
-
-
-
-
-
-
+# Environment variables (match GitHub Actions secret names):
+#   TELEGRAM_TOKEN   — bot token from BotFather
+#   TELEGRAM_CHAT_ID — your personal or group chat ID
 # =============================================================================
 
 import os
@@ -26,32 +19,19 @@ import logging
 import requests
 from datetime import datetime, timezone
 
-
-
-
-
-
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
-
-
-
-
-
-
-
-
 # =============================================================================
-# HELPER: HTML escape — defined first so all functions below can use it
+# HELPER: HTML-escape dynamic content for Telegram HTML parse mode
 # =============================================================================
 
 def e(text) -> str:
     """
-    Escape HTML special characters for Telegram HTML parse mode.
-    Must handle None gracefully since AI-extracted fields can be None.
+    Escape HTML special characters. Handles None gracefully since
+    AI-extracted fields (location_address, contact, etc.) can be None.
     """
     if text is None:
         return ""
@@ -60,38 +40,7 @@ def e(text) -> str:
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
-        )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    )
 
 
 # =============================================================================
@@ -100,57 +49,35 @@ def e(text) -> str:
 
 def send_message(text: str, parse_mode: str = "HTML") -> bool:
     """
-    Send a single message to the configured Telegram chat.
+    POST one message to the configured Telegram chat.
     Returns True on success, False on any failure.
-
-
-
-
-
-
-
-
-
-
-
-
-
     """
-    token = os.environ.get("TELEGRAM_TOKEN", "")
+    token   = os.environ.get("TELEGRAM_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
 
     if not token or not chat_id:
         logger.error("TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set in environment")
         return False
 
-
-
-    url = TELEGRAM_API_BASE.format(token=token, method="sendMessage")
+    url     = TELEGRAM_API_BASE.format(token=token, method="sendMessage")
     payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": parse_mode,
-        # Prevents Telegram from fetching link previews — cleaner + faster
-        "disable_web_page_preview": True,
+        "chat_id":                  chat_id,
+        "text":                     text,
+        "parse_mode":               parse_mode,
+        "disable_web_page_preview": True,   # cleaner messages, no link previews
     }
 
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         return True
-    except requests.exceptions.HTTPError as exc:
-        # 400 usually means bad HTML — log the Telegram error message
-        logger.error(f"Telegram HTTP error: {exc}")
-        logger.error(f"Telegram response: {response.text[:500]}")
+    except requests.exceptions.HTTPError:
+        # 400 usually means bad HTML — log Telegram's error body for debugging
+        logger.error("Telegram HTTP error: %s", response.text[:500])
         return False
     except Exception as exc:
-        logger.error(f"Telegram send error: {exc}")
+        logger.error("Telegram send error: %s", exc)
         return False
-
-
-
-
-
 
 
 # =============================================================================
@@ -158,96 +85,74 @@ def send_message(text: str, parse_mode: str = "HTML") -> bool:
 # =============================================================================
 
 def format_listing_message(listing: dict) -> str:
-
-
-
-
     """
-    Build a well-formatted HTML Telegram message for one walk-in listing.
-    Uses e() to safely escape all dynamic content.
+    Build a well-formatted HTML message for one job listing.
+    Fields match SHEET_COLUMNS exactly:
+      scraped_at, job_title, company, company_tier, location_address,
+      contact, legitimacy_score, red_flags, source, url, status
 
-
+    Note: walk_in_date / walk_in_time have been removed — the project now
+    scrapes online job postings, not in-person walk-in events.
     """
     score = listing.get("legitimacy_score", 0)
 
-    # Quality badge — users see this at a glance before reading details
+    # Confidence badge — visible at a glance before reading the details
     if score >= 8:
-        badge = "✅"   # High confidence — definitely attend
+        badge = "✅"   # High confidence — strong match, apply now
     elif score >= 6:
-        badge = "🟡"   # Reasonable — worth verifying
+        badge = "🟡"   # Reasonable match — worth checking
     else:
-        badge = "⚠️"   # Low confidence — extra verification needed
+        badge = "⚠️"   # Low confidence — verify before applying
 
-    # Red flags list
-    red_flags = listing.get("red_flags", [])
-    if red_flags:
-        flags_text = "\n".join(f"  • {e(flag)}" for flag in red_flags)
+    # Red flags (stored as comma-separated string by scorer.py)
+    flags_raw = listing.get("red_flags", "") or ""
+    if flags_raw and flags_raw.strip():
+        flags_lines = "\n".join(f"  • {e(f.strip())}" for f in flags_raw.split(",") if f.strip())
     else:
-        flags_text = "  None detected"
+        flags_lines = "  None detected"
 
-    # Extract and escape all fields
-    title    = e(listing.get("job_title") or "Unknown Role")
-    company  = e(listing.get("company") or "Unknown Company")
-    tier     = e(listing.get("company_tier") or "unknown")
-    date_val = e(listing.get("walk_in_date") or "Not specified")
-    time_val = e(listing.get("walk_in_time") or "Not specified")
-    location = e(listing.get("location_address") or "Not specified")
-    contact  = e(listing.get("contact") or "Not specified")
-    summary  = e(listing.get("summary") or "")
-    source   = e(listing.get("source") or "")
-    url      = listing.get("url", "")  # Raw URL — not escaped (used in href)
+    # Extract and escape all dynamic fields
+    title   = e(listing.get("job_title")        or "Unknown Role")
+    company = e(listing.get("company")          or "Unknown Company")
+    tier    = e(listing.get("company_tier")     or "unknown")
+    loc     = e(listing.get("location_address") or "Not specified")
+    contact = e(listing.get("contact")          or "Not specified")
+    source  = e(listing.get("source")           or "")
+    url     = listing.get("url", "")            # raw URL — not HTML-escaped (used in href)
 
     lines = [
-        f"{badge} <b>Walk-In Alert</b>  |  Score: <b>{score}/10</b>",
+        f"{badge} <b>Job Alert</b>  |  Score: <b>{score}/10</b>",
         "",
         f"<b>Role:</b> {title}",
         f"<b>Company:</b> {company} <i>({tier})</i>",
-        f"<b>Date:</b> {date_val}",
-        f"<b>Time:</b> {time_val}",
-        f"<b>Venue:</b> {location}",
+        f"<b>Location:</b> {loc}",
         f"<b>Contact:</b> {contact}",
         "",
-        f"<b>Summary:</b> {summary}",
-        "",
         "<b>Red flags:</b>",
-        flags_text,
+        flags_lines,
         "",
         f"<b>Source:</b> {source}",
     ]
 
     if url:
-        lines.append(f'<a href="{url}">View Original Listing →</a>')
-
-
+        lines.append(f'<a href="{url}">View Listing →</a>')
 
     return "\n".join(lines)
 
 
 # =============================================================================
-# FUNCTION: Send a summary header before the per-listing alerts
+# FUNCTION: Summary header sent before per-listing alerts
 # =============================================================================
 
 def send_run_header(total_scraped: int, total_passed: int) -> None:
-    """Send a single summary message at the start of a scan run."""
-    # Use timezone-aware UTC
-    now = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+    """One summary message at the top of each scan run."""
+    now  = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
     text = (
-        f"🔍 <b>Walk-In Scanner Run</b> — {now}\n"
-        f"Scraped <b>{total_scraped}</b> listings across all sources.\n"
-        f"<b>{total_passed}</b> passed legitimacy threshold — alerts below 👇"
-
-
-
-
-
-
-
-
-        )
+        f"🔍 <b>Job Scanner Run</b> — {now}\n"
+        f"Scraped <b>{total_scraped}</b> listings across LinkedIn &amp; Indeed.\n"
+        f"<b>{total_passed}</b> passed the relevance threshold — alerts below 👇"
+    )
     send_message(text)
-
-
-
 
 
 # =============================================================================
@@ -270,38 +175,17 @@ def notify_all(new_listings: list, total_scraped: int) -> None:
         success = send_message(message)
 
         if success:
-
-
-
-
-
-
-
-
-
             logger.info(
-                f"Notified: {listing.get('company', '?')} | "
-                f"{listing.get('job_title', '?')}"
+                "Notified: %s | %s",
+                listing.get("company", "?"),
+                listing.get("job_title", "?"),
             )
         else:
             logger.error(
-                f"Notification failed for: {listing.get('company', '?')} | "
-                f"{listing.get('job_title', '?')}"
+                "Notification failed for: %s | %s",
+                listing.get("company", "?"),
+                listing.get("job_title", "?"),
             )
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        # Telegram rate limit: ~30 msg/sec. 1s sleep is safe.
+        # Telegram allows ~30 messages/sec; 1s gap is well within safe limits
         time.sleep(1)
