@@ -1,92 +1,100 @@
-# =============================================================================
-# config.py
-# =============================================================================
+"""
+config.py — Central configuration for the Walk-In Job Alert scanner.
+"""
 
+# ── AI Scoring ────────────────────────────────────────────────────────────────
+GROQ_MODEL = "llama-3.1-8b-instant"       # Current free-tier fast model (llama3-8b-8192 deprecated)
+SCORE_THRESHOLD = 6                        # Listings below this score are dropped
+
+# ── Role Targeting ────────────────────────────────────────────────────────────
+# All keywords are matched case-insensitively against title + description.
+# Organised by bucket — add/remove freely.
 TARGET_ROLES = [
-    # Security
-    "application security", "appsec", "app sec",
-    "security analyst", "sec analyst", "security engineer",
-    "information security", "infosec", "cybersecurity", "cyber security",
-    "social engineer", "social engineering",
-    "penetration tester", "pentester", "vapt",
-    "soc analyst", "soc engineer", "threat analyst",
-    "vulnerability analyst", "security operations",
-    "network security", "cloud security",
-    # GRC / Compliance
-    "grc", "governance risk compliance",
-    "compliance analyst", "compliance officer", "compliance executive",
-    "regulatory compliance", "it compliance",
-    "audit analyst", "internal audit", "it audit",
-    "policy analyst",
-    # Risk
-    "risk analyst", "risk associate", "risk officer",
-    "credit risk", "operational risk", "market risk", "enterprise risk",
-    "risk management",
-    # Fraud / ORC
-    "fraud analyst", "fraud investigator", "fraud detection",
-    "anti-fraud", "anti money laundering", "aml analyst",
-    "orc analyst", "organized retail crime", "loss prevention",
-    "financial crimes", "transaction monitoring",
-    # Intern / Entry-level
-    "intern", "internship", "trainee", "fresher", "graduate trainee",
-    "junior analyst", "associate analyst", "entry level",
+    # ── SOC / Blue Team ──────────────────────────────────────────────────────
+    "soc analyst", "soc l1", "soc l2", "security operations",
+    "security monitoring", "siem analyst", "splunk analyst",
+    "incident response", "threat detection",
+
+    # ── AppSec / Secure Development ──────────────────────────────────────────
+    "application security", "appsec", "appsec engineer",
+    "secure code review", "sast", "dast", "security engineer",
+    "devsecops",
+
+    # ── VAPT / Offensive Security ─────────────────────────────────────────────
+    "vapt", "penetration test", "penetration tester", "pentest",
+    "ethical hacker", "ethical hacking", "red team", "bug bounty",
+    "offensive security",
+
+    # ── Vulnerability Management ─────────────────────────────────────────────
+    "vulnerability assessment", "vulnerability management",
+    "patch management", "threat assessment", "security assessment",
+    "cvss", "cve analyst",
+
+    # ── GRC / Compliance / Policy ─────────────────────────────────────────────
+    "grc analyst", "grc", "governance risk compliance",
+    "compliance analyst", "regulatory compliance",
+    "iso 27001", "iso27001", "nist", "pci dss", "data privacy",
+    "gdpr", "dpo", "privacy analyst",
+
+    # ── IT Audit / IS Audit ───────────────────────────────────────────────────
+    "it audit", "is audit", "information systems audit",
+    "internal audit", "it risk", "itgc", "cisa",
+
+    # ── Risk Analyst (BFSI) ───────────────────────────────────────────────────
+    "risk analyst", "operational risk", "credit risk",
+    "market risk", "enterprise risk", "basel", "rcsa",
+    "risk management", "risk associate",
+
+    # ── Fraud / AML / KYC / FinCrime ─────────────────────────────────────────
+    "fraud analyst", "aml analyst", "kyc analyst",
+    "anti-money laundering", "transaction monitoring",
+    "financial crime", "fincrime", "sanctions analyst",
+    "orc analyst", "loss prevention",
+
+    # ── Network / Cloud / IAM / DLP ──────────────────────────────────────────
+    "network security", "cloud security", "iam analyst",
+    "identity access management", "dlp analyst", "pam",
+    "zero trust", "firewall analyst", "nac",
+
+    # ── General InfoSec / Entry Level ────────────────────────────────────────
+    "cybersecurity", "cyber security", "information security",
+    "infosec", "security analyst", "security intern",
+    "cybersecurity intern", "security trainee", "security fresher",
+    "cyber analyst",
 ]
 
-WALKIN_KEYWORDS = [
-    "walk-in", "walk in", "walkin",
-    "walk-in interview", "walk in interview", "walkin interview",
-    "direct interview", "direct hiring", "no appointment",
-    "mega drive", "hiring drive", "recruitment drive",
-    "campus drive", "open house", "spot offer", "fresher drive",
-]
-
-BANGALORE_KEYWORDS = [
-    "bangalore", "bengaluru", "blr",
-    "koramangala", "whitefield", "electronic city",
-    "indiranagar", "hsr layout", "btm layout",
-    "marathahalli", "sarjapur", "bellandur",
-    "hebbal", "yeshwanthpur", "jayanagar",
-    "jp nagar", "manyata", "ecospace",
-    "bagmane", "brookefield",
-]
-
+# ── Known MNCs / Top Employers ────────────────────────────────────────────────
+# Listings from these companies get a +1 score bonus.
 KNOWN_MNCS = [
-    "infosys", "wipro", "tcs", "hcl", "tech mahindra", "cognizant",
-    "accenture", "ibm", "capgemini", "oracle", "microsoft", "google",
-    "amazon", "aws", "deloitte", "ey", "kpmg", "pwc",
-    "cisco", "hp", "dell", "sap", "salesforce", "servicenow",
-    "dxc", "ntt", "atos", "unisys", "mindtree", "mphasis",
-    "hexaware", "ltimindtree", "persistent", "birlasoft",
-    # BFSI — relevant for fraud/risk/compliance roles
-    "hdfc", "icici", "axis bank", "kotak", "sbi", "rbi",
+    # Big Tech / IT Services
+    "accenture", "ibm", "deloitte", "kpmg", "pwc", "ey", "ernst",
+    "wipro", "infosys", "tcs", "hcl", "cognizant", "capgemini",
+    "tech mahindra", "mphasis", "hexaware", "niit technologies",
+    "lt infotech", "l&t technology",
+
+    # Cybersecurity Specialists
+    "palo alto", "crowdstrike", "mandiant", "google cloud",
+    "microsoft", "cisco", "symantec", "mcafee", "fortinet",
+    "secureworks", "qualys", "rapid7", "tenable",
+    "check point", "cyberark", "sailpoint",
+
+    # BFSI — Banks & Financial Services
+    "hdfc bank", "icici bank", "axis bank", "kotak mahindra",
+    "sbi", "state bank", "yes bank", "indusind",
     "jpmorgan", "jp morgan", "goldman sachs", "morgan stanley",
-    "citibank", "hsbc", "barclays", "standard chartered",
-    "bajaj finserv", "paytm", "phonepe", "razorpay",
+    "citi", "citibank", "barclays", "deutsche bank", "bnp paribas",
+    "hsbc", "standard chartered", "rbs", "credit suisse",
+    "societe generale", "ubs",
+
+    # BFSI — Insurance & Fintech
+    "bajaj finserv", "bajaj allianz", "hdfc life",
+    "icici prudential", "max life", "aditya birla",
+    "razorpay", "paytm", "phonepe", "policybazaar",
+
+    # Big 4 Consulting (GRC heavy)
+    "deloitte", "pwc", "kpmg", "ey", "bdo", "grant thornton",
+
+    # Global Capability Centres (GCCs)
+    "wells fargo", "american express", "amex", "mastercard",
+    "visa", "paypal", "stripe", "fidelity", "blackrock", "state street",
 ]
-
-MIN_LEGITIMACY_SCORE = 5
-
-# llama-3.1-8b-instant: current recommended free-tier fast model
-# (llama3-8b-8192 is deprecated as of mid-2025)
-GROQ_MODEL = "llama-3.1-8b-instant"
-
-SHEET_COLUMNS = [
-    "scraped_at",
-    "job_title",
-    "company",
-    "company_tier",
-    "walk_in_date",
-    "walk_in_time",
-    "location_address",
-    "contact",
-    "legitimacy_score",
-    "red_flags",
-    "source",
-    "url",
-    "status",
-]
-
-# Active sources (LinkedIn, Indeed, Glassdoor, Naukri)
-# ZipRecruiter dropped: US/Canada only by design
-# Google Jobs dropped: needs browser-session query syntax
-ACTIVE_SOURCES = ["linkedin", "indeed", "glassdoor", "naukri"]
