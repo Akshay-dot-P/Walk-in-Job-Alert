@@ -8,11 +8,15 @@
 #   2. DEDUPLICATION ENGINE — prevents re-alerting the same listing
 #   3. HUMAN DASHBOARD      — filterable, sortable by a human in a browser
 #
-# DEDUPLICATION STRATEGY (fixed from original):
-# Primary key: job URL (fast, unambiguous)
-# Fallback key: company name + walk-in date (catches same event reposted
-#               with different URLs on different portals)
-# The original code used only company+date which missed URL-based duplication.
+# DEDUPLICATION STRATEGY:
+# Primary key  : job URL (fast, unambiguous)
+# Fallback key : company name + job title
+#
+# The fallback was previously company + walk_in_date, but walk_in_date is
+# always null for online job listings (the project moved away from walk-ins).
+# That meant the fallback NEVER matched anything, silently allowing the same
+# role scraped from LinkedIn AND Glassdoor to produce two separate alerts.
+# company + job_title correctly catches cross-portal duplicates.
 # =============================================================================
 
 import os
@@ -63,7 +67,6 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
     except gspread.SpreadsheetNotFound:
         logger.info(f"Sheet '{sheet_name}' not found — creating it automatically.")
         spreadsheet = gc.create(sheet_name)
-        # Share with the service account itself so it can write to it
         logger.info(
             "Sheet created. Remember to share it with your service account email "
             "if you haven't already."
@@ -94,20 +97,29 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
 def _build_seen_sets(worksheet) -> tuple[set[str], set[str]]:
     """
     Read the full sheet once and return two sets for fast O(1) dedup lookups:
-      seen_urls         — all job URLs already stored
-      seen_company_dates — all "company|walk_in_date" pairs already stored
+      seen_urls           — all job URLs already stored
+      seen_company_titles — all "company|job_title" pairs already stored
 
     Reading the whole sheet once (rather than querying per-listing) is much
-    faster for batches of 50-150 listings.
+    faster for batches of 50-150 listings — one API call instead of N calls.
+
+    Why company+title as the fallback key?
+    The same role is routinely posted on LinkedIn, Indeed, and Glassdoor with
+    different URLs. Without a fallback, all three would pass the URL check and
+    produce three identical Telegram alerts. company+title collapses them into
+    one. It is not a perfect key (two genuinely different roles at the same
+    company could share a generic title) but it is far better than nothing,
+    and far better than the previous company+walk_in_date which was always
+    empty for online jobs.
     """
     seen_urls: set[str] = set()
-    seen_company_dates: set[str] = set()
+    seen_company_titles: set[str] = set()
 
     try:
         records = worksheet.get_all_records()
     except Exception as e:
         logger.error(f"Could not read sheet for dedup check: {e}")
-        return seen_urls, seen_company_dates
+        return seen_urls, seen_company_titles
 
     for row in records:
         url = str(row.get("url", "")).strip()
@@ -115,35 +127,35 @@ def _build_seen_sets(worksheet) -> tuple[set[str], set[str]]:
             seen_urls.add(url)
 
         company = str(row.get("company", "")).lower().strip()
-        date = str(row.get("walk_in_date", "")).strip()
-        if company and date:
-            seen_company_dates.add(f"{company}|{date}")
+        title   = str(row.get("job_title", "")).lower().strip()
+        if company and title:
+            seen_company_titles.add(f"{company}|{title}")
 
     logger.info(
         f"Dedup index built: {len(seen_urls)} unique URLs, "
-        f"{len(seen_company_dates)} company+date pairs in sheet"
+        f"{len(seen_company_titles)} company+title pairs in sheet"
     )
-    return seen_urls, seen_company_dates
+    return seen_urls, seen_company_titles
 
 
 def _is_duplicate(
     listing: dict,
     seen_urls: set[str],
-    seen_company_dates: set[str],
+    seen_company_titles: set[str],
 ) -> bool:
     """
     Return True if this listing is a duplicate of something already in the sheet.
 
-    Check 1 (primary): exact URL match
-    Check 2 (fallback): same company name + same walk-in date
+    Check 1 (primary)  : exact URL match
+    Check 2 (fallback) : same company name + same job title
     """
     url = str(listing.get("url", "")).strip()
     if url and url in seen_urls:
         return True
 
     company = str(listing.get("company", "")).lower().strip()
-    date = str(listing.get("walk_in_date", "")).strip()
-    if company and date and f"{company}|{date}" in seen_company_dates:
+    title   = str(listing.get("job_title", "")).lower().strip()
+    if company and title and f"{company}|{title}" in seen_company_titles:
         return True
 
     return False
@@ -186,7 +198,7 @@ def save_new_listings(scored_listings: list[dict]) -> list[dict]:
     and returns only the truly new subset (for Telegram notification).
 
     On sheet connection failure, returns all listings so notifications still
-    fire (better to re-alert than silently miss new walk-ins).
+    fire — better to re-alert than silently miss a new job posting.
     """
     try:
         worksheet = get_worksheet()
@@ -196,28 +208,29 @@ def save_new_listings(scored_listings: list[dict]) -> list[dict]:
         return scored_listings
 
     # Build dedup index once (one sheet read for the whole batch)
-    seen_urls, seen_company_dates = _build_seen_sets(worksheet)
+    seen_urls, seen_company_titles = _build_seen_sets(worksheet)
 
     new_listings = []
     for listing in scored_listings:
-        if _is_duplicate(listing, seen_urls, seen_company_dates):
+        if _is_duplicate(listing, seen_urls, seen_company_titles):
             logger.info(
-                f"Duplicate — skipping: {listing.get('company', '?')} "
-                f"on {listing.get('walk_in_date', '?')}"
+                f"Duplicate — skipping: {listing.get('company', '?')} | "
+                f"{listing.get('job_title', '?')}"
             )
             continue
 
         success = _save_listing(worksheet, listing)
         if success:
             new_listings.append(listing)
-            # Update our in-memory sets so we don't re-save within the same batch
+            # Update in-memory sets so same-batch duplicates are also caught
+            # without needing another round-trip to the sheet.
             url = str(listing.get("url", "")).strip()
             if url:
                 seen_urls.add(url)
             company = str(listing.get("company", "")).lower().strip()
-            date = str(listing.get("walk_in_date", "")).strip()
-            if company and date:
-                seen_company_dates.add(f"{company}|{date}")
+            title   = str(listing.get("job_title", "")).lower().strip()
+            if company and title:
+                seen_company_titles.add(f"{company}|{title}")
 
     logger.info(
         f"Storage complete: {len(new_listings)} new / "
