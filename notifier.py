@@ -1,239 +1,307 @@
 # =============================================================================
-# storage.py
+# notifier.py
 # =============================================================================
-# Handles all persistence to Google Sheets.
+# Sends Telegram messages for each new verified walk-in listing.
 #
-# Google Sheets serves three roles:
-#   1. PERSISTENT DATABASE  — every seen listing stored across runs
-#   2. DEDUPLICATION ENGINE — prevents re-alerting the same listing
-#   3. HUMAN DASHBOARD      — filterable, sortable by a human in a browser
+# How Telegram bots work:
+# You create a bot via BotFather (@BotFather). BotFather gives you a TOKEN.
+# To send messages, POST to:
+#   https://api.telegram.org/bot<TOKEN>/sendMessage
+# with JSON: { chat_id, text, parse_mode }
 #
-# DEDUPLICATION STRATEGY:
-# Primary key  : job URL (fast, unambiguous)
-# Fallback key : company name + job title
-#
-# The fallback was previously company + walk_in_date, but walk_in_date is
-# always null for online job listings (the project moved away from walk-ins).
-# That meant the fallback NEVER matched anything, silently allowing the same
-# role scraped from LinkedIn AND Glassdoor to produce two separate alerts.
-# company + job_title correctly catches cross-portal duplicates.
+# We use HTML parse mode (not MarkdownV2) because MarkdownV2 requires
+# escaping almost every punctuation character in dynamic content.
+# With HTML, only < > & need escaping, which we handle with e() below.
+
+
+
+
+
+
 # =============================================================================
 
 import os
-import json
+import time
 import logging
+import requests
 from datetime import datetime, timezone
 
-import gspread
-from google.oauth2.service_account import Credentials
 
-from config import SHEET_COLUMNS
+
+
+
 
 logger = logging.getLogger(__name__)
 
-# Google API scopes required
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
+TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
-# Sheet name — must match the actual Google Sheet name exactly (case-sensitive).
-# Share this sheet with your service account email from the JSON key file.
-DEFAULT_SHEET_NAME = "WalkIn Jobs Bangalore"
+
+
+
+
+
+
+
 
 
 # =============================================================================
-# FUNCTION: Connect to Google Sheets and return the worksheet
+# HELPER: HTML escape — defined first so all functions below can use it
 # =============================================================================
 
-def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
+def e(text) -> str:
     """
-    Authenticate via service account and return the first worksheet of the
-    named spreadsheet. Creates the sheet and headers if it doesn't exist yet.
+    Escape HTML special characters for Telegram HTML parse mode.
+    Must handle None gracefully since AI-extracted fields can be None.
     """
-    creds_json = os.environ.get("GOOGLE_CREDS_JSON", "")
-    if not creds_json:
-        raise EnvironmentError(
-            "GOOGLE_CREDS_JSON environment variable is not set. "
-            "Add your service account JSON as a GitHub secret."
+    if text is None:
+        return ""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
         )
 
-    creds_dict = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    gc = gspread.authorize(creds)
-
-    try:
-        spreadsheet = gc.open(sheet_name)
-    except gspread.SpreadsheetNotFound:
-        logger.info(f"Sheet '{sheet_name}' not found — creating it automatically.")
-        spreadsheet = gc.create(sheet_name)
-        logger.info(
-            "Sheet created. Remember to share it with your service account email "
-            "if you haven't already."
-        )
-
-    worksheet = spreadsheet.sheet1
-
-    # Bootstrap headers on a fresh/empty sheet
-    existing_headers = worksheet.row_values(1)
-    if not existing_headers:
-        logger.info("Setting up sheet headers (first run).")
-        worksheet.append_row(SHEET_COLUMNS)
-    elif existing_headers != SHEET_COLUMNS:
-        logger.warning(
-            f"Sheet headers don't match SHEET_COLUMNS. "
-            f"Expected: {SHEET_COLUMNS}\nFound: {existing_headers}\n"
-            "Data will still be written but column alignment may be off. "
-            "Clear the sheet and re-run to fix headers."
-        )
-
-    return worksheet
 
 
-# =============================================================================
-# FUNCTION: Build dedup sets from existing sheet data
-# =============================================================================
-
-def _build_seen_sets(worksheet) -> tuple[set[str], set[str]]:
-    """
-    Read the full sheet once and return two sets for fast O(1) dedup lookups:
-      seen_urls           — all job URLs already stored
-      seen_company_titles — all "company|job_title" pairs already stored
-
-    Reading the whole sheet once (rather than querying per-listing) is much
-    faster for batches of 50-150 listings — one API call instead of N calls.
-
-    Why company+title as the fallback key?
-    The same role is routinely posted on LinkedIn, Indeed, and Glassdoor with
-    different URLs. Without a fallback, all three would pass the URL check and
-    produce three identical Telegram alerts. company+title collapses them into
-    one. It is not a perfect key (two genuinely different roles at the same
-    company could share a generic title) but it is far better than nothing,
-    and far better than the previous company+walk_in_date which was always
-    empty for online jobs.
-    """
-    seen_urls: set[str] = set()
-    seen_company_titles: set[str] = set()
-
-    try:
-        records = worksheet.get_all_records()
-    except Exception as e:
-        logger.error(f"Could not read sheet for dedup check: {e}")
-        return seen_urls, seen_company_titles
-
-    for row in records:
-        url = str(row.get("url", "")).strip()
-        if url:
-            seen_urls.add(url)
-
-        company = str(row.get("company", "")).lower().strip()
-        title   = str(row.get("job_title", "")).lower().strip()
-        if company and title:
-            seen_company_titles.add(f"{company}|{title}")
-
-    logger.info(
-        f"Dedup index built: {len(seen_urls)} unique URLs, "
-        f"{len(seen_company_titles)} company+title pairs in sheet"
-    )
-    return seen_urls, seen_company_titles
 
 
-def _is_duplicate(
-    listing: dict,
-    seen_urls: set[str],
-    seen_company_titles: set[str],
-) -> bool:
-    """
-    Return True if this listing is a duplicate of something already in the sheet.
 
-    Check 1 (primary)  : exact URL match
-    Check 2 (fallback) : same company name + same job title
-    """
-    url = str(listing.get("url", "")).strip()
-    if url and url in seen_urls:
-        return True
 
-    company = str(listing.get("company", "")).lower().strip()
-    title   = str(listing.get("job_title", "")).lower().strip()
-    if company and title and f"{company}|{title}" in seen_company_titles:
-        return True
 
-    return False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # =============================================================================
-# FUNCTION: Save a single scored listing to the sheet
+# FUNCTION: Send a single Telegram message
 # =============================================================================
 
-def _save_listing(worksheet, listing: dict) -> bool:
+def send_message(text: str, parse_mode: str = "HTML") -> bool:
     """
-    Append a scored listing as a new row. Column order follows SHEET_COLUMNS.
-    """
-    try:
-        row = []
-        for col in SHEET_COLUMNS:
-            value = listing.get(col, "")
-            if col == "red_flags" and isinstance(value, list):
-                value = ", ".join(value)
-            row.append(str(value) if value is not None else "")
+    Send a single message to the configured Telegram chat.
+    Returns True on success, False on any failure.
 
-        # USER_ENTERED lets Google Sheets interpret dates as date cells, etc.
-        worksheet.append_row(row, value_input_option="USER_ENTERED")
-        logger.info(
-            f"Saved: {listing.get('company', '?')} | {listing.get('job_title', '?')}"
-        )
-        return True
-    except Exception as e:
-        logger.error(f"Failed to save listing to sheet: {e}")
+
+
+
+
+
+
+
+
+
+
+
+
+    """
+    token = os.environ.get("TELEGRAM_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+    if not token or not chat_id:
+        logger.error("TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set in environment")
         return False
 
 
-# =============================================================================
-# FUNCTION: Main entry point — deduplicate and save a batch of listings
-# =============================================================================
 
-def save_new_listings(scored_listings: list[dict]) -> list[dict]:
-    """
-    Deduplicates scored_listings against the Google Sheet, saves new ones,
-    and returns only the truly new subset (for Telegram notification).
+    url = TELEGRAM_API_BASE.format(token=token, method="sendMessage")
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode,
+        # Prevents Telegram from fetching link previews — cleaner + faster
+        "disable_web_page_preview": True,
+    }
 
-    On sheet connection failure, returns all listings so notifications still
-    fire — better to re-alert than silently miss a new job posting.
-    """
     try:
-        worksheet = get_worksheet()
-    except Exception as e:
-        logger.error(f"Cannot connect to Google Sheets: {e}")
-        logger.warning("Proceeding with all listings as 'new' (sheet unavailable).")
-        return scored_listings
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+        return True
+    except requests.exceptions.HTTPError as exc:
+        # 400 usually means bad HTML — log the Telegram error message
+        logger.error(f"Telegram HTTP error: {exc}")
+        logger.error(f"Telegram response: {response.text[:500]}")
+        return False
+    except Exception as exc:
+        logger.error(f"Telegram send error: {exc}")
+        return False
 
-    # Build dedup index once (one sheet read for the whole batch)
-    seen_urls, seen_company_titles = _build_seen_sets(worksheet)
 
-    new_listings = []
-    for listing in scored_listings:
-        if _is_duplicate(listing, seen_urls, seen_company_titles):
+
+
+
+
+
+# =============================================================================
+# FUNCTION: Format a single listing as a Telegram HTML message
+# =============================================================================
+
+def format_listing_message(listing: dict) -> str:
+
+
+
+
+    """
+    Build a well-formatted HTML Telegram message for one walk-in listing.
+    Uses e() to safely escape all dynamic content.
+
+
+    """
+    score = listing.get("legitimacy_score", 0)
+
+    # Quality badge — users see this at a glance before reading details
+    if score >= 8:
+        badge = "✅"   # High confidence — definitely attend
+    elif score >= 6:
+        badge = "🟡"   # Reasonable — worth verifying
+    else:
+        badge = "⚠️"   # Low confidence — extra verification needed
+
+    # Red flags list
+    red_flags = listing.get("red_flags", [])
+    if red_flags:
+        flags_text = "\n".join(f"  • {e(flag)}" for flag in red_flags)
+    else:
+        flags_text = "  None detected"
+
+    # Extract and escape all fields
+    title    = e(listing.get("job_title") or "Unknown Role")
+    company  = e(listing.get("company") or "Unknown Company")
+    tier     = e(listing.get("company_tier") or "unknown")
+    date_val = e(listing.get("walk_in_date") or "Not specified")
+    time_val = e(listing.get("walk_in_time") or "Not specified")
+    location = e(listing.get("location_address") or "Not specified")
+    contact  = e(listing.get("contact") or "Not specified")
+    summary  = e(listing.get("summary") or "")
+    source   = e(listing.get("source") or "")
+    url      = listing.get("url", "")  # Raw URL — not escaped (used in href)
+
+    lines = [
+        f"{badge} <b>Walk-In Alert</b>  |  Score: <b>{score}/10</b>",
+        "",
+        f"<b>Role:</b> {title}",
+        f"<b>Company:</b> {company} <i>({tier})</i>",
+        f"<b>Date:</b> {date_val}",
+        f"<b>Time:</b> {time_val}",
+        f"<b>Venue:</b> {location}",
+        f"<b>Contact:</b> {contact}",
+        "",
+        f"<b>Summary:</b> {summary}",
+        "",
+        "<b>Red flags:</b>",
+        flags_text,
+        "",
+        f"<b>Source:</b> {source}",
+    ]
+
+    if url:
+        lines.append(f'<a href="{url}">View Original Listing →</a>')
+
+
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# FUNCTION: Send a summary header before the per-listing alerts
+# =============================================================================
+
+def send_run_header(total_scraped: int, total_passed: int) -> None:
+    """Send a single summary message at the start of a scan run."""
+    # Use timezone-aware UTC
+    now = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+    text = (
+        f"🔍 <b>Walk-In Scanner Run</b> — {now}\n"
+        f"Scraped <b>{total_scraped}</b> listings across all sources.\n"
+        f"<b>{total_passed}</b> passed legitimacy threshold — alerts below 👇"
+
+
+
+
+
+
+
+
+        )
+    send_message(text)
+
+
+
+
+
+# =============================================================================
+# FUNCTION: Main entry point — send all new listing notifications
+# =============================================================================
+
+def notify_all(new_listings: list, total_scraped: int) -> None:
+    """
+    Send a header summary, then one Telegram message per new listing.
+    Called by scanner.py after storage.py returns the truly new subset.
+    """
+    if not new_listings:
+        logger.info("No new listings to notify about")
+        return
+
+    send_run_header(total_scraped, len(new_listings))
+
+    for listing in new_listings:
+        message = format_listing_message(listing)
+        success = send_message(message)
+
+        if success:
+
+
+
+
+
+
+
+
+
             logger.info(
-                f"Duplicate — skipping: {listing.get('company', '?')} | "
+                f"Notified: {listing.get('company', '?')} | "
                 f"{listing.get('job_title', '?')}"
             )
-            continue
+        else:
+            logger.error(
+                f"Notification failed for: {listing.get('company', '?')} | "
+                f"{listing.get('job_title', '?')}"
+            )
 
-        success = _save_listing(worksheet, listing)
-        if success:
-            new_listings.append(listing)
-            # Update in-memory sets so same-batch duplicates are also caught
-            # without needing another round-trip to the sheet.
-            url = str(listing.get("url", "")).strip()
-            if url:
-                seen_urls.add(url)
-            company = str(listing.get("company", "")).lower().strip()
-            title   = str(listing.get("job_title", "")).lower().strip()
-            if company and title:
-                seen_company_titles.add(f"{company}|{title}")
 
-    logger.info(
-        f"Storage complete: {len(new_listings)} new / "
-        f"{len(scored_listings) - len(new_listings)} duplicates skipped"
-    )
-    return new_listings
+
+
+
+
+
+
+
+
+
+
+
+
+
+        # Telegram rate limit: ~30 msg/sec. 1s sleep is safe.
+        time.sleep(1)
