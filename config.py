@@ -1,197 +1,125 @@
-"""
-config.py — Single source of truth for all constants.
-"""
-import os
-
-# ── Google Sheets ─────────────────────────────────────────────────────────────
-SHEET_NAME     = "WalkIn Jobs Bangalore"
-WORKSHEET_NAME = "Jobs"
-
-# Matches your actual sheet header row exactly.
-# walk_in_date / walk_in_time REMOVED — project now scrapes online jobs, not walk-ins.
-# fit_for_fresher + reasoning ADDED — AI verdicts surfaced directly in the sheet
-# so you can filter and sort without reading every Telegram message.
-SHEET_COLUMNS = [
-    "scraped_at",
-    "job_title",
-    "company",
-    "company_tier",
-    "location_address",
-    "contact",
-    "legitimacy_score",
-    "fit_for_fresher",   # "Yes" / "No" — can a 0-exp Sec+ holder realistically apply?
-    "reasoning",         # one-sentence AI explanation of the score
-    "red_flags",
-    "source",
-    "url",
-    "status",
-]
-
-# ── AI Scoring ────────────────────────────────────────────────────────────────
-GROQ_MODEL           = "llama-3.1-8b-instant"
-SCORE_THRESHOLD      = 6
-MIN_LEGITIMACY_SCORE = SCORE_THRESHOLD   # alias used by scanner.py
-
-# ── Secrets ───────────────────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN      = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID        = os.environ.get("TELEGRAM_CHAT_ID", "")
-GROQ_API_KEY            = os.environ.get("GROQ_API_KEY", "")
-GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
-
-# ── Role Targeting ────────────────────────────────────────────────────────────
 TARGET_ROLES = [
     # SOC / Blue Team
-    "soc analyst", "soc l1", "soc l2", "security operations",
-    "security monitoring", "siem analyst", "splunk analyst",
-    "incident response", "threat detection",
-    # AppSec / DevSecOps
-    "application security", "appsec", "appsec engineer",
-    "secure code review", "sast", "dast", "security engineer", "devsecops",
-    # VAPT / Pentest
-    "vapt", "penetration test", "penetration tester", "pentest",
-    "ethical hacker", "ethical hacking", "red team", "bug bounty",
-    "offensive security",
-    # Vulnerability Management
-    "vulnerability assessment", "vulnerability management",
-    "patch management", "threat assessment", "security assessment",
-    "cvss", "cve analyst",
-    # GRC / Compliance
-    "grc analyst", "grc", "governance risk compliance",
-    "compliance analyst", "regulatory compliance",
-    "iso 27001", "iso27001", "nist", "pci dss", "data privacy",
-    "gdpr", "dpo", "privacy analyst",
-    # IT / IS Audit
-    "it audit", "is audit", "information systems audit",
-    "internal audit", "it risk", "itgc", "cisa",
-    # Risk Analyst (BFSI)
-    "risk analyst", "operational risk", "credit risk",
-    "market risk", "enterprise risk", "basel", "rcsa",
-    "risk management", "risk associate",
-    # Fraud / AML / KYC
-    "fraud analyst", "aml analyst", "kyc analyst",
-    "anti-money laundering", "transaction monitoring",
-    "financial crime", "fincrime", "sanctions analyst",
-    "orc analyst", "loss prevention",
-    # Network / Cloud / IAM / DLP
-    "network security", "cloud security", "iam analyst",
-    "identity access management", "dlp analyst", "pam",
-    "zero trust", "firewall analyst",
-    # General InfoSec / Intern / Fresher
-    "cybersecurity", "cyber security", "information security",
-    "infosec", "security analyst", "security intern",
-    "cybersecurity intern", "security trainee", "security fresher",
-    "cyber analyst",
+    "soc analyst", "security operations", "blue team", "cyber defense analyst",
+    "l1 analyst", "l2 analyst", "tier 1 analyst", "tier 2 analyst",
+    # SIEM
+    "siem analyst", "siem engineer", "splunk analyst", "qradar", "sentinel analyst",
+    "security monitoring analyst", "log analysis",
     # Threat Intelligence
-    "threat intelligence", "cyber threat intelligence", "cti analyst",
-    "threat hunter", "threat hunting", "ioc analyst",
-    # DFIR / Malware Analysis
-    "dfir", "digital forensics", "forensic analyst", "malware analyst",
-    "malware reverse engineering", "reverse engineer", "incident handler",
-    "memory forensics",
-    # Security Architecture
-    "security architect", "cloud security architect",
-    "enterprise security architect", "solution security architect",
-    # Endpoint / EDR
-    "endpoint security", "edr analyst", "xdr analyst",
-    "endpoint detection", "carbon black", "crowdstrike analyst",
-    # Third-Party / Vendor Risk
-    "vendor risk", "third party risk", "tprm",
-    "supply chain risk", "vendor assessment",
-    # OT / ICS / SCADA (niche but growing)
-    "ot security", "ics security", "scada security",
-    "operational technology security", "industrial cybersecurity",
-    # Cloud-native security (AWS/Azure/GCP specific)
-    "aws security", "azure security", "gcp security",
-    "cloud compliance", "cloud governance", "cnapp",
-    "casb analyst", "cloud posture",
-    # ── Internship / Entry-Level / Fresher ────────────────────────────────────
-    # These are the titles explicitly welcoming 0-experience candidates.
-    # Indian job portals use all of these phrasings — every variant is needed
-    # because portals like Naukri, LinkedIn India, and Indeed India each use
-    # different vocabulary for the same type of role.
-    "security intern", "infosec intern",
-    "soc intern", "it security intern", "network security intern",
-    "cloud security intern", "security operations intern",
-    "cyber fresher", "it security fresher",
-    "soc fresher", "security graduate trainee", "graduate security analyst",
-    "security associate trainee", "junior security analyst",
-    "junior soc analyst", "junior infosec analyst",
-    "junior cybersecurity analyst", "entry level security",
-    "entry level soc", "entry level analyst",
+    "threat intelligence", "cti analyst", "threat hunting", "osint analyst",
+    "threat research", "dark web analyst",
+    # Incident Response / DFIR
+    "incident response", "ir analyst", "dfir", "digital forensics",
+    "computer forensics", "ediscovery", "forensic analyst", "forensic investigator",
+    # VAPT / Pentest
+    "vapt", "penetration test", "ethical hacker", "pentest", "red team",
+    "bug bounty", "vulnerability researcher", "offensive security",
+    "web application pentest", "network pentest", "mobile pentest", "api security",
+    # Vulnerability Management
+    "vulnerability analyst", "vulnerability management", "va analyst",
+    "patch management", "qualys", "tenable", "nessus", "threat assessment",
+    # AppSec / DevSecOps
+    "application security", "appsec", "devsecops", "dast", "sast",
+    "secure code review", "software security", "product security",
+    # Network / Infra Security
+    "network security", "firewall engineer", "ids ips", "palo alto",
+    "fortinet", "cisco security", "endpoint security", "systems security",
+    "infrastructure security",
+    # Cloud Security
+    "cloud security", "aws security", "azure security", "gcp security",
+    "cspm", "cloud compliance", "cloud iam", "cloud forensic", "ccsp",
+    "cloud security officer", "ccso",
+    # IAM / PAM / DLP
+    "iam analyst", "identity access management", "pam analyst",
+    "privileged access", "dlp analyst", "data loss prevention",
+    "sailpoint", "cyberark", "okta analyst", "zero trust", "idam",
+    "access governance", "identity governance",
+    # GRC
+    "grc analyst", "it grc", "cyber grc", "iso 27001", "soc 2 analyst",
+    "nist analyst", "third party risk", "tprm", "vendor risk",
+    "supply chain risk", "cis controls",
+    # IT Audit / IS Audit
+    "it audit", "is audit", "it auditor", "itgc", "cisa",
+    "technology audit", "cyber audit", "internal audit",
+    # Risk
+    "risk analyst", "operational risk", "cyber risk", "it risk",
+    "enterprise risk", "erm analyst", "rcsa", "basel analyst",
+    "business continuity", "bcp analyst", "dr analyst", "loss event",
+    # Compliance
+    "compliance analyst", "regulatory compliance", "pci dss", "sox compliance",
+    "rbi compliance", "sebi compliance", "irdai compliance", "pdpb",
+    "data governance", "compliance monitoring",
+    # Fraud / AML / KYC
+    "fraud analyst", "fraud detection", "aml analyst", "anti-money laundering",
+    "kyc analyst", "kyc associate", "transaction monitoring",
+    "financial crime", "fcrm", "sanctions analyst", "ubo analyst",
+    "cdd analyst", "str analyst", "cft analyst",
+    # Privacy
+    "data privacy", "privacy analyst", "dpo", "data protection",
+    "gdpr analyst", "pdpb analyst", "privacy compliance", "cipp",
+    "consent management", "privacy engineer",
+    # Malware / Forensics
+    "malware analyst", "malware researcher", "sandbox analyst",
+    "reverse engineer", "binary analysis", "memory forensics",
+    "mobile forensics", "cryptographer",
+    # General
+    "cybersecurity analyst", "security analyst", "information security",
+    "infosec analyst", "cyber analyst", "security engineer",
+    "security awareness", "security researcher",
+    # Indian market specific titles
+    "associate security analyst", "junior security officer",
+    "executive information security", "technology risk associate",
+    "cyber risk associate", "security management trainee",
+    "security graduate trainee", "security officer trainee",
     "security apprentice",
-    # Tier-1 SOC / helpdesk-adjacent titles reachable at 0 exp — important
-    # stepping-stone roles that Sec+ holders are specifically targeted for
-    "soc tier 1", "tier 1 soc", "l1 soc analyst", "soc analyst l1",
-    "security analyst l1", "security analyst level 1",
-    "it security support", "security helpdesk", "security support analyst",
-    # Common phrasing on Indian portals for no-experience roles
-    "fresher security analyst", "security analyst fresher",
-    "0-1 year security", "0-2 year security",
+    # INTERN titles — every variant used by Indian recruiters
+    "security intern", "cybersecurity intern", "cyber security intern",
+    "infosec intern", "soc intern", "grc intern", "it audit intern",
+    "risk intern", "compliance intern", "cloud security intern",
+    "network security intern", "fraud analyst intern", "kyc intern",
+    "aml intern", "threat intelligence intern", "vapt intern",
+    "penetration testing intern", "data privacy intern",
+    "appsec intern", "devsecops intern", "security research intern",
+    "vulnerability assessment intern", "iam intern",
 ]
 
-# ── Known MNCs (score bonus) ──────────────────────────────────────────────────
-KNOWN_MNCS = [
-    "accenture", "ibm", "deloitte", "kpmg", "pwc", "ey", "ernst",
-    "wipro", "infosys", "tcs", "hcl", "cognizant", "capgemini",
-    "tech mahindra", "mphasis", "hexaware",
-    "palo alto", "crowdstrike", "mandiant", "microsoft", "cisco",
-    "symantec", "mcafee", "fortinet", "secureworks", "qualys",
-    "rapid7", "tenable", "check point", "cyberark", "sailpoint",
-    "hdfc bank", "icici bank", "axis bank", "kotak mahindra",
-    "sbi", "state bank", "yes bank", "indusind",
-    "jpmorgan", "jp morgan", "goldman sachs", "morgan stanley",
-    "citi", "citibank", "barclays", "deutsche bank", "bnp paribas",
-    "hsbc", "standard chartered", "societe generale", "ubs",
-    "bajaj finserv", "bajaj allianz", "hdfc life", "icici prudential",
-    "max life", "aditya birla", "razorpay", "paytm", "phonepe",
-    "wells fargo", "american express", "amex", "mastercard",
-    "visa", "paypal", "fidelity", "blackrock", "state street",
-    "bdo", "grant thornton",
+WALKIN_KEYWORDS = [
+    "walk-in", "walk in", "walkin",
+    "walk-in interview", "walk in interview", "walkin interview",
+    "direct interview", "direct hiring",
+    "mega drive", "hiring drive", "recruitment drive",
+    "campus drive", "open house", "spot offer",
 ]
 
-# ── Entry-Level / Fresher Targeting ──────────────────────────────────────────
-# These three lists are injected directly into the Groq AI scoring prompt,
-# giving the model an explicit rubric instead of asking it to guess.
-# Think of them as the AI's marking scheme — the more specific you make them,
-# the more consistent and useful the scores will be.
-
-# Jobs mentioning any of these phrases score HIGHER — they are reachable for
-# a Sec+ holder with 0 experience. The AI will also set fit_for_fresher=true.
-ENTRY_LEVEL_BOOST_KEYWORDS = [
-    "fresher", "freshers welcome", "freshers can apply",
-    "0 experience", "no experience required", "entry level", "entry-level",
-    "0-1 year", "0-2 years", "0 to 1 year", "0 to 2 years",
-    "recent graduate", "fresh graduate", "campus hire", "campus recruitment",
-    "trainee", "apprentice", "graduate program", "graduate trainee",
-    "security+", "sec+", "comptia security+", "comptia",
-    "certification preferred", "cert holders welcome",
-    "will train", "training provided", "on the job training",
+# Intern-specific detection keywords
+INTERN_KEYWORDS = [
+    "intern", "internship", "trainee", "apprentice",
+    "stipend", "6 month internship", "3 month internship",
+    "summer intern", "winter intern", "fellowship",
+    "graduate trainee", "management trainee",
+    "campus hire", "fresher program", "graduate program",
+    "associate program", "entry program",
 ]
 
-# Jobs mentioning any of these are OUT OF REACH right now — the AI will lower
-# the score and set fit_for_fresher=false so these don't flood your alerts.
-# A job can be 100% legitimate and still be wrong for a 0-exp candidate.
-EXPERIENCE_MISMATCH_KEYWORDS = [
-    "5+ years", "6+ years", "7+ years", "8+ years", "10+ years",
-    "minimum 3 years", "minimum 4 years", "minimum 5 years",
-    "senior", "lead", "principal", "staff engineer",
-    "manager", "head of", "director", "vp ", "ciso",
-    "must have led", "proven track record of managing",
+BANGALORE_KEYWORDS = [
+    "bangalore", "bengaluru", "blr",
+    "koramangala", "whitefield", "electronic city",
+    "indiranagar", "hsr layout", "btm layout",
+    "marathahalli", "sarjapur", "bellandur",
+    "hebbal", "yeshwanthpur", "jp nagar",
+    "manyata", "ecospace", "bagmane", "brookefield",
 ]
 
-# Each red flag found lowers the score. Centralising these here means you only
-# need to update this list — the AI prompt picks them up automatically.
-RED_FLAG_KEYWORDS = [
-    "commission only", "own laptop required", "security deposit",
-    "registration fee", "processing fee", "pay to join", "pay to train",
-    "multi-level", "mlm", "network marketing",
-    "no salary mentioned", "earn from home", "unlimited income",
-    "whatsapp interview only", "contact on whatsapp to apply",
-    "no experience needed for senior",   # internal contradiction = red flag
-    "immediate joiner only",             # pressure tactic
-]
+# Lowered to 4 to catch intern/fresher postings which are often less formal
+MIN_LEGITIMACY_SCORE = 4
 
-# ── Scraper Behaviour ─────────────────────────────────────────────────────────
-MAX_JOB_AGE_DAYS  = 7    # ignore postings older than this many days
-MAX_JOBS_PER_RUN  = 50   # cap alerts per run to avoid Telegram flooding
-DEDUP_WINDOW_DAYS = 14   # skip a URL already seen in the last N days
+GROQ_MODEL = "llama3-8b-8192"
+
+SHEET_COLUMNS = [
+    "scraped_at", "job_title", "company", "company_tier",
+    "walk_in_date", "walk_in_time", "location_address",
+    "contact", "legitimacy_score", "red_flags",
+    "is_intern", "is_fresher_eligible", "experience_required",
+    "work_mode", "stipend_or_salary", "application_deadline",
+    "source", "url", "status",
+]
