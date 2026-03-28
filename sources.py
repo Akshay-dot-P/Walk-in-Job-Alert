@@ -1,101 +1,306 @@
 """
-sources.py — job scraping via python-jobspy (speedyapply fork)
+sources.py — comprehensive entry-level + intern cybersec/GRC/risk scraper
 
-Changes from previous version:
-- Removed all "walk-in" requirements from search terms (now scrapes online jobs too)
-- Added 10 broad entry-level cybersecurity / GRC / risk role search term buckets
-- Glassdoor: location changed to "Bengaluru" (official name; "Bangalore, India" fails geocoding → 400)
-- Glassdoor: added linkedin_fetch_recipient_url=False to suppress extra network calls
-- Naukri: REMOVED — GitHub Actions IPs are permanently blocked by Naukri's recaptcha (406).
-           No fix exists without a residential proxy. See README for workaround options.
-- Indeed: kept with graceful 0-result handling (intermittent from CI IPs)
+SOURCES:
+  1. LinkedIn Jobs      — 80 focused searches (max 4 OR terms each)
+  2. Google Jobs        — 10 broader searches (different index)
+  3. Indeed India       — 12 targeted searches
+  4. Glassdoor          — 10 searches
+  5. LinkedIn Posts     — 40 Google RSS queries (job board + hiring posts + intern posts)
+
+NAUKRI: permanently removed — GitHub Actions IPs blocked (HTTP 406 recaptcha).
+
+KEY DESIGN DECISIONS:
+  - Max 3-4 OR terms per LinkedIn search (beyond that LinkedIn silently drops terms)
+  - Intern searches are fully separate from fresher/entry-level searches
+  - LinkedIn Posts use Google RSS site:linkedin.com to find feed posts
+    that never appear on the LinkedIn jobs board
+  - Indian market titles explicitly included (associate, executive, trainee)
+  - Stipend/internship duration terms included for intern posts
 """
 
 import time
 import logging
-from datetime import datetime, timezone
-
-import pandas as pd
+import feedparser
 import jobspy
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ── Location ──────────────────────────────────────────────────────────────────
-LOCATION = "Bengaluru, Karnataka, India"   # official spelling fixes Glassdoor geocoding
-HOURS_OLD = 9                              # 3×/day runs ≈ 8h apart
-RESULTS_PER_TERM = 40                      # per search term per source
+# ── Locations ─────────────────────────────────────────────────────────────────
+LOCATION            = "Bengaluru, Karnataka, India"
+GLASSDOOR_LOCATION  = "Bengaluru"   # Glassdoor rejects "Bangalore, India" → HTTP 400
+HOURS_OLD           = 9
+RESULTS_PER_TERM    = 40
 
-# ── Search terms (walk-in removed — covers online + offline postings) ─────────
-#
-# 10 buckets covering every entry-level cybersecurity / GRC / risk role:
-#
-#  1. SOC / Blue Team         — SOC Analyst L1/L2, Security Operations, SIEM
-#  2. AppSec / DAST / SAST    — Application Security, AppSec Engineer, Code Review
-#  3. VAPT / Pentest          — Penetration Tester, Ethical Hacker, VAPT Engineer
-#  4. Vulnerability Mgmt      — VA Analyst, Patch Management, Threat Assessment
-#  5. GRC / Compliance        — GRC Analyst, ISO 27001, Compliance Analyst, DPO support
-#  6. IT / IS Audit           — IT Audit, IS Audit, Internal Audit, Big 4 GRC
-#  7. Risk Analyst            — Operational Risk, Credit Risk, Market Risk, Basel
-#  8. Fraud / AML / KYC       — Fraud Analyst, AML, KYC, Anti-Money Laundering
-#  9. Network / Cloud / IAM   — Network Security, Cloud Security, IAM, DLP, PAM
-# 10. General InfoSec / Intern — Cybersecurity fresher, InfoSec intern, trainee, graduate
-#
-SEARCH_TERMS = [
-    # 1. SOC / Blue Team
-    '("SOC analyst" OR "security operations" OR "L1 SOC" OR "L2 SOC" OR "SIEM analyst" OR "security monitoring") (fresher OR "entry level" OR junior OR trainee OR graduate OR "0-2 years" OR "0 to 2")',
+# ── Qualifier phrases ─────────────────────────────────────────────────────────
 
-    # 2. AppSec / DAST / SAST
-    '("application security" OR "appsec" OR "DAST" OR "SAST" OR "secure code review" OR "security engineer") (fresher OR "entry level" OR junior OR trainee OR graduate)',
+# For fresher / entry-level job searches
+FQ_FRESHER = (
+    '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
+    'OR graduate OR "0-2 years" OR "0 to 2 years" OR "upto 2 years" '
+    'OR "0-1 year" OR "less than 2 years" OR associate)'
+)
 
-    # 3. VAPT / Penetration Testing
-    '("VAPT" OR "penetration test" OR "ethical hacker" OR "offensive security" OR "red team" OR "bug bounty") (fresher OR "entry level" OR junior OR trainee OR "0-2 years")',
+# For intern searches specifically
+FQ_INTERN = (
+    '(intern OR internship OR stipend OR "6 month" OR "3 month" '
+    'OR "summer intern" OR "winter intern" OR apprentice '
+    'OR fellowship OR "graduate trainee" OR "management trainee")'
+)
 
-    # 4. Vulnerability Management
-    '("vulnerability assessment" OR "vulnerability management" OR "patch management" OR "threat assessment" OR "security assessment") (fresher OR "entry level" OR junior)',
+# Combined — catches both intern and fresher in one pass
+FQ_ALL = (
+    '(fresher OR "entry level" OR junior OR trainee OR intern OR internship '
+    'OR graduate OR stipend OR "0-2 years" OR "0 to 2 years" OR associate '
+    'OR apprentice OR fellowship)'
+)
 
-    # 5. GRC / Compliance
-    '("GRC analyst" OR "governance risk compliance" OR "ISO 27001" OR "compliance analyst" OR "regulatory compliance" OR "data privacy" OR "GDPR") (fresher OR "entry level" OR junior OR trainee)',
 
-    # 6. IT Audit / IS Audit
-    '("IT audit" OR "IS audit" OR "information systems audit" OR "internal audit" OR "CISA" OR "IT risk") (fresher OR "entry level" OR junior OR "0-2 years")',
+def qf(role: str) -> str:
+    """Role + fresher qualifier."""
+    return f"({role}) {FQ_FRESHER}"
 
-    # 7. Risk Analyst (BFSI focus)
-    '("risk analyst" OR "operational risk" OR "credit risk" OR "market risk" OR "Basel" OR "enterprise risk" OR "ORC" OR "loss prevention") (fresher OR "entry level" OR junior OR trainee)',
 
-    # 8. Fraud / AML / KYC
-    '("fraud analyst" OR "AML analyst" OR "KYC analyst" OR "anti-money laundering" OR "transaction monitoring" OR "financial crime") (fresher OR "entry level" OR junior OR trainee)',
+def qi(role: str) -> str:
+    """Role + intern qualifier."""
+    return f"({role}) {FQ_INTERN}"
 
-    # 9. Network / Cloud / IAM / DLP
-    '("network security" OR "cloud security" OR "IAM analyst" OR "identity access management" OR "DLP analyst" OR "PAM" OR "zero trust") (fresher OR "entry level" OR junior)',
 
-    # 10. General Cybersecurity / InfoSec / Intern
-    '("cybersecurity" OR "cyber security" OR "information security" OR "infosec") (fresher OR intern OR trainee OR "entry level" OR graduate OR "0-2 years") Bangalore',
+def qa(role: str) -> str:
+    """Role + combined qualifier (catches both)."""
+    return f"({role}) {FQ_ALL}"
+
+
+# =============================================================================
+# LINKEDIN SEARCH TERMS — 80 queries, max 3-4 OR terms each
+# Split into: A) FRESHER/ENTRY-LEVEL  B) INTERN-SPECIFIC
+# =============================================================================
+
+LINKEDIN_TERMS = [
+
+    # ── A. FRESHER / ENTRY-LEVEL (0-2 years) ──────────────────────────────
+
+    # SOC / Blue Team
+    qf('"SOC analyst" OR "L1 SOC analyst" OR "security operations analyst"'),
+    qf('"L2 SOC analyst" OR "tier 1 analyst" OR "blue team analyst"'),
+    qf('"cyber defense analyst" OR "security operations center analyst"'),
+
+    # SIEM
+    qf('"SIEM analyst" OR "SIEM engineer" OR "Splunk analyst"'),
+    qf('"QRadar analyst" OR "Microsoft Sentinel analyst" OR "security monitoring analyst"'),
+    qf('"log analysis analyst" OR "security event analyst" OR "SIEM administrator"'),
+
+    # Threat Intelligence
+    qf('"threat intelligence analyst" OR "CTI analyst" OR "cyber threat intelligence"'),
+    qf('"threat hunting analyst" OR "OSINT analyst" OR "threat research analyst"'),
+    qf('"dark web analyst" OR "intelligence analyst" OR "threat analyst"'),
+
+    # Incident Response / DFIR
+    qf('"incident response analyst" OR "IR analyst" OR "incident responder"'),
+    qf('"DFIR analyst" OR "digital forensics analyst" OR "cyber incident analyst"'),
+    qf('"forensic analyst" OR "eDiscovery analyst" OR "computer forensics analyst"'),
+
+    # VAPT / Pentest
+    qf('"VAPT engineer" OR "VAPT analyst" OR "penetration tester"'),
+    qf('"ethical hacker" OR "pentest engineer" OR "pentest analyst"'),
+    qf('"red team analyst" OR "offensive security analyst" OR "security researcher"'),
+    qf('"bug bounty" OR "vulnerability researcher" OR "web application pentest"'),
+    qf('"network pentest" OR "mobile pentest" OR "API security tester"'),
+
+    # Vulnerability Management
+    qf('"vulnerability analyst" OR "vulnerability management analyst"'),
+    qf('"VA analyst" OR "Qualys analyst" OR "Tenable analyst"'),
+    qf('"patch management analyst" OR "security assessment analyst"'),
+    qf('"vulnerability assessment analyst" OR "threat assessment analyst"'),
+
+    # AppSec / DevSecOps
+    qf('"application security engineer" OR "appsec engineer" OR "appsec analyst"'),
+    qf('"DevSecOps engineer" OR "DevSecOps analyst" OR "software security engineer"'),
+    qf('"DAST analyst" OR "SAST analyst" OR "secure code review analyst"'),
+    qf('"product security engineer" OR "security software developer"'),
+
+    # Network Security
+    qf('"network security engineer" OR "network security analyst"'),
+    qf('"firewall engineer" OR "firewall analyst" OR "IDS IPS analyst"'),
+    qf('"Palo Alto engineer" OR "Fortinet engineer" OR "Cisco security engineer"'),
+    qf('"endpoint security analyst" OR "systems security administrator"'),
+    qf('"infrastructure security analyst" OR "network security administrator"'),
+
+    # Cloud Security
+    qf('"cloud security analyst" OR "cloud security engineer"'),
+    qf('"cloud security architect" OR "cloud security administrator"'),
+    qf('"AWS security engineer" OR "Azure security engineer" OR "GCP security"'),
+    qf('"CSPM analyst" OR "cloud compliance analyst" OR "cloud IAM analyst"'),
+    qf('"cloud security auditor" OR "cloud forensic analyst"'),
+    qf('"chief cloud security officer" OR "CCSO" OR "cloud security officer"'),
+
+    # IAM / PAM / DLP
+    qf('"IAM analyst" OR "identity access management analyst" OR "IAM engineer"'),
+    qf('"PAM analyst" OR "privileged access management analyst" OR "CyberArk analyst"'),
+    qf('"DLP analyst" OR "data loss prevention analyst" OR "SailPoint analyst"'),
+    qf('"Okta analyst" OR "SSO engineer" OR "identity governance analyst"'),
+    qf('"zero trust analyst" OR "access governance analyst" OR "IDAM analyst"'),
+
+    # GRC
+    qf('"GRC analyst" OR "IT GRC analyst" OR "cyber GRC analyst"'),
+    qf('"ISO 27001 analyst" OR "SOC 2 analyst" OR "NIST analyst"'),
+    qf('"third party risk analyst" OR "TPRM analyst" OR "vendor risk analyst"'),
+    qf('"supply chain risk analyst" OR "CIS controls analyst" OR "GRC engineer"'),
+
+    # IT Audit / IS Audit
+    qf('"IT audit analyst" OR "IS audit analyst" OR "IT auditor"'),
+    qf('"information systems audit" OR "CISA" OR "ITGC analyst"'),
+    qf('"technology audit analyst" OR "cyber audit analyst"'),
+    qf('"internal audit IT" OR "Big 4 IT audit" OR "security audit analyst"'),
+
+    # Risk Analyst
+    qf('"risk analyst" OR "operational risk analyst" OR "cyber risk analyst"'),
+    qf('"IT risk analyst" OR "enterprise risk analyst" OR "ERM analyst"'),
+    qf('"RCSA analyst" OR "Basel analyst" OR "ORC analyst"'),
+    qf('"business continuity analyst" OR "BCP analyst" OR "DR analyst"'),
+    qf('"loss event analyst" OR "risk management analyst" OR "technology risk associate"'),
+
+    # Compliance
+    qf('"compliance analyst" OR "IT compliance analyst" OR "regulatory compliance analyst"'),
+    qf('"PCI DSS analyst" OR "SOX compliance analyst" OR "RBI compliance analyst"'),
+    qf('"SEBI compliance analyst" OR "IRDAI compliance" OR "PDPB analyst"'),
+    qf('"data governance analyst" OR "compliance monitoring analyst"'),
+
+    # Fraud / AML / KYC
+    qf('"fraud analyst" OR "fraud detection analyst" OR "fraud prevention analyst"'),
+    qf('"AML analyst" OR "anti-money laundering analyst" OR "transaction monitoring analyst"'),
+    qf('"KYC analyst" OR "KYC associate" OR "financial crime analyst"'),
+    qf('"sanctions analyst" OR "UBO analyst" OR "customer due diligence analyst"'),
+    qf('"STR analyst" OR "CFT analyst" OR "FCRM analyst"'),
+
+    # Data Privacy / DPO
+    qf('"data privacy analyst" OR "privacy analyst" OR "DPO support"'),
+    qf('"data protection analyst" OR "GDPR analyst" OR "PDPB compliance analyst"'),
+    qf('"privacy compliance analyst" OR "CIPP" OR "consent management analyst"'),
+    qf('"privacy engineer" OR "data privacy auditor" OR "data privacy manager"'),
+
+    # Malware / Forensics
+    qf('"malware analyst" OR "malware researcher" OR "sandbox analyst"'),
+    qf('"reverse engineer" OR "binary analysis analyst" OR "memory forensics analyst"'),
+    qf('"mobile forensics analyst" OR "cyber forensics analyst"'),
+    qf('"cryptographer" OR "forensic computer analyst" OR "forensic investigator"'),
+
+    # Indian market titles (associate / executive / trainee variants)
+    qf('"associate security analyst" OR "junior security officer"'),
+    qf('"executive information security" OR "technology risk associate"'),
+    qf('"cyber risk associate" OR "security management trainee"'),
+    qf('"security officer trainee" OR "security graduate trainee" OR "security apprentice"'),
+    qf('"security awareness trainer" OR "security awareness executive"'),
+
+    # General catch-all
+    qf('"cybersecurity analyst" OR "security analyst" OR "information security analyst"'),
+    qf('"infosec analyst" OR "cyber analyst" OR "security engineer" Bangalore'),
+
+
+    # ── B. INTERN-SPECIFIC SEARCHES ────────────────────────────────────────
+
+    qi('"cybersecurity intern" OR "cyber security intern" OR "security intern"'),
+    qi('"infosec intern" OR "information security intern"'),
+    qi('"SOC intern" OR "security operations intern" OR "blue team intern"'),
+    qi('"GRC intern" OR "governance risk compliance intern"'),
+    qi('"IT audit intern" OR "IS audit intern" OR "risk intern"'),
+    qi('"compliance intern" OR "regulatory compliance intern"'),
+    qi('"cloud security intern" OR "AWS security intern" OR "Azure security intern"'),
+    qi('"network security intern" OR "firewall intern"'),
+    qi('"VAPT intern" OR "penetration testing intern" OR "ethical hacking intern"'),
+    qi('"fraud analyst intern" OR "KYC intern" OR "AML intern"'),
+    qi('"threat intelligence intern" OR "OSINT intern"'),
+    qi('"vulnerability assessment intern" OR "security assessment intern"'),
+    qi('"data privacy intern" OR "privacy compliance intern"'),
+    qi('"appsec intern" OR "application security intern" OR "DevSecOps intern"'),
+    qi('"security research intern" OR "malware analyst intern"'),
+    qi('"IAM intern" OR "identity management intern" OR "DLP intern"'),
+    qi('"incident response intern" OR "DFIR intern" OR "forensics intern"'),
+    qi('"risk analyst intern" OR "operational risk intern"'),
+    qi('cybersecurity OR "information security" OR "cyber security"'),  # pure intern catch-all
+    qi('"security program" OR "security fellowship" OR "security graduate program"'),
 ]
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# =============================================================================
+# LINKEDIN POSTS — via Google RSS site:linkedin.com
+# Catches recruiter feed posts that NEVER appear on the jobs board:
+#   "We're hiring SOC Analysts — freshers welcome, DM me"
+#   "Internship opening — cybersecurity — Bangalore — stipend 15k"
+# =============================================================================
 
-def _to_records(df: pd.DataFrame) -> list[dict]:
-    """Convert a jobspy DataFrame to a list of plain dicts with normalised keys."""
+LINKEDIN_POST_QUERIES = [
+
+    # ── FRESHER job posts ───────────────────────────────────────────────────
+    "site:linkedin.com hiring bangalore cybersecurity fresher 2026",
+    "site:linkedin.com hiring bangalore SOC analyst fresher",
+    "site:linkedin.com hiring bangalore GRC compliance analyst fresher",
+    "site:linkedin.com hiring bangalore KYC AML fraud analyst fresher",
+    "site:linkedin.com hiring bangalore IAM security analyst fresher",
+    "site:linkedin.com opening bangalore cybersecurity entry level",
+    "site:linkedin.com urgent hiring bangalore information security analyst",
+    "site:linkedin.com bangalore walk in interview cybersecurity 2026",
+    "site:linkedin.com bangalore walkin cybersecurity security analyst",
+    "site:linkedin.com bangalore immediate joining cybersecurity fresher",
+    "site:linkedin.com bangalore SOC analyst hiring fresher junior",
+    "site:linkedin.com bangalore VAPT penetration tester fresher opening",
+    "site:linkedin.com bangalore cloud security AWS GCP fresher hiring",
+    "site:linkedin.com bangalore risk analyst compliance fresher opening",
+    "site:linkedin.com bangalore IT audit CISA fresher hiring",
+    "site:linkedin.com bangalore AML KYC fraud analyst fresher hiring",
+    "site:linkedin.com bangalore data privacy GDPR analyst fresher",
+    "site:linkedin.com bangalore incident response DFIR analyst fresher",
+    "site:linkedin.com bangalore threat intelligence CTI analyst fresher",
+    "site:linkedin.com bangalore DevSecOps appsec engineer fresher",
+
+    # ── INTERN posts ────────────────────────────────────────────────────────
+    "site:linkedin.com cybersecurity intern bangalore 2026",
+    "site:linkedin.com security intern hiring bangalore stipend",
+    "site:linkedin.com GRC intern bangalore hiring",
+    "site:linkedin.com SOC intern bangalore opening",
+    "site:linkedin.com IT audit intern bangalore hiring",
+    "site:linkedin.com risk compliance intern bangalore",
+    "site:linkedin.com cloud security intern bangalore",
+    "site:linkedin.com network security intern bangalore",
+    "site:linkedin.com VAPT intern bangalore hiring",
+    "site:linkedin.com fraud KYC AML intern bangalore",
+    "site:linkedin.com threat intelligence intern bangalore",
+    "site:linkedin.com data privacy intern bangalore",
+    "site:linkedin.com appsec DevSecOps intern bangalore",
+    "site:linkedin.com cybersecurity internship bangalore stipend",
+    "site:linkedin.com paid internship security bangalore 2026",
+    "site:linkedin.com 6 month internship cybersecurity bangalore",
+    "site:linkedin.com 3 month internship security bangalore",
+    "site:linkedin.com summer internship cybersecurity bangalore",
+    "site:linkedin.com offering internship security bangalore",
+    "site:linkedin.com looking for cybersecurity intern bangalore",
+]
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def _to_records(df) -> list[dict]:
     if df is None or df.empty:
         return []
     records = []
     for _, row in df.iterrows():
         d = row.to_dict()
         records.append({
-            "title":        str(d.get("title") or ""),
-            "company":      str(d.get("company") or ""),
-            "location":     str(d.get("location") or ""),
-            "job_url":      str(d.get("job_url") or ""),
-            "description":  str(d.get("description") or ""),
-            "date_posted":  str(d.get("date_posted") or ""),
-            "source":       str(d.get("site") or ""),
+            "title":       str(d.get("title") or ""),
+            "company":     str(d.get("company") or ""),
+            "location":    str(d.get("location") or ""),
+            "job_url":     str(d.get("job_url") or ""),
+            "description": str(d.get("description") or ""),
+            "date_posted": str(d.get("date_posted") or ""),
+            "source":      str(d.get("site") or ""),
         })
     return records
 
 
-def _run_scrape(site: list[str], term: str, extra_kwargs: dict | None = None) -> list[dict]:
-    """Single jobspy call with retry on transient errors."""
+def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
     kwargs = dict(
         site_name=site,
         search_term=term,
@@ -112,44 +317,95 @@ def _run_scrape(site: list[str], term: str, extra_kwargs: dict | None = None) ->
             df = jobspy.scrape_jobs(**kwargs)
             return _to_records(df)
         except Exception as exc:
-            logger.warning("  scrape attempt %d/3 failed: %s", attempt, exc)
+            logger.warning("  attempt %d/3 failed: %s", attempt, exc)
             if attempt < 3:
                 time.sleep(4 * attempt)
     return []
 
 
-# ── Per-source scrapers ────────────────────────────────────────────────────────
+# =============================================================================
+# PER-SOURCE SCRAPERS
+# =============================================================================
 
 def _scrape_linkedin() -> list[dict]:
-    logger.info("=== LinkedIn: starting ===")
-    seen_urls: set[str] = set()
-    results: list[dict] = []
+    logger.info("=== LinkedIn Jobs: %d search terms ===", len(LINKEDIN_TERMS))
+    seen: set = set()
+    results = []
 
-    for term in SEARCH_TERMS:
+    for i, term in enumerate(LINKEDIN_TERMS):
         batch = _run_scrape(["linkedin"], term)
-        new = [r for r in batch if r["job_url"] not in seen_urls]
+        new   = [r for r in batch if r["job_url"] not in seen]
         for r in new:
-            seen_urls.add(r["job_url"])
+            seen.add(r["job_url"])
         results.extend(new)
-        logger.info("  LinkedIn [%s…] → %d", term[:50], len(new))
+        logger.info(
+            "  [%d/%d] +%d new (total %d) | %s…",
+            i + 1, len(LINKEDIN_TERMS), len(new), len(results), term[:55]
+        )
         time.sleep(5)
 
-    logger.info("LinkedIn total: %d unique", len(results))
+    logger.info("LinkedIn Jobs total: %d unique", len(results))
+    return results
+
+
+def _scrape_google_jobs() -> list[dict]:
+    logger.info("=== Google Jobs ===")
+    seen: set = set()
+    results = []
+
+    terms = [
+        qa('"SOC analyst" OR "security analyst" OR "cybersecurity analyst"'),
+        qa('"GRC analyst" OR "compliance analyst" OR "IT audit analyst"'),
+        qa('"risk analyst" OR "KYC analyst" OR "AML analyst" OR "fraud analyst"'),
+        qa('"cloud security" OR "IAM analyst" OR "network security analyst"'),
+        qa('"penetration tester" OR "VAPT analyst" OR "application security engineer"'),
+        qa('"incident response analyst" OR "threat intelligence analyst"'),
+        qa('"data privacy analyst" OR "DLP analyst" OR "malware analyst"'),
+        qa('"DevSecOps engineer" OR "vulnerability analyst"'),
+        qi('"cybersecurity intern" OR "security intern" OR "SOC intern"'),
+        qi('"GRC intern" OR "compliance intern" OR "risk intern"'),
+    ]
+
+    for i, term in enumerate(terms):
+        batch = _run_scrape(["google"], term)
+        new   = [r for r in batch if r["job_url"] not in seen]
+        for r in new:
+            seen.add(r["job_url"])
+        results.extend(new)
+        logger.info("  [%d/%d] Google Jobs +%d", i + 1, len(terms), len(new))
+        time.sleep(4)
+
+    logger.info("Google Jobs total: %d unique", len(results))
     return results
 
 
 def _scrape_indeed() -> list[dict]:
-    logger.info("=== Indeed India: starting ===")
-    seen_urls: set[str] = set()
-    results: list[dict] = []
+    logger.info("=== Indeed India ===")
+    seen: set = set()
+    results = []
 
-    for term in SEARCH_TERMS:
+    terms = [
+        qf('"SOC analyst" OR "security analyst"'),
+        qf('"GRC analyst" OR "compliance analyst"'),
+        qf('"risk analyst" OR "KYC analyst" OR "AML analyst"'),
+        qf('"cloud security" OR "network security analyst"'),
+        qf('"penetration tester" OR "VAPT engineer"'),
+        qf('"incident response" OR "threat intelligence analyst"'),
+        qf('"IAM analyst" OR "data privacy analyst"'),
+        qf('"IT audit" OR "vulnerability analyst"'),
+        qf('"cybersecurity analyst" OR "information security analyst"'),
+        qf('"fraud analyst" OR "DevSecOps engineer"'),
+        qi('"cybersecurity intern" OR "security intern"'),
+        qi('"GRC intern" OR "compliance intern" OR "risk intern"'),
+    ]
+
+    for i, term in enumerate(terms):
         batch = _run_scrape(["indeed"], term)
-        new = [r for r in batch if r["job_url"] not in seen_urls]
+        new   = [r for r in batch if r["job_url"] not in seen]
         for r in new:
-            seen_urls.add(r["job_url"])
+            seen.add(r["job_url"])
         results.extend(new)
-        logger.info("  Indeed [%s…] → %d", term[:50], len(new))
+        logger.info("  [%d/%d] Indeed +%d", i + 1, len(terms), len(new))
         time.sleep(5)
 
     logger.info("Indeed total: %d unique", len(results))
@@ -157,96 +413,139 @@ def _scrape_indeed() -> list[dict]:
 
 
 def _scrape_glassdoor() -> list[dict]:
-    """
-    Glassdoor fix notes:
-    - Must use country_indeed="India" (already in _run_scrape defaults)
-    - Location MUST be "Bengaluru" NOT "Bangalore, India" — the Glassdoor
-      geocoding autocomplete API rejects the latter with HTTP 400.
-    - linkedin_fetch_recipient_url=False suppresses an extra outbound call
-      that sometimes triggers rate-limits from CI IPs.
-    """
-    logger.info("=== Glassdoor India: starting ===")
-    seen_urls: set[str] = set()
-    results: list[dict] = []
+    logger.info("=== Glassdoor ===")
+    seen: set = set()
+    results = []
 
-    glassdoor_kwargs = {
-        "location": "Bengaluru",          # ← KEY FIX: official name, not "Bangalore, India"
+    gd_kwargs = {
+        "location": GLASSDOOR_LOCATION,
         "linkedin_fetch_recipient_url": False,
     }
 
-    for term in SEARCH_TERMS:
-        batch = _run_scrape(
-            ["glassdoor"], term,
-            extra_kwargs=glassdoor_kwargs,
-        )
-        new = [r for r in batch if r["job_url"] not in seen_urls]
+    terms = [
+        qf('"SOC analyst" OR "security analyst" OR "cybersecurity analyst"'),
+        qf('"GRC analyst" OR "compliance analyst" OR "risk analyst"'),
+        qf('"KYC analyst" OR "AML analyst" OR "fraud analyst"'),
+        qf('"cloud security" OR "IAM analyst" OR "network security"'),
+        qf('"VAPT" OR "penetration tester" OR "application security"'),
+        qf('"incident response" OR "threat intelligence" OR "SIEM analyst"'),
+        qf('"IT audit" OR "IS audit" OR "vulnerability analyst"'),
+        qf('"data privacy analyst" OR "information security analyst"'),
+        qi('"security intern" OR "cybersecurity intern"'),
+        qi('"GRC intern" OR "risk intern" OR "compliance intern"'),
+    ]
+
+    for i, term in enumerate(terms):
+        batch = _run_scrape(["glassdoor"], term, extra_kwargs=gd_kwargs)
+        new   = [r for r in batch if r["job_url"] not in seen]
         for r in new:
-            seen_urls.add(r["job_url"])
+            seen.add(r["job_url"])
         results.extend(new)
-        logger.info("  Glassdoor [%s…] → %d", term[:50], len(new))
+        logger.info("  [%d/%d] Glassdoor +%d", i + 1, len(terms), len(new))
         time.sleep(6)
 
     logger.info("Glassdoor total: %d unique", len(results))
     return results
 
 
-# ── NAUKRI IS INTENTIONALLY REMOVED ──────────────────────────────────────────
-#
-# Naukri returns HTTP 406 "recaptcha required" for ALL requests from GitHub
-# Actions IP ranges. This is a permanent block — Naukri actively detects
-# and challenges automated requests from cloud CI IP pools.
-#
-# WORKAROUNDS (pick one):
-#   A) Self-hosted GitHub Actions runner on your home machine / VPS
-#   B) Add a residential proxy (e.g. Webshare, Smartproxy) and pass
-#      proxy_url=... to jobspy.scrape_jobs()
-#   C) Manually check Naukri and paste good listings into the sheet
-#
-# ─────────────────────────────────────────────────────────────────────────────
+def fetch_linkedin_posts() -> list[dict]:
+    """
+    Fetch LinkedIn hiring posts and intern posts via Google RSS site: operator.
+    Google indexes public LinkedIn feed posts — these include recruiter posts
+    that NEVER appear on the LinkedIn jobs board:
+      'Hiring SOC Analyst Bangalore — freshers welcome — DM me'
+      'Internship opening — cybersecurity — stipend 15k — 6 months'
+    """
+    logger.info("=== LinkedIn Posts (Google RSS): %d queries ===",
+                len(LINKEDIN_POST_QUERIES))
+    results = []
+    seen: set = set()
+
+    for i, query in enumerate(LINKEDIN_POST_QUERIES):
+        encoded = query.replace(" ", "+").replace(":", "%3A")
+        url = (
+            f"https://news.google.com/rss/search"
+            f"?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
+        )
+
+        try:
+            feed = feedparser.parse(url)
+            logger.info(
+                "  [%d/%d] '%s…' → %d results",
+                i + 1, len(LINKEDIN_POST_QUERIES), query[:50], len(feed.entries)
+            )
+
+            for entry in feed.entries:
+                link  = entry.get("link", "")
+                title = entry.get("title", "")
+                desc  = entry.get("summary", "") or entry.get("description", "")
+
+                if not link or link in seen:
+                    continue
+
+                seen.add(link)
+                results.append({
+                    "title":       title,
+                    "company":     "",
+                    "location":    "Bangalore",
+                    "job_url":     link,
+                    "description": f"{title}. {desc[:800]}",
+                    "date_posted": entry.get("published", ""),
+                    "source":      "linkedin_post",
+                })
+
+        except Exception as e:
+            logger.error("  LinkedIn posts RSS error (%s): %s", query[:40], e)
+
+        time.sleep(1)
+
+    logger.info("LinkedIn Posts total: %d unique posts", len(results))
+    return results
 
 
-# ── Main entry point ──────────────────────────────────────────────────────────
+# =============================================================================
+# MASTER FUNCTION
+# =============================================================================
 
 def gather_all_listings() -> list[dict]:
     """
-    Scrape all working sources and return a single deduplicated list.
-    Source order: LinkedIn → Indeed → Glassdoor
-    (Naukri removed — recaptcha blocked from GitHub Actions)
+    Run all sources. Returns single deduplicated list.
+    Order: LinkedIn Jobs → Google Jobs → Indeed → Glassdoor → LinkedIn Posts
     """
-    all_results: list[dict] = []
-    seen_urls: set[str] = set()
+    all_results = []
+    seen: set   = set()
 
     sources = [
-        ("LinkedIn",       _scrape_linkedin),
+        ("LinkedIn Jobs",  _scrape_linkedin),
+        ("Google Jobs",    _scrape_google_jobs),
         ("Indeed",         _scrape_indeed),
         ("Glassdoor",      _scrape_glassdoor),
+        ("LinkedIn Posts", fetch_linkedin_posts),
     ]
 
-    source_counts: dict[str, int] = {}
-
+    counts = {}
     for name, fn in sources:
         try:
             batch = fn()
         except Exception as exc:
-            logger.error("%s scraper crashed: %s", name, exc)
+            logger.error("%s crashed: %s", name, exc)
             batch = []
 
         before = len(all_results)
         for r in batch:
-            if r["job_url"] and r["job_url"] not in seen_urls:
-                seen_urls.add(r["job_url"])
+            url = r.get("job_url", "").strip()
+            key = url if url else f"{r.get('title','')}|||{r.get('company','')}"
+            if key and key not in seen:
+                seen.add(key)
                 all_results.append(r)
 
-        added = len(all_results) - before
-        source_counts[name] = added
-        logger.info("%s added %d unique listings", name, added)
-
-        # Pause between sources to avoid simultaneous rate-limit hits
+        counts[name] = len(all_results) - before
+        logger.info("%s → %d new unique listings", name, counts[name])
         time.sleep(8)
 
     logger.info(
-        "gather_all_listings complete: %d unique total | %s",
+        "TOTAL: %d unique listings | %s",
         len(all_results),
-        " ".join(f"{k}={v}" for k, v in source_counts.items()),
+        " | ".join(f"{k}={v}" for k, v in counts.items()),
     )
     return all_results
