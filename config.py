@@ -113,7 +113,7 @@ BANGALORE_KEYWORDS = [
 # Lowered to 4 to catch intern/fresher postings which are often less formal
 MIN_LEGITIMACY_SCORE = 4
 
-GROQ_MODEL = "llama3-8b-8192"
+GROQ_MODEL = "llama-3.1-8b-instant"
 
 SHEET_COLUMNS = [
     "scraped_at", "job_title", "company", "company_tier",
