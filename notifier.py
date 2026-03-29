@@ -115,16 +115,14 @@ def notify_all(new_listings: list, total_scraped: int):
         logger.info("No new listings to notify")
         return
 
-    # Count types for summary
-    interns   = sum(1 for l in new_listings if l.get("is_intern"))
-    walkins   = sum(1 for l in new_listings if l.get("is_walk_in"))
-    freshers  = sum(1 for l in new_listings if l.get("is_fresher_eligible"))
+    interns  = sum(1 for l in new_listings if l.get("is_intern"))
+    freshers = sum(1 for l in new_listings if l.get("is_fresher_eligible"))
 
     now = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
     header = (
-        f"🔍 <b>Job Scanner</b> — {now}\n"
+        f"🔍 <b>Cyber Job Scanner</b> — {now}\n"
         f"Scraped <b>{total_scraped}</b> listings → <b>{len(new_listings)} new</b>\n"
-        f"🎓 Intern: {interns}  |  🚶 Walk-in: {walkins}  |  🌱 Fresher OK: {freshers}"
+        f"🎓 Intern: {interns}  |  🌱 Fresher OK: {freshers}"
     )
     send_message(header)
     time.sleep(1)
