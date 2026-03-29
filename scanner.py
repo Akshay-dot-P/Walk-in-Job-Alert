@@ -54,7 +54,7 @@ def main():
     logger.info("COMPLETE | Scraped: %d | Scored: %d | New: %d",
                 len(raw_listings), len(scored), len(new_listings))
     logger.info("  Intern: %d | Walk-in: %d | Fresher-eligible: %d",
-                interns, walkins, freshers)
+                interns, freshers)
     logger.info("=" * 60)
 
 
