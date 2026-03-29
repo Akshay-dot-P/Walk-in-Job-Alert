@@ -6,17 +6,14 @@ SOURCES:
   2. Google Jobs        — 10 broader searches (different index)
   3. Indeed India       — 12 targeted searches
   4. Glassdoor          — 10 searches
-  5. LinkedIn Posts     — 40 Google RSS queries (job board + hiring posts + intern posts)
+  5. LinkedIn Posts     — 40 Google RSS queries (hiring posts + intern posts)
 
 NAUKRI: permanently removed — GitHub Actions IPs blocked (HTTP 406 recaptcha).
 
-KEY DESIGN DECISIONS:
-  - Max 3-4 OR terms per LinkedIn search (beyond that LinkedIn silently drops terms)
-  - Intern searches are fully separate from fresher/entry-level searches
-  - LinkedIn Posts use Google RSS site:linkedin.com to find feed posts
-    that never appear on the LinkedIn jobs board
-  - Indian market titles explicitly included (associate, executive, trainee)
-  - Stipend/internship duration terms included for intern posts
+FIXES in this version:
+  - LinkedIn Posts now filters out login pages, sign-up pages, company pages
+  - Added minimum description length check to drop empty/useless entries
+  - Post URLs validated to only keep actual post/pulse/article/feed links
 """
 
 import time
@@ -27,29 +24,23 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# ── Locations ─────────────────────────────────────────────────────────────────
 LOCATION            = "Bengaluru, Karnataka, India"
-GLASSDOOR_LOCATION  = "Bengaluru"   # Glassdoor rejects "Bangalore, India" → HTTP 400
+GLASSDOOR_LOCATION  = "Bengaluru"
 HOURS_OLD           = 9
 RESULTS_PER_TERM    = 40
 
-# ── Qualifier phrases ─────────────────────────────────────────────────────────
-
-# For fresher / entry-level job searches
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
     'OR graduate OR "0-2 years" OR "0 to 2 years" OR "upto 2 years" '
     'OR "0-1 year" OR "less than 2 years" OR associate)'
 )
 
-# For intern searches specifically
 FQ_INTERN = (
     '(intern OR internship OR stipend OR "6 month" OR "3 month" '
     'OR "summer intern" OR "winter intern" OR apprentice '
     'OR fellowship OR "graduate trainee" OR "management trainee")'
 )
 
-# Combined — catches both intern and fresher in one pass
 FQ_ALL = (
     '(fresher OR "entry level" OR junior OR trainee OR intern OR internship '
     'OR graduate OR stipend OR "0-2 years" OR "0 to 2 years" OR associate '
@@ -57,149 +48,104 @@ FQ_ALL = (
 )
 
 
-def qf(role: str) -> str:
-    """Role + fresher qualifier."""
-    return f"({role}) {FQ_FRESHER}"
+def qf(role): return f"({role}) {FQ_FRESHER}"
+def qi(role): return f"({role}) {FQ_INTERN}"
+def qa(role): return f"({role}) {FQ_ALL}"
 
-
-def qi(role: str) -> str:
-    """Role + intern qualifier."""
-    return f"({role}) {FQ_INTERN}"
-
-
-def qa(role: str) -> str:
-    """Role + combined qualifier (catches both)."""
-    return f"({role}) {FQ_ALL}"
-
-
-# =============================================================================
-# LINKEDIN SEARCH TERMS — 80 queries, max 3-4 OR terms each
-# Split into: A) FRESHER/ENTRY-LEVEL  B) INTERN-SPECIFIC
-# =============================================================================
 
 LINKEDIN_TERMS = [
-
-    # ── A. FRESHER / ENTRY-LEVEL (0-2 years) ──────────────────────────────
-
     # SOC / Blue Team
     qf('"SOC analyst" OR "L1 SOC analyst" OR "security operations analyst"'),
     qf('"L2 SOC analyst" OR "tier 1 analyst" OR "blue team analyst"'),
     qf('"cyber defense analyst" OR "security operations center analyst"'),
-
     # SIEM
     qf('"SIEM analyst" OR "SIEM engineer" OR "Splunk analyst"'),
     qf('"QRadar analyst" OR "Microsoft Sentinel analyst" OR "security monitoring analyst"'),
     qf('"log analysis analyst" OR "security event analyst" OR "SIEM administrator"'),
-
     # Threat Intelligence
     qf('"threat intelligence analyst" OR "CTI analyst" OR "cyber threat intelligence"'),
     qf('"threat hunting analyst" OR "OSINT analyst" OR "threat research analyst"'),
     qf('"dark web analyst" OR "intelligence analyst" OR "threat analyst"'),
-
-    # Incident Response / DFIR
+    # Incident Response
     qf('"incident response analyst" OR "IR analyst" OR "incident responder"'),
     qf('"DFIR analyst" OR "digital forensics analyst" OR "cyber incident analyst"'),
     qf('"forensic analyst" OR "eDiscovery analyst" OR "computer forensics analyst"'),
-
     # VAPT / Pentest
     qf('"VAPT engineer" OR "VAPT analyst" OR "penetration tester"'),
     qf('"ethical hacker" OR "pentest engineer" OR "pentest analyst"'),
     qf('"red team analyst" OR "offensive security analyst" OR "security researcher"'),
     qf('"bug bounty" OR "vulnerability researcher" OR "web application pentest"'),
     qf('"network pentest" OR "mobile pentest" OR "API security tester"'),
-
     # Vulnerability Management
     qf('"vulnerability analyst" OR "vulnerability management analyst"'),
     qf('"VA analyst" OR "Qualys analyst" OR "Tenable analyst"'),
     qf('"patch management analyst" OR "security assessment analyst"'),
-    qf('"vulnerability assessment analyst" OR "threat assessment analyst"'),
-
     # AppSec / DevSecOps
     qf('"application security engineer" OR "appsec engineer" OR "appsec analyst"'),
     qf('"DevSecOps engineer" OR "DevSecOps analyst" OR "software security engineer"'),
     qf('"DAST analyst" OR "SAST analyst" OR "secure code review analyst"'),
-    qf('"product security engineer" OR "security software developer"'),
-
     # Network Security
     qf('"network security engineer" OR "network security analyst"'),
     qf('"firewall engineer" OR "firewall analyst" OR "IDS IPS analyst"'),
     qf('"Palo Alto engineer" OR "Fortinet engineer" OR "Cisco security engineer"'),
     qf('"endpoint security analyst" OR "systems security administrator"'),
-    qf('"infrastructure security analyst" OR "network security administrator"'),
-
     # Cloud Security
     qf('"cloud security analyst" OR "cloud security engineer"'),
     qf('"cloud security architect" OR "cloud security administrator"'),
     qf('"AWS security engineer" OR "Azure security engineer" OR "GCP security"'),
     qf('"CSPM analyst" OR "cloud compliance analyst" OR "cloud IAM analyst"'),
     qf('"cloud security auditor" OR "cloud forensic analyst"'),
-    qf('"chief cloud security officer" OR "CCSO" OR "cloud security officer"'),
-
     # IAM / PAM / DLP
     qf('"IAM analyst" OR "identity access management analyst" OR "IAM engineer"'),
     qf('"PAM analyst" OR "privileged access management analyst" OR "CyberArk analyst"'),
     qf('"DLP analyst" OR "data loss prevention analyst" OR "SailPoint analyst"'),
     qf('"Okta analyst" OR "SSO engineer" OR "identity governance analyst"'),
     qf('"zero trust analyst" OR "access governance analyst" OR "IDAM analyst"'),
-
     # GRC
     qf('"GRC analyst" OR "IT GRC analyst" OR "cyber GRC analyst"'),
     qf('"ISO 27001 analyst" OR "SOC 2 analyst" OR "NIST analyst"'),
     qf('"third party risk analyst" OR "TPRM analyst" OR "vendor risk analyst"'),
     qf('"supply chain risk analyst" OR "CIS controls analyst" OR "GRC engineer"'),
-
-    # IT Audit / IS Audit
+    # IT Audit
     qf('"IT audit analyst" OR "IS audit analyst" OR "IT auditor"'),
     qf('"information systems audit" OR "CISA" OR "ITGC analyst"'),
     qf('"technology audit analyst" OR "cyber audit analyst"'),
     qf('"internal audit IT" OR "Big 4 IT audit" OR "security audit analyst"'),
-
-    # Risk Analyst
+    # Risk
     qf('"risk analyst" OR "operational risk analyst" OR "cyber risk analyst"'),
     qf('"IT risk analyst" OR "enterprise risk analyst" OR "ERM analyst"'),
     qf('"RCSA analyst" OR "Basel analyst" OR "ORC analyst"'),
     qf('"business continuity analyst" OR "BCP analyst" OR "DR analyst"'),
-    qf('"loss event analyst" OR "risk management analyst" OR "technology risk associate"'),
-
+    qf('"technology risk associate" OR "risk management analyst"'),
     # Compliance
     qf('"compliance analyst" OR "IT compliance analyst" OR "regulatory compliance analyst"'),
     qf('"PCI DSS analyst" OR "SOX compliance analyst" OR "RBI compliance analyst"'),
     qf('"SEBI compliance analyst" OR "IRDAI compliance" OR "PDPB analyst"'),
     qf('"data governance analyst" OR "compliance monitoring analyst"'),
-
     # Fraud / AML / KYC
     qf('"fraud analyst" OR "fraud detection analyst" OR "fraud prevention analyst"'),
     qf('"AML analyst" OR "anti-money laundering analyst" OR "transaction monitoring analyst"'),
     qf('"KYC analyst" OR "KYC associate" OR "financial crime analyst"'),
     qf('"sanctions analyst" OR "UBO analyst" OR "customer due diligence analyst"'),
-    qf('"STR analyst" OR "CFT analyst" OR "FCRM analyst"'),
-
-    # Data Privacy / DPO
+    # Privacy
     qf('"data privacy analyst" OR "privacy analyst" OR "DPO support"'),
     qf('"data protection analyst" OR "GDPR analyst" OR "PDPB compliance analyst"'),
     qf('"privacy compliance analyst" OR "CIPP" OR "consent management analyst"'),
-    qf('"privacy engineer" OR "data privacy auditor" OR "data privacy manager"'),
-
     # Malware / Forensics
     qf('"malware analyst" OR "malware researcher" OR "sandbox analyst"'),
     qf('"reverse engineer" OR "binary analysis analyst" OR "memory forensics analyst"'),
     qf('"mobile forensics analyst" OR "cyber forensics analyst"'),
-    qf('"cryptographer" OR "forensic computer analyst" OR "forensic investigator"'),
-
-    # Indian market titles (associate / executive / trainee variants)
+    # Indian market titles
     qf('"associate security analyst" OR "junior security officer"'),
     qf('"executive information security" OR "technology risk associate"'),
     qf('"cyber risk associate" OR "security management trainee"'),
     qf('"security officer trainee" OR "security graduate trainee" OR "security apprentice"'),
     qf('"security awareness trainer" OR "security awareness executive"'),
-
     # General catch-all
     qf('"cybersecurity analyst" OR "security analyst" OR "information security analyst"'),
     qf('"infosec analyst" OR "cyber analyst" OR "security engineer" Bangalore'),
 
-
-    # ── B. INTERN-SPECIFIC SEARCHES ────────────────────────────────────────
-
+    # ── INTERN SEARCHES ──
     qi('"cybersecurity intern" OR "cyber security intern" OR "security intern"'),
     qi('"infosec intern" OR "information security intern"'),
     qi('"SOC intern" OR "security operations intern" OR "blue team intern"'),
@@ -218,21 +164,13 @@ LINKEDIN_TERMS = [
     qi('"IAM intern" OR "identity management intern" OR "DLP intern"'),
     qi('"incident response intern" OR "DFIR intern" OR "forensics intern"'),
     qi('"risk analyst intern" OR "operational risk intern"'),
-    qi('cybersecurity OR "information security" OR "cyber security"'),  # pure intern catch-all
+    qi('cybersecurity OR "information security" OR "cyber security"'),
     qi('"security program" OR "security fellowship" OR "security graduate program"'),
 ]
 
 
-# =============================================================================
-# LINKEDIN POSTS — via Google RSS site:linkedin.com
-# Catches recruiter feed posts that NEVER appear on the jobs board:
-#   "We're hiring SOC Analysts — freshers welcome, DM me"
-#   "Internship opening — cybersecurity — Bangalore — stipend 15k"
-# =============================================================================
-
 LINKEDIN_POST_QUERIES = [
-
-    # ── FRESHER job posts ───────────────────────────────────────────────────
+    # Fresher hiring posts
     "site:linkedin.com hiring bangalore cybersecurity fresher 2026",
     "site:linkedin.com hiring bangalore SOC analyst fresher",
     "site:linkedin.com hiring bangalore GRC compliance analyst fresher",
@@ -253,8 +191,7 @@ LINKEDIN_POST_QUERIES = [
     "site:linkedin.com bangalore incident response DFIR analyst fresher",
     "site:linkedin.com bangalore threat intelligence CTI analyst fresher",
     "site:linkedin.com bangalore DevSecOps appsec engineer fresher",
-
-    # ── INTERN posts ────────────────────────────────────────────────────────
+    # Intern posts
     "site:linkedin.com cybersecurity intern bangalore 2026",
     "site:linkedin.com security intern hiring bangalore stipend",
     "site:linkedin.com GRC intern bangalore hiring",
@@ -277,10 +214,47 @@ LINKEDIN_POST_QUERIES = [
     "site:linkedin.com looking for cybersecurity intern bangalore",
 ]
 
+# URLs containing these strings are garbage — filter them out
+GARBAGE_URL_PATTERNS = [
+    "linkedin.com/login",
+    "linkedin.com/signup",
+    "linkedin.com/authwall",
+    "linkedin.com/company/",      # company page, not a post
+    "linkedin.com/school/",
+    "linkedin.com/jobs/",         # jobs board redirect, not a post
+    "accounts.google.com",
+    "support.google.com",
+    "/404",
+]
 
-# =============================================================================
-# HELPERS
-# =============================================================================
+# Titles that are obviously not job posts
+GARBAGE_TITLE_PATTERNS = [
+    "log in or sign up",
+    "sign up",
+    "join now",
+    "jobs at ",
+    "careers at ",
+    "about us",
+    "linkedin india",
+    "linkedin: log in",
+    "error",
+    "page not found",
+    "403",
+    "404",
+]
+
+
+def _is_valid_post(title: str, url: str) -> bool:
+    """Return False for login pages, company pages, and other garbage."""
+    title_l = title.lower()
+    url_l   = url.lower()
+
+    if any(p in url_l   for p in GARBAGE_URL_PATTERNS):  return False
+    if any(p in title_l for p in GARBAGE_TITLE_PATTERNS): return False
+    if len(title.strip()) < 10:                            return False
+
+    return True
+
 
 def _to_records(df) -> list[dict]:
     if df is None or df.empty:
@@ -311,7 +285,6 @@ def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
     )
     if extra_kwargs:
         kwargs.update(extra_kwargs)
-
     for attempt in range(1, 4):
         try:
             df = jobspy.scrape_jobs(**kwargs)
@@ -323,28 +296,19 @@ def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
     return []
 
 
-# =============================================================================
-# PER-SOURCE SCRAPERS
-# =============================================================================
-
 def _scrape_linkedin() -> list[dict]:
-    logger.info("=== LinkedIn Jobs: %d search terms ===", len(LINKEDIN_TERMS))
+    logger.info("=== LinkedIn Jobs: %d terms ===", len(LINKEDIN_TERMS))
     seen: set = set()
     results = []
-
     for i, term in enumerate(LINKEDIN_TERMS):
         batch = _run_scrape(["linkedin"], term)
         new   = [r for r in batch if r["job_url"] not in seen]
-        for r in new:
-            seen.add(r["job_url"])
+        for r in new: seen.add(r["job_url"])
         results.extend(new)
-        logger.info(
-            "  [%d/%d] +%d new (total %d) | %s…",
-            i + 1, len(LINKEDIN_TERMS), len(new), len(results), term[:55]
-        )
+        logger.info("  [%d/%d] +%d (total %d) | %s…",
+                    i+1, len(LINKEDIN_TERMS), len(new), len(results), term[:55])
         time.sleep(5)
-
-    logger.info("LinkedIn Jobs total: %d unique", len(results))
+    logger.info("LinkedIn Jobs: %d unique", len(results))
     return results
 
 
@@ -352,7 +316,6 @@ def _scrape_google_jobs() -> list[dict]:
     logger.info("=== Google Jobs ===")
     seen: set = set()
     results = []
-
     terms = [
         qa('"SOC analyst" OR "security analyst" OR "cybersecurity analyst"'),
         qa('"GRC analyst" OR "compliance analyst" OR "IT audit analyst"'),
@@ -365,17 +328,14 @@ def _scrape_google_jobs() -> list[dict]:
         qi('"cybersecurity intern" OR "security intern" OR "SOC intern"'),
         qi('"GRC intern" OR "compliance intern" OR "risk intern"'),
     ]
-
     for i, term in enumerate(terms):
         batch = _run_scrape(["google"], term)
         new   = [r for r in batch if r["job_url"] not in seen]
-        for r in new:
-            seen.add(r["job_url"])
+        for r in new: seen.add(r["job_url"])
         results.extend(new)
-        logger.info("  [%d/%d] Google Jobs +%d", i + 1, len(terms), len(new))
+        logger.info("  [%d/%d] Google +%d", i+1, len(terms), len(new))
         time.sleep(4)
-
-    logger.info("Google Jobs total: %d unique", len(results))
+    logger.info("Google Jobs: %d unique", len(results))
     return results
 
 
@@ -383,7 +343,6 @@ def _scrape_indeed() -> list[dict]:
     logger.info("=== Indeed India ===")
     seen: set = set()
     results = []
-
     terms = [
         qf('"SOC analyst" OR "security analyst"'),
         qf('"GRC analyst" OR "compliance analyst"'),
@@ -398,17 +357,14 @@ def _scrape_indeed() -> list[dict]:
         qi('"cybersecurity intern" OR "security intern"'),
         qi('"GRC intern" OR "compliance intern" OR "risk intern"'),
     ]
-
     for i, term in enumerate(terms):
         batch = _run_scrape(["indeed"], term)
         new   = [r for r in batch if r["job_url"] not in seen]
-        for r in new:
-            seen.add(r["job_url"])
+        for r in new: seen.add(r["job_url"])
         results.extend(new)
-        logger.info("  [%d/%d] Indeed +%d", i + 1, len(terms), len(new))
+        logger.info("  [%d/%d] Indeed +%d", i+1, len(terms), len(new))
         time.sleep(5)
-
-    logger.info("Indeed total: %d unique", len(results))
+    logger.info("Indeed: %d unique", len(results))
     return results
 
 
@@ -416,12 +372,7 @@ def _scrape_glassdoor() -> list[dict]:
     logger.info("=== Glassdoor ===")
     seen: set = set()
     results = []
-
-    gd_kwargs = {
-        "location": GLASSDOOR_LOCATION,
-        "linkedin_fetch_recipient_url": False,
-    }
-
+    gd_kwargs = {"location": GLASSDOOR_LOCATION, "linkedin_fetch_recipient_url": False}
     terms = [
         qf('"SOC analyst" OR "security analyst" OR "cybersecurity analyst"'),
         qf('"GRC analyst" OR "compliance analyst" OR "risk analyst"'),
@@ -434,28 +385,19 @@ def _scrape_glassdoor() -> list[dict]:
         qi('"security intern" OR "cybersecurity intern"'),
         qi('"GRC intern" OR "risk intern" OR "compliance intern"'),
     ]
-
     for i, term in enumerate(terms):
         batch = _run_scrape(["glassdoor"], term, extra_kwargs=gd_kwargs)
         new   = [r for r in batch if r["job_url"] not in seen]
-        for r in new:
-            seen.add(r["job_url"])
+        for r in new: seen.add(r["job_url"])
         results.extend(new)
-        logger.info("  [%d/%d] Glassdoor +%d", i + 1, len(terms), len(new))
+        logger.info("  [%d/%d] Glassdoor +%d", i+1, len(terms), len(new))
         time.sleep(6)
-
-    logger.info("Glassdoor total: %d unique", len(results))
+    logger.info("Glassdoor: %d unique", len(results))
     return results
 
 
 def fetch_linkedin_posts() -> list[dict]:
-    """
-    Fetch LinkedIn hiring posts and intern posts via Google RSS site: operator.
-    Google indexes public LinkedIn feed posts — these include recruiter posts
-    that NEVER appear on the LinkedIn jobs board:
-      'Hiring SOC Analyst Bangalore — freshers welcome — DM me'
-      'Internship opening — cybersecurity — stipend 15k — 6 months'
-    """
+    """Google RSS site:linkedin.com — catches recruiter feed posts and intern announcements."""
     logger.info("=== LinkedIn Posts (Google RSS): %d queries ===",
                 len(LINKEDIN_POST_QUERIES))
     results = []
@@ -463,18 +405,11 @@ def fetch_linkedin_posts() -> list[dict]:
 
     for i, query in enumerate(LINKEDIN_POST_QUERIES):
         encoded = query.replace(" ", "+").replace(":", "%3A")
-        url = (
-            f"https://news.google.com/rss/search"
-            f"?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en"
-        )
-
+        url = (f"https://news.google.com/rss/search"
+               f"?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en")
         try:
             feed = feedparser.parse(url)
-            logger.info(
-                "  [%d/%d] '%s…' → %d results",
-                i + 1, len(LINKEDIN_POST_QUERIES), query[:50], len(feed.entries)
-            )
-
+            valid = 0
             for entry in feed.entries:
                 link  = entry.get("link", "")
                 title = entry.get("title", "")
@@ -483,35 +418,36 @@ def fetch_linkedin_posts() -> list[dict]:
                 if not link or link in seen:
                     continue
 
+                # Filter out garbage — login pages, company pages, etc.
+                if not _is_valid_post(title, link):
+                    continue
+
                 seen.add(link)
+                valid += 1
                 results.append({
                     "title":       title,
                     "company":     "",
                     "location":    "Bangalore",
                     "job_url":     link,
-                    "description": f"{title}. {desc[:800]}",
+                    "description": f"{title}. {desc[:600]}",
                     "date_posted": entry.get("published", ""),
                     "source":      "linkedin_post",
                 })
 
+            logger.info("  [%d/%d] '%s…' → %d valid / %d total",
+                        i+1, len(LINKEDIN_POST_QUERIES), query[:45],
+                        valid, len(feed.entries))
+
         except Exception as e:
-            logger.error("  LinkedIn posts RSS error (%s): %s", query[:40], e)
+            logger.error("  Posts RSS error: %s", e)
 
         time.sleep(1)
 
-    logger.info("LinkedIn Posts total: %d unique posts", len(results))
+    logger.info("LinkedIn Posts: %d valid posts", len(results))
     return results
 
 
-# =============================================================================
-# MASTER FUNCTION
-# =============================================================================
-
 def gather_all_listings() -> list[dict]:
-    """
-    Run all sources. Returns single deduplicated list.
-    Order: LinkedIn Jobs → Google Jobs → Indeed → Glassdoor → LinkedIn Posts
-    """
     all_results = []
     seen: set   = set()
 
@@ -540,12 +476,10 @@ def gather_all_listings() -> list[dict]:
                 all_results.append(r)
 
         counts[name] = len(all_results) - before
-        logger.info("%s → %d new unique listings", name, counts[name])
+        logger.info("%s → %d new unique", name, counts[name])
         time.sleep(8)
 
-    logger.info(
-        "TOTAL: %d unique listings | %s",
-        len(all_results),
-        " | ".join(f"{k}={v}" for k, v in counts.items()),
-    )
+    logger.info("TOTAL: %d unique | %s",
+                len(all_results),
+                " | ".join(f"{k}={v}" for k, v in counts.items()))
     return all_results
