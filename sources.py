@@ -178,8 +178,6 @@ LINKEDIN_POST_QUERIES = [
     "site:linkedin.com hiring bangalore IAM security analyst fresher",
     "site:linkedin.com opening bangalore cybersecurity entry level",
     "site:linkedin.com urgent hiring bangalore information security analyst",
-    "site:linkedin.com bangalore walk in interview cybersecurity 2026",
-    "site:linkedin.com bangalore walkin cybersecurity security analyst",
     "site:linkedin.com bangalore immediate joining cybersecurity fresher",
     "site:linkedin.com bangalore SOC analyst hiring fresher junior",
     "site:linkedin.com bangalore VAPT penetration tester fresher opening",
