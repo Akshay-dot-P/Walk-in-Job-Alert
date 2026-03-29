@@ -48,7 +48,6 @@ def main():
     notify_all(new_listings, total_scraped=len(raw_listings))
 
     interns  = sum(1 for l in new_listings if l.get("is_intern"))
-    walkins  = sum(1 for l in new_listings if l.get("is_walk_in"))
     freshers = sum(1 for l in new_listings if l.get("is_fresher_eligible"))
 
     logger.info("=" * 60)
