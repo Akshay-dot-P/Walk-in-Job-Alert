@@ -410,10 +410,29 @@ def score_all(listings: list, min_score: int = 4) -> list:
         logger.info("Nothing relevant after pre-filter")
         return []
 
-    scored = []
-    logger.info("Scoring %d listings via Groq...", len(relevant))
+    # Dedup by company+title BEFORE scoring
+    # Prevents scoring the same posting 7 times just because it appeared
+    # in multiple RSS queries with slightly different URLs
+    seen_key: set[str] = set()
+    deduped = []
+    for l in relevant:
+        title   = sanitize(l.get("title", "")).lower().strip()
+        company = sanitize(l.get("company", "")).lower().strip()
+        # For RSS posts with no company, use title alone as key
+        key = f"{company}|{title}" if company else title
+        if key in seen_key:
+            continue
+        seen_key.add(key)
+        deduped.append(l)
 
-    for i, listing in enumerate(relevant):
+    logger.info("Pre-score dedup: %d → %d (removed %d duplicates)",
+                len(relevant), len(deduped), len(relevant) - len(deduped))
+
+    scored = []
+    logger.info("Scoring %d listings via Groq...", len(deduped))
+
+    for i, listing in enumerate(deduped):  # ← use deduped, not relevant
+        
         logger.info("Scoring %d/%d: %s",
                     i + 1, len(relevant),
                     sanitize(listing.get("title", "?"))[:55])
