@@ -1,6 +1,6 @@
 import os
-import json
 import re
+import json
 import time
 import logging
 import requests
@@ -11,132 +11,201 @@ logger = logging.getLogger(__name__)
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# NOTE: No {text} placeholder — we build the prompt by concatenation, NOT .format()
-# .format() breaks when job descriptions contain literal { } characters → 400 error
-SYSTEM_PROMPT = "You output only raw valid JSON. No markdown. No explanation. No preamble."
+SYSTEM_PROMPT = (
+    "You output only raw valid JSON. "
+    "No markdown. No explanation. No preamble. No code fences."
+)
 
-USER_PROMPT_PREFIX = """You are an expert analyst of the Indian job market,
-specializing in Bangalore tech and cybersecurity hiring for freshers and interns.
+USER_PROMPT_PREFIX = (
+    "You are an expert analyst of the Indian job market, "
+    "specializing in Bangalore cybersecurity hiring for freshers and interns.\n\n"
+    "Analyze the listing below and return ONLY a valid JSON object.\n\n"
+    "Required keys:\n"
+    '{\n'
+    '  "job_title": "normalized title",\n'
+    '  "company": "company name or empty string",\n'
+    '  "company_tier": "MNC or startup or mid-tier or unknown",\n'
+    '  "walk_in_date": "YYYY-MM-DD or null",\n'
+    '  "walk_in_time": "HH:MM-HH:MM or null",\n'
+    '  "location_address": "specific Bangalore address or null",\n'
+    '  "contact": "email or phone or null",\n'
+    '  "legitimacy_score": 1-10,\n'
+    '  "red_flags": [],\n'
+    '  "summary": "one sentence",\n'
+    '  "is_walk_in": true or false,\n'
+    '  "is_intern": true or false,\n'
+    '  "is_fresher_eligible": true or false,\n'
+    '  "experience_required": "e.g. 0-2 years or null",\n'
+    '  "work_mode": "remote or hybrid or onsite or unknown",\n'
+    '  "stipend_or_salary": "e.g. 15000/month or null",\n'
+    '  "application_deadline": "YYYY-MM-DD or null"\n'
+    '}\n\n'
+    "SCORING:\n"
+    "9-10: Known company, full address, corporate contact, specific date+time\n"
+    "7-8: Recognizable company, has venue+contact+date\n"
+    "5-6: Unknown company but specific venue+contact+date, no scam signals\n"
+    "3-4: Missing address or contact, no scam signals\n"
+    "1-2: Registration fee, guaranteed placement, fake salary, no address,\n"
+    "     OR news article/personal achievement post/profile page\n\n"
+    "is_intern=true if: intern, internship, stipend, trainee program, apprentice\n"
+    "is_fresher_eligible=true if: fresher, 0 years, 0-2 years, entry level, intern\n\n"
+    "LISTING:\n"
+)
 
-Analyze the listing below and return ONLY a valid JSON object. No markdown, no code fences.
 
-Required JSON keys:
-{
-  "job_title": "normalized title e.g. SOC Analyst, GRC Intern, Security Analyst",
-  "company": "company name or empty string",
-  "company_tier": "MNC" or "startup" or "mid-tier" or "unknown",
-  "walk_in_date": "YYYY-MM-DD or null",
-  "walk_in_time": "HH:MM-HH:MM or null",
-  "location_address": "specific Bangalore address/venue or null",
-  "contact": "email or phone or null",
-  "legitimacy_score": integer 1-10,
-  "red_flags": [],
-  "summary": "one sentence",
-  "is_walk_in": true or false,
-  "is_intern": true or false,
-  "is_fresher_eligible": true or false,
-  "experience_required": "e.g. 0-1 years, fresher, or null",
-  "work_mode": "remote" or "hybrid" or "onsite" or "unknown",
-  "stipend_or_salary": "e.g. 15000/month, 3-5 LPA, or null",
-  "application_deadline": "YYYY-MM-DD or null"
-}
+def sanitize(text: str) -> str:
+    """
+    Clean text before sending to Groq.
+    Fixes HTTP 400 errors caused by:
+      1. Unicode math bold chars (LinkedIn bold text styling like boldCYBERSECURITY)
+      2. Emojis
+      3. Curly/smart quotes and apostrophes
+      4. Control characters
+    """
+    if not text:
+        return ""
 
-SCORING:
-9-10: Known company, full address, corporate contact, specific date+time, clear JD
-7-8:  Recognizable company, has venue+contact+date, coherent description
-5-6:  Unknown company but specific venue+contact+date, no scam signals
-3-4:  Missing address OR contact, no scam signals
-1-2:  Registration fee, guaranteed placement, fake salary, Gmail from unknown company,
-      no address, OR this is a news article/login page/not a real job post
+    # Step 1: Convert Unicode math bold/italic/sans-serif chars to ASCII
+    result = []
+    for ch in text:
+        cp = ord(ch)
+        # Mathematical Bold Capital A-Z (U+1D400-U+1D419)
+        if 0x1D400 <= cp <= 0x1D419:
+            result.append(chr(ord('A') + cp - 0x1D400))
+        # Mathematical Bold Small a-z (U+1D41A-U+1D433)
+        elif 0x1D41A <= cp <= 0x1D433:
+            result.append(chr(ord('a') + cp - 0x1D41A))
+        # Mathematical Italic Capital (U+1D434-U+1D44D)
+        elif 0x1D434 <= cp <= 0x1D44D:
+            result.append(chr(ord('A') + cp - 0x1D434))
+        # Mathematical Italic Small (U+1D44E-U+1D467)
+        elif 0x1D44E <= cp <= 0x1D467:
+            result.append(chr(ord('a') + cp - 0x1D44E))
+        # Bold Italic Capital (U+1D468-U+1D481)
+        elif 0x1D468 <= cp <= 0x1D481:
+            result.append(chr(ord('A') + cp - 0x1D468))
+        # Bold Italic Small (U+1D482-U+1D49B)
+        elif 0x1D482 <= cp <= 0x1D49B:
+            result.append(chr(ord('a') + cp - 0x1D482))
+        # Sans-serif Bold Capital (U+1D5D4-U+1D5ED)
+        elif 0x1D5D4 <= cp <= 0x1D5ED:
+            result.append(chr(ord('A') + cp - 0x1D5D4))
+        # Sans-serif Bold Small (U+1D5EE-U+1D607)
+        elif 0x1D5EE <= cp <= 0x1D607:
+            result.append(chr(ord('a') + cp - 0x1D5EE))
+        # Sans-serif Bold Italic Capital (U+1D63C-U+1D655)
+        elif 0x1D63C <= cp <= 0x1D655:
+            result.append(chr(ord('A') + cp - 0x1D63C))
+        # Sans-serif Bold Italic Small (U+1D656-U+1D66F)
+        elif 0x1D656 <= cp <= 0x1D66F:
+            result.append(chr(ord('a') + cp - 0x1D656))
+        # Mathematical Bold Digits (U+1D7CE-U+1D7D7)
+        elif 0x1D7CE <= cp <= 0x1D7D7:
+            result.append(chr(ord('0') + cp - 0x1D7CE))
+        # All other math alphanumeric (drop)
+        elif 0x1D400 <= cp <= 0x1D7FF:
+            result.append('')
+        # Non-BMP characters beyond U+FFFF (includes most emojis) — remove
+        elif cp > 0xFFFF:
+            result.append(' ')
+        else:
+            result.append(ch)
 
-RED FLAGS: registration/document fee, guaranteed placement, unrealistic salary,
-personal Gmail from unknown company, no specific venue, urgency pressure tactics.
+    text = ''.join(result)
 
-Set is_intern=true if: intern, internship, stipend, trainee program, apprentice, fellowship.
-Set is_fresher_eligible=true if: fresher, 0 years, 0-2 years, entry level, graduate, intern.
+    # Step 2: Curly/smart quotes and dashes -> plain ASCII
+    replacements = {
+        '\u2018': "'", '\u2019': "'",  # left/right single quote
+        '\u201C': '"', '\u201D': '"',  # left/right double quote
+        '\u2013': '-', '\u2014': '-',  # en dash, em dash
+        '\u2032': "'", '\u2033': '"',  # prime, double prime
+        '\u00B4': "'", '\u0060': "'",  # acute accent, grave accent
+        '\u2026': '...',               # ellipsis
+        '\u00A0': ' ',                 # non-breaking space
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
 
-LISTING:
-"""
+    # Step 3: Remove remaining emoji ranges in BMP
+    text = re.sub(r'[\u2600-\u27FF\uFE00-\uFE0F\u2702-\u27B0]', ' ', text)
+
+    # Step 4: Remove control characters (keep \n \t)
+    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+
+    # Step 5: Collapse excessive whitespace
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
 
 
 # =============================================================================
-# PRE-FILTER — runs BEFORE calling Groq
-# Drops obviously irrelevant listings so we don't waste API quota.
-# 2674 listings × 2sec = 89 minutes. With pre-filter → ~200 listings × 2sec = 7 min.
+# PRE-FILTER
 # =============================================================================
 
-# Titles to hard-reject — clearly not cybersec/GRC/risk roles
-REJECT_TITLE_KEYWORDS = [
-    "food", "chef", "cook", "restaurant", "hospitality",
-    "marketing operations", "lead generation", "accounts receivable",
-    "accounts payable", "payroll", "legal entity", "finance controller",
-    "head of finance", "global finance", "monetization", "shipping",
-    "log in or sign up", "sign up", "linkedin india",
-    "global people support", "hr operations", "talent acquisition",
-    "recruiter", "recruitment consultant", "staffing",
-    "sales executive", "business development", "bdm",
-    "content writer", "seo specialist", "social media",
-    "graphic designer", "ui designer", "ux designer",
+REJECT_PATTERNS = [
+    # Garbage pages
+    "log in or sign up", "sign up", "join now", "linkedin india",
+    "linkedin: log in", "page not found", "404", "jobs at ", "careers at ",
+    # Personal achievement posts (not job openings)
+    "excited to share that i", "thrilled to share that i",
+    "excited to announce that i", "i have been selected",
+    "i have kicked off my", "officially completed my",
+    "i am starting a new position", "im starting a new position",
+    "i'm starting a new position",
+    "my internship at", "my 6-month internship", "my internship journey",
+    "left bangalore to pursue",
+    # Profile headlines (not jobs)
+    "helping organizations secure", "cissp, gcfa",
+    "per month (source:", "leetcode/glassdoor",
+    # Course/certification posts
+    "free cybersecurity online", "with certificate for everyone",
+    # Irrelevant roles
+    "food experience", "chef", "restaurant", "hospitality",
+    "accounts receivable", "accounts payable", "legal entity controller",
+    "head of global finance", "monetization operation", "financial data analyst",
+    "marketing operations", "lead generation", "payroll",
+    "global people support", "talent acquisition",
+    "recruiter", "staffing consultant",
+    "content writer", "seo specialist", "social media manager",
+    "graphic designer", "ux designer",
     "mechanical engineer", "civil engineer", "electrical engineer",
-    "chemical engineer", "biomedical", "pharmaceutical",
-    "customer support", "customer service", "call center",
-    "voice process", "bpo", "telecaller",
+    "customer support", "customer service", "call center", "bpo", "telecaller",
     "supply chain", "logistics", "warehouse",
-    "teacher", "professor", "lecturer", "education",
-    "medical", "nurse", "doctor", "healthcare",
-    "accountant", "ca ", "chartered accountant", "finance analyst",
-    "financial analyst", "banking", "loan officer",
+    "teacher", "professor", "lecturer",
+    "medical officer", "nurse", "doctor",
+    "chartered accountant", "ca fresher",
 ]
 
-def text_contains_any(text: str, keywords: list) -> bool:
-    if not text:
-        return False
-    text_lower = text.lower()
-    return any(kw.lower() in text_lower for kw in keywords)
 
+def is_relevant(listing: dict) -> bool:
+    title    = sanitize(listing.get("title", "")).lower()
+    desc     = sanitize(listing.get("description", "")).lower()
+    combined = title + " " + desc
 
-def is_relevant_listing(listing: dict) -> bool:
-    """
-    Pre-filter: returns True only if listing is plausibly a cybersec/GRC/risk/intern role.
-    This runs BEFORE Groq to avoid wasting API calls on irrelevant listings.
-    """
-    title = listing.get("title", "").lower()
-    desc  = listing.get("description", "").lower()
-    combined = f"{title} {desc}"
-
-    # Hard reject obvious garbage
-    if text_contains_any(title, REJECT_TITLE_KEYWORDS):
+    if any(p in title for p in REJECT_PATTERNS):
         return False
 
-    # Must contain at least one target role keyword
-    if text_contains_any(combined, TARGET_ROLES):
-        return True
+    has_role   = any(r in combined for r in TARGET_ROLES)
+    has_intern = any(k in combined for k in INTERN_KEYWORDS)
+    has_sec    = any(k in combined for k in [
+        "security", "cyber", "risk", "compliance", "grc", "audit",
+        "fraud", "kyc", "aml", "privacy", "cloud", "network",
+        "forensic", "malware", "threat", "vulnerability",
+    ])
 
-    # OR must be an intern post in a relevant field
-    if text_contains_any(combined, INTERN_KEYWORDS):
-        if text_contains_any(combined, ["security", "cyber", "risk", "compliance",
-                                         "grc", "audit", "fraud", "kyc", "aml",
-                                         "privacy", "cloud", "network"]):
-            return True
-
-    return False
+    return has_role or (has_intern and has_sec)
 
 
 def pre_filter(listings: list) -> list:
-    """Drop irrelevant listings before scoring. Logs what was kept vs dropped."""
-    kept    = [l for l in listings if is_relevant_listing(l)]
+    kept    = [l for l in listings if is_relevant(l)]
     dropped = len(listings) - len(kept)
-    logger.info(
-        "Pre-filter: %d/%d kept, %d dropped as irrelevant",
-        len(kept), len(listings), dropped
-    )
+    logger.info("Pre-filter: %d/%d kept, %d dropped", len(kept), len(listings), dropped)
     return kept
 
 
 # =============================================================================
-# GROQ CALL — uses string concatenation, NOT .format()
-# This is the fix for the 400 Bad Request error.
-# .format() breaks when descriptions contain { or } characters.
+# GROQ CALL
 # =============================================================================
 
 def call_groq(listing_text: str) -> str:
@@ -144,8 +213,7 @@ def call_groq(listing_text: str) -> str:
     if not api_key:
         raise ValueError("GROQ_API_KEY not set")
 
-    # Build prompt by concatenation — safe against { } in descriptions
-    full_prompt = USER_PROMPT_PREFIX + listing_text
+    safe = sanitize(listing_text)[:2500]
 
     r = requests.post(
         GROQ_API_URL,
@@ -157,44 +225,45 @@ def call_groq(listing_text: str) -> str:
             "model": GROQ_MODEL,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": full_prompt},
+                {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
             ],
             "temperature": 0.1,
             "max_tokens":  800,
         },
         timeout=30,
     )
+
+    if r.status_code == 400:
+        try:
+            err_msg = r.json().get("error", {}).get("message", r.text[:300])
+        except Exception:
+            err_msg = r.text[:300]
+        logger.error("Groq 400: %s", err_msg)
+
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"].strip()
 
 
 def score_listing(listing: dict) -> dict | None:
-    # Build the listing text safely — no .format(), just concatenation
     listing_text = (
-        "SOURCE: "      + listing.get("source", "")                         + "\n"
-        "TITLE: "       + listing.get("title", "")                          + "\n"
-        "COMPANY: "     + listing.get("company", "")                        + "\n"
-        "LOCATION: "    + listing.get("location", "")                       + "\n"
-        "DATE POSTED: " + listing.get("date_posted", "")                    + "\n"
-        "URL: "         + (listing.get("job_url") or listing.get("url","")) + "\n"
-        "DESCRIPTION:\n"+ listing.get("description", "")[:1800]
+        "SOURCE: "       + sanitize(listing.get("source", ""))                         + "\n"
+        "TITLE: "        + sanitize(listing.get("title", ""))                          + "\n"
+        "COMPANY: "      + sanitize(listing.get("company", ""))                        + "\n"
+        "LOCATION: "     + sanitize(listing.get("location", ""))                       + "\n"
+        "DATE POSTED: "  + sanitize(listing.get("date_posted", ""))                    + "\n"
+        "URL: "          + sanitize(listing.get("job_url") or listing.get("url", ""))  + "\n"
+        "DESCRIPTION:\n" + sanitize(listing.get("description", ""))[:1600]
     )
 
     try:
         raw = call_groq(listing_text)
-
-        # Strip accidental markdown fences
         raw = re.sub(r"```json\s*", "", raw)
         raw = re.sub(r"```\s*",     "", raw)
-
-        # Trim to valid JSON object
         start = raw.find("{")
         end   = raw.rfind("}")
         if start == -1 or end == -1:
-            raise ValueError("No JSON object in response")
-        raw = raw[start : end + 1]
-
-        d = json.loads(raw)
+            raise ValueError("No JSON in response")
+        d = json.loads(raw[start : end + 1])
 
         result = {
             "scraped_at":           datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -231,48 +300,41 @@ def score_listing(listing: dict) -> dict | None:
             result["job_title"][:35],
             result["company"][:20],
             result["legitimacy_score"],
-            result["experience_required"] or "exp?",
+            result["experience_required"] or "?",
         )
         return result
 
     except json.JSONDecodeError as e:
-        logger.error("JSON parse error for '%s': %s", listing.get("title", "?"), e)
+        logger.error("JSON parse '%s': %s", listing.get("title", "?")[:40], e)
         return None
     except Exception as e:
-        logger.error("Scoring error for '%s': %s", listing.get("title", "?"), e)
+        logger.error("Error '%s': %s", listing.get("title", "?")[:40], e)
         return None
 
 
 def score_all(listings: list, min_score: int = 4) -> list:
-    # PRE-FILTER first — drop irrelevant listings before hitting Groq
     relevant = pre_filter(listings)
-
     if not relevant:
-        logger.info("No relevant listings after pre-filter")
+        logger.info("Nothing relevant after pre-filter")
         return []
 
     scored = []
-    logger.info("Scoring %d relevant listings via Groq...", len(relevant))
+    logger.info("Scoring %d listings via Groq...", len(relevant))
 
     for i, listing in enumerate(relevant):
-        logger.info(
-            "Scoring %d/%d: %s",
-            i + 1, len(relevant), listing.get("title", "?")[:55]
-        )
+        logger.info("Scoring %d/%d: %s",
+                    i + 1, len(relevant),
+                    sanitize(listing.get("title", "?"))[:55])
         result = score_listing(listing)
 
         if result is None:
             continue
-
         if result["legitimacy_score"] < min_score:
-            logger.info(
-                "  -> Dropped: score %d < %d",
-                result["legitimacy_score"], min_score
-            )
+            logger.info("  -> Dropped score=%d", result["legitimacy_score"])
             continue
 
         scored.append(result)
-        time.sleep(2)  # Groq free tier: 30 req/min
+        time.sleep(2)
 
-    logger.info("Scoring complete: %d/%d passed", len(scored), len(relevant))
+    logger.info("Done: %d/%d passed", len(scored), len(relevant))
     return scored
