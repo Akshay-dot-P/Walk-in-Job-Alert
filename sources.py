@@ -420,7 +420,7 @@ def fetch_linkedin_posts() -> list[dict]:
         try:
             feed = feedparser.parse(url)
             valid = 0
-            for entry in feed.entries:
+            for entry in feed.entries[:10]:
                 link  = entry.get("link", "")
                 title = entry.get("title", "")
                 desc  = entry.get("summary", "") or entry.get("description", "")
