@@ -300,7 +300,6 @@ def score_listing(listing: dict) -> dict | None:
 
         tags = []
         if result["is_intern"]:           tags.append("INTERN")
-        if result["is_walk_in"]:          tags.append("WALK-IN")
         if result["is_fresher_eligible"]: tags.append("FRESHER-OK")
         logger.info("  [%s] %s @ %s | score=%d | %s",
                     "/".join(tags) or "regular",
