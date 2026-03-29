@@ -368,33 +368,6 @@ def _scrape_indeed() -> list[dict]:
     return results
 
 
-def _scrape_glassdoor() -> list[dict]:
-    logger.info("=== Glassdoor ===")
-    seen: set = set()
-    results = []
-    gd_kwargs = {"location": GLASSDOOR_LOCATION, "linkedin_fetch_recipient_url": False}
-    terms = [
-        qf('"SOC analyst" OR "security analyst" OR "cybersecurity analyst"'),
-        qf('"GRC analyst" OR "compliance analyst" OR "risk analyst"'),
-        qf('"KYC analyst" OR "AML analyst" OR "fraud analyst"'),
-        qf('"cloud security" OR "IAM analyst" OR "network security"'),
-        qf('"VAPT" OR "penetration tester" OR "application security"'),
-        qf('"incident response" OR "threat intelligence" OR "SIEM analyst"'),
-        qf('"IT audit" OR "IS audit" OR "vulnerability analyst"'),
-        qf('"data privacy analyst" OR "information security analyst"'),
-        qi('"security intern" OR "cybersecurity intern"'),
-        qi('"GRC intern" OR "risk intern" OR "compliance intern"'),
-    ]
-    for i, term in enumerate(terms):
-        batch = _run_scrape(["glassdoor"], term, extra_kwargs=gd_kwargs)
-        new   = [r for r in batch if r["job_url"] not in seen]
-        for r in new: seen.add(r["job_url"])
-        results.extend(new)
-        logger.info("  [%d/%d] Glassdoor +%d", i+1, len(terms), len(new))
-        time.sleep(6)
-    logger.info("Glassdoor: %d unique", len(results))
-    return results
-
 
 def fetch_linkedin_posts() -> list[dict]:
     """Google RSS site:linkedin.com — catches recruiter feed posts and intern announcements."""
@@ -455,7 +428,6 @@ def gather_all_listings() -> list[dict]:
         ("LinkedIn Jobs",  _scrape_linkedin),
         ("Google Jobs",    _scrape_google_jobs),
         ("Indeed",         _scrape_indeed),
-        ("Glassdoor",      _scrape_glassdoor),
         ("LinkedIn Posts", fetch_linkedin_posts),
     ]
 
