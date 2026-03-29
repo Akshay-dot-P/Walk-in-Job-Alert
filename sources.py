@@ -5,17 +5,21 @@ SOURCES:
   1. LinkedIn Jobs      — 80 focused searches (max 4 OR terms each)
   2. Google Jobs        — 10 broader searches (different index)
   3. Indeed India       — 12 targeted searches
-  4. Glassdoor          — 10 searches
-  5. LinkedIn Posts     — 40 Google RSS queries (hiring posts + intern posts)
+  4. LinkedIn Posts     — 40 Google RSS queries (hiring posts + intern posts)
 
 NAUKRI: permanently removed — GitHub Actions IPs blocked (HTTP 406 recaptcha).
+GLASSDOOR: permanently removed — consistent 403 from GitHub Actions IPs.
 
 FIXES in this version:
   - LinkedIn Posts now filters out login pages, sign-up pages, company pages
+  - LinkedIn profile pages filtered by URL (/in/) and title regex
   - Added minimum description length check to drop empty/useless entries
   - Post URLs validated to only keep actual post/pulse/article/feed links
+  - Profile regex catches Name - Title @ Company AND Name - Title | Company formats
+  - GARBAGE_URL_PATTERNS now includes linkedin.com/in/ as permanent catch-all
 """
 
+import re
 import time
 import logging
 import feedparser
@@ -25,7 +29,6 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 LOCATION            = "Bengaluru, Karnataka, India"
-GLASSDOOR_LOCATION  = "Bengaluru"
 HOURS_OLD           = 9
 RESULTS_PER_TERM    = 40
 
@@ -220,6 +223,7 @@ GARBAGE_URL_PATTERNS = [
     "linkedin.com/company/",      # company page, not a post
     "linkedin.com/school/",
     "linkedin.com/jobs/",         # jobs board redirect, not a post
+    "linkedin.com/in/",           # profile pages — people, not job postings
     "accounts.google.com",
     "support.google.com",
     "/404",
@@ -241,17 +245,53 @@ GARBAGE_TITLE_PATTERNS = [
     "404",
 ]
 
+# Regex: matches LinkedIn profile headline formats
+# Covers all these patterns:
+#   "Firstname Lastname - Job Title @ Company"
+#   "Firstname Lastname - Job Title | Company"
+#   "Firstname Lastname, CISA - Job Title"
+#   "Firstname Lastname | SOC Analyst @ Company"
+#   "Firstname Lastname, CISSP, CISM - ..."
+PROFILE_HEADLINE_REGEX = re.compile(
+    r'^[A-Za-z]+ [A-Za-z].{0,30}?'
+    r'(,\s*(CISA|CISM|CISSP|CEH|OSCP|CA|MBA|PhD|CPA|CFE|CDPSE|CRISC|CGEIT|'
+    r'CFA|FRM|CCSP|CCNA|MCSE|AWS|GCP|PMP|ITIL|ISO)\b)?'
+    r'\s*[-|]',
+    re.IGNORECASE
+)
+
 
 def _is_valid_post(title: str, url: str) -> bool:
-    """Return False for login pages, company pages, and other garbage."""
+    """Return False for login pages, company pages, profile pages, and other garbage."""
     title_l = title.lower()
     url_l   = url.lower()
 
-    if any(p in url_l   for p in GARBAGE_URL_PATTERNS):  return False
+    if any(p in url_l   for p in GARBAGE_URL_PATTERNS):   return False
     if any(p in title_l for p in GARBAGE_TITLE_PATTERNS): return False
     if len(title.strip()) < 10:                            return False
 
     return True
+
+
+def _is_profile_headline(title: str) -> bool:
+    """
+    Return True if the title looks like a LinkedIn profile headline rather
+    than a job posting title. Used as a secondary filter after URL check.
+
+    Examples that return True (profiles — reject these):
+      "Sushmitha Sonkamble - SailPoint IdentityIQ/ISC Certified | IAM"
+      "Ashish Gangavaram, CISA - LinkedIn"
+      "Anand Kumar - Cyber Threat Intelligence @ adidas"
+      "Pranav Taskar - SOC Analyst L1 | SIEM (Splunk/Elastic)"
+      "Dhanushree S O - Security Engineer@Amazon | Masters in CS"
+
+    Examples that return False (job posts — keep these):
+      "We're Hiring! Junior Application Security Analyst"
+      "SOC Analyst L1 | Bangalore | Fresher Welcome"
+      "#Hiring: SIEM Administrator & SOC Analyst (L1)"
+      "Cyber Security Intern at Groww | Paid | Bangalore"
+    """
+    return bool(PROFILE_HEADLINE_REGEX.match(title))
 
 
 def _to_records(df) -> list[dict]:
@@ -366,7 +406,6 @@ def _scrape_indeed() -> list[dict]:
     return results
 
 
-
 def fetch_linkedin_posts() -> list[dict]:
     """Google RSS site:linkedin.com — catches recruiter feed posts and intern announcements."""
     logger.info("=== LinkedIn Posts (Google RSS): %d queries ===",
@@ -389,10 +428,34 @@ def fetch_linkedin_posts() -> list[dict]:
                 if not link or link in seen:
                     continue
 
-                # Filter out garbage — login pages, company pages, etc.
+                # ── CHECK 1: URL + title garbage filter (login pages, company pages etc.) ──
                 if not _is_valid_post(title, link):
                     continue
 
+                # ── CHECK 2: LinkedIn profile URL filter ──
+                # GARBAGE_URL_PATTERNS already includes linkedin.com/in/ so this
+                # is caught by _is_valid_post above, but keeping explicit check
+                # here as belt-and-suspenders in case URL format varies
+                if "linkedin.com/in/" in link.lower():
+                    continue
+
+                # ── CHECK 3: Profile headline title filter ──
+                # Catches profiles that slipped past URL check because they came
+                # from a non /in/ URL (e.g. Google cached version, redirect URL)
+                # Examples caught:
+                #   "Sushmitha Sonkamble - SailPoint IdentityIQ/ISC Certified"
+                #   "Ashish Gangavaram, CISA - LinkedIn"
+                #   "Anand Kumar - Cyber Threat Intelligence @ adidas"
+                if _is_profile_headline(title):
+                    continue
+
+                # ── CHECK 4: Minimum description quality ──
+                # Real job posts have substantive descriptions.
+                # Profile stub pages and login redirects have almost nothing.
+                if len(desc.strip()) < 80:
+                    continue
+
+                # ── All checks passed — keep this entry ──
                 seen.add(link)
                 valid += 1
                 results.append({
