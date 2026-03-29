@@ -45,51 +45,55 @@ def e(text) -> str:
 def format_alert(listing: dict) -> str:
     score = listing.get("legitimacy_score", 0)
 
-    # Score badge
     badge = "✅" if score >= 8 else "🟡" if score >= 6 else "⚠️"
 
-    # Type tags shown prominently at top
     tags = []
     if listing.get("is_intern"):           tags.append("🎓 INTERN")
-    if listing.get("is_walk_in"):          tags.append("🚶 WALK-IN")
     if listing.get("is_fresher_eligible"): tags.append("🌱 FRESHER OK")
 
-    # Work mode tag
     mode = listing.get("work_mode", "unknown")
     mode_tag = {"remote": "💻 Remote", "hybrid": "🔀 Hybrid",
                 "onsite": "🏢 Onsite"}.get(mode, "")
 
-    # Red flags
+    domain = listing.get("domain", "")
+    domain_tag = f"🔐 {domain}" if domain else ""
+
     flags = listing.get("red_flags", [])
     flags_text = "\n".join(f"  • {e(f)}" for f in flags) if flags else "  None"
 
+    skills = listing.get("skills_required", [])
+    skills_text = ", ".join(skills[:6]) if skills else "Not specified"
+
     lines = [
-        f"{badge} <b>Score {score}/10</b>  {' | '.join(tags)}",
+        f"{badge} <b>Score {score}/10</b>  {' | '.join(filter(None, [domain_tag, mode_tag] + tags))}",
         "",
         f"<b>Role:</b> {e(listing.get('job_title', 'Unknown'))}",
         f"<b>Company:</b> {e(listing.get('company', 'Unknown'))} <i>({e(listing.get('company_tier', 'unknown'))})</i>",
     ]
 
-    if mode_tag:
-        lines.append(f"<b>Work Mode:</b> {mode_tag}")
-
     exp = listing.get("experience_required")
     if exp:
         lines.append(f"<b>Experience:</b> {e(exp)}")
 
-    pay = listing.get("stipend_or_salary")
-    if pay:
-        lines.append(f"<b>Stipend/Salary:</b> {e(pay)}")
+    salary = listing.get("salary_range")
+    if salary:
+        lines.append(f"<b>Salary:</b> {e(salary)}")
+
+    lines.append(f"<b>Skills:</b> {e(skills_text)}")
+
+    notice = listing.get("notice_period")
+    if notice:
+        lines.append(f"<b>Notice Period:</b> {e(notice)}")
+
+    openings = listing.get("openings_count")
+    if openings:
+        lines.append(f"<b>Openings:</b> {e(str(openings))}")
 
     deadline = listing.get("application_deadline")
     if deadline:
         lines.append(f"<b>Apply By:</b> {e(deadline)}")
 
     lines += [
-        f"<b>Walk-in Date:</b> {e(listing.get('walk_in_date') or 'Not specified')}",
-        f"<b>Walk-in Time:</b> {e(listing.get('walk_in_time') or 'Not specified')}",
-        f"<b>Venue:</b> {e(listing.get('location_address') or 'Not specified')}",
-        f"<b>Contact:</b> {e(listing.get('contact') or 'Not specified')}",
         "",
         f"<b>Summary:</b> {e(listing.get('summary', ''))}",
         "",
@@ -99,12 +103,12 @@ def format_alert(listing: dict) -> str:
         f"<b>Source:</b> {e(listing.get('source', ''))}",
     ]
 
-    url = listing.get("url", "")
-    if url:
-        lines.append(f'<a href="{url}">View listing →</a>')
+    apply_url = listing.get("apply_url") or listing.get("url", "")
+    if apply_url:
+        lines.append(f'<a href="{apply_url}">Apply Now →</a>')
 
     return "\n".join(lines)
-
+    
 
 def notify_all(new_listings: list, total_scraped: int):
     if not new_listings:
