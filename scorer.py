@@ -162,25 +162,113 @@ def is_relevant(listing: dict) -> bool:
     title    = sanitize(listing.get("title", "")).lower()
     desc     = sanitize(listing.get("description", "")).lower()
     combined = title + " " + desc
+    url      = (listing.get("url") or listing.get("job_url") or "").lower()
 
-    # Regex-based rejects (job count pages)
+    # ------------------------------------------------------------------
+    # 1. URL-based rejects — fastest check, do it first
+    # ------------------------------------------------------------------
+    # LinkedIn profile pages (linkedin.com/in/username) are people, not jobs
+    if "linkedin.com/in/" in url:
+        return False
+
+    # ------------------------------------------------------------------
+    # 2. Regex-based rejects (job count pages like "2,000+ jobs in India")
+    # ------------------------------------------------------------------
     for pattern in REJECT_REGEX:
         if re.match(pattern, title, re.IGNORECASE):
             return False
 
-    # Keyword-based rejects
+    # ------------------------------------------------------------------
+    # 3. Title-based keyword rejects
+    # ------------------------------------------------------------------
     if any(p in title for p in REJECT_PATTERNS):
         return False
 
-    # Must have a target role or intern+security combo
-    has_role   = any(r in combined for r in TARGET_ROLES)
-    has_intern = any(k in combined for k in INTERN_KEYWORDS)
-    has_sec    = any(k in combined for k in [
+    # ------------------------------------------------------------------
+    # 4. Profile page pattern — catches profiles that slipped past URL check
+    #    Pattern: "Firstname Lastname - Job Title @ Company"
+    #    These are LinkedIn profile headlines, not job postings
+    # ------------------------------------------------------------------
+    if re.match(r'^[a-z]+ [a-z]+(,? [a-z]+)? - .{5,} @', title):
+        return False
+
+    # ------------------------------------------------------------------
+    # 5. Content-based rejects — articles, advice posts, course promos
+    #    Check combined so we catch these even if title looks innocent
+    # ------------------------------------------------------------------
+    CONTENT_REJECTS = [
+        # Course/certification promos masquerading as internships
+        "offers free", "free cyber security virtual", "free online cyber",
+        "free cybersecurity online", "virtual internship for college",
+        "with certificate for everyone",
+        # Retrospective / experience posts (not hiring)
+        "meet our interns", "my internship at", "my internship journey",
+        "officially completed my", "i have completed",
+        "excited to share that i", "thrilled to announce",
+        # Advice / resource posts
+        "cheat sheet", "roadmap to become", "where to find",
+        "how to get into", "tips for", "guide to",
+        # Scam awareness posts (ironic — they mention internship scams)
+        "rise of fake internships", "beware of internship",
+        "reality check", "fake internship",
+        # Interview experience writeups (not job postings)
+        "interview experience", "interview process at",
+        # Question/opinion posts
+        "is this enough for", "what salary can freshers expect",
+        "per month (source:", "leetcode/glassdoor",
+    ]
+    if any(p in combined for p in CONTENT_REJECTS):
+        return False
+
+    # ------------------------------------------------------------------
+    # 6. Walk-in rejects — you want online jobs only
+    # ------------------------------------------------------------------
+    WALKIN_REJECTS = [
+        "walk-in", "walk in interview", "walkin interview",
+        "walk-in drive", "walkin drive", "direct interview",
+        "mega drive", "hiring drive",
+    ]
+    if any(p in combined for p in WALKIN_REJECTS):
+        return False
+
+    # ------------------------------------------------------------------
+    # 7. Non-cybersecurity domain rejects
+    #    Catches VLSI, hardware, non-relevant fields slipping through
+    # ------------------------------------------------------------------
+    DOMAIN_REJECTS = [
+        "vlsi", "embedded systems", "mechanical engineer",
+        "civil engineer", "electrical engineer",
+        "accounts receivable", "accounts payable",
+        "content writer", "graphic designer", "ux designer",
+        "customer support", "customer service", "call center",
+        "supply chain", "logistics", "teacher", "professor",
+        "medical officer", "nurse", "chartered accountant",
+    ]
+    if any(p in title for p in DOMAIN_REJECTS):
+        return False
+
+    # ------------------------------------------------------------------
+    # 8. Experience filter — drop clearly senior roles (saves Groq calls)
+    #    Catches "15+ years", "10-15 years" etc in title
+    # ------------------------------------------------------------------
+    if re.search(r'\b(1[0-9]|20)\+?\s*years?\b', title):
+        return False
+
+    # ------------------------------------------------------------------
+    # 9. Must match a target role OR intern+security combo
+    #    Changed: require role match in TITLE specifically, not just anywhere
+    #    in combined text — description-only matches let through too many
+    #    irrelevant listings (e.g. a marketing post mentioning "security" once)
+    # ------------------------------------------------------------------
+    has_role_in_title   = any(r in title for r in TARGET_ROLES)
+    has_intern_in_title = any(k in title for k in INTERN_KEYWORDS)
+    has_sec_in_combined = any(k in combined for k in [
         "security", "cyber", "risk", "compliance", "grc", "audit",
         "fraud", "kyc", "aml", "privacy", "cloud", "network",
         "forensic", "malware", "threat", "vulnerability",
     ])
-    return has_role or (has_intern and has_sec)
+
+    return has_role_in_title or (has_intern_in_title and has_sec_in_combined)
 
 
 def pre_filter(listings: list) -> list:
