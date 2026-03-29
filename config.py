@@ -111,7 +111,7 @@ BANGALORE_KEYWORDS = [
 ]
 
 # Lowered to 4 to catch intern/fresher postings which are often less formal
-MIN_LEGITIMACY_SCORE = 4
+MIN_LEGITIMACY_SCORE = 5
 
 GROQ_MODEL = "llama-3.1-8b-instant"
 
