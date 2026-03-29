@@ -19,39 +19,50 @@ SYSTEM_PROMPT = (
 USER_PROMPT_PREFIX = (
     "You are an expert analyst of the Indian job market, "
     "specializing in Bangalore cybersecurity hiring for freshers and interns.\n\n"
-    "Analyze the listing below and return ONLY a valid JSON object.\n\n"
+    "Analyze the job listing below and return ONLY a valid JSON object.\n\n"
     "Required keys:\n"
     '{\n'
-    '  "job_title": "normalized title",\n'
+    '  "job_title": "normalized title string",\n'
     '  "company": "company name or empty string",\n'
     '  "company_tier": "MNC or startup or mid-tier or unknown",\n'
-    '  "walk_in_date": "YYYY-MM-DD or null",\n'
-    '  "walk_in_time": "HH:MM-HH:MM or null",\n'
-    '  "location_address": "specific Bangalore address or null",\n'
-    '  "contact": "email or phone or null",\n'
     '  "legitimacy_score": 1-10,\n'
     '  "red_flags": [],\n'
     '  "summary": "one sentence",\n'
-    '  "is_walk_in": true or false,\n'
     '  "is_intern": true or false,\n'
     '  "is_fresher_eligible": true or false,\n'
     '  "experience_required": "e.g. 0-2 years or null",\n'
     '  "work_mode": "remote or hybrid or onsite or unknown",\n'
-    '  "stipend_or_salary": "e.g. 15000/month or null",\n'
-    '  "application_deadline": "YYYY-MM-DD or null"\n'
+    '  "skills_required": ["skill1", "skill2"],\n'
+    '  "salary_range": "e.g. 4-6 LPA or null",\n'
+    '  "apply_url": "direct application URL or null",\n'
+    '  "notice_period": "immediate or 30 days or null",\n'
+    '  "openings_count": number or null,\n'
+    '  "posted_date": "YYYY-MM-DD or null",\n'
+    '  "application_deadline": "YYYY-MM-DD or null",\n'
+    '  "domain": "SOC or GRC or AppSec or VAPT or CloudSec or IAM or Forensics or General"\n'
     '}\n\n'
-    "SCORING:\n"
-    "9-10: Known company, full address, corporate contact, specific date+time\n"
-    "7-8: Recognizable company, has venue+contact+date\n"
-    "5-6: Unknown company but specific venue+contact+date, no scam signals\n"
-    "3-4: Missing address or contact, no scam signals\n"
-    "1-2: Registration fee, guaranteed placement, fake salary, no address,\n"
-    "     OR news article/personal post/profile/job count page\n\n"
-    "is_intern=true if: intern, internship, stipend, trainee program, apprentice\n"
-    "is_fresher_eligible=true if: fresher, 0 years, 0-2 years, entry level, intern\n\n"
+    "SCORING RUBRIC:\n"
+    "9-10: MNC or well-known company, detailed JD with specific skills, "
+    "      realistic salary (3-12 LPA for fresher/0-2yr), direct apply link, "
+    "      clear eligibility criteria, no red flags\n"
+    "7-8:  Recognizable company, decent JD, apply link present, "
+    "      realistic expectations, minor info gaps\n"
+    "5-6:  Unknown/startup company but specific role, real skills listed, "
+    "      legitimate-looking apply link or source, no scam signals\n"
+    "3-4:  Vague JD, no salary info, no company name, "
+    "      but no active scam signals detected\n"
+    "1-2:  ANY of: registration/training fee required, guaranteed placement/interview, "
+    "      unrealistic salary (50k/month fresher), no apply link + no company name, "
+    "      obvious fake or spam posting\n\n"
+    "IMPORTANT RULES:\n"
+    "- Missing salary is NORMAL — do not penalize\n"
+    "- Missing physical address is NORMAL for online jobs — do not penalize\n"
+    "- No walk-in date expected — this is an online job posting\n"
+    "- is_intern=true if: intern, internship, stipend, trainee, apprentice\n"
+    "- is_fresher_eligible=true if: fresher, 0 years, 0-2 years, entry level, intern\n"
+    "- domain: pick closest from SOC/GRC/AppSec/VAPT/CloudSec/IAM/Forensics/General\n\n"
     "LISTING:\n"
 )
-
 
 # =============================================================================
 # SANITIZE
@@ -269,19 +280,20 @@ def score_listing(listing: dict) -> dict | None:
             "job_title":            d.get("job_title")  or listing.get("title", ""),
             "company":              d.get("company")    or listing.get("company", ""),
             "company_tier":         d.get("company_tier", "unknown"),
-            "walk_in_date":         d.get("walk_in_date"),
-            "walk_in_time":         d.get("walk_in_time"),
-            "location_address":     d.get("location_address"),
-            "contact":              d.get("contact"),
+            "domain":               d.get("domain", "General"),
             "legitimacy_score":     int(d.get("legitimacy_score", 1)),
             "red_flags":            d.get("red_flags", []),
             "summary":              d.get("summary", ""),
-            "is_walk_in":           bool(d.get("is_walk_in", False)),
             "is_intern":            bool(d.get("is_intern", False)),
             "is_fresher_eligible":  bool(d.get("is_fresher_eligible", False)),
             "experience_required":  d.get("experience_required"),
             "work_mode":            d.get("work_mode", "unknown"),
-            "stipend_or_salary":    d.get("stipend_or_salary"),
+            "skills_required":      d.get("skills_required", []),
+            "salary_range":         d.get("salary_range"),
+            "apply_url":            d.get("apply_url") or listing.get("job_url", ""),
+            "notice_period":        d.get("notice_period"),
+            "openings_count":       d.get("openings_count"),
+            "posted_date":          d.get("posted_date"),
             "application_deadline": d.get("application_deadline"),
             "status":               "pending",
         }
