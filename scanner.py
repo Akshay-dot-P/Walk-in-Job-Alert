@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     logger.info("=" * 60)
-    logger.info("Walk-In + Intern Scanner started at %s",
+    logger.info("Cyber Job Scanner started at %s",
                 datetime.now(timezone.utc).isoformat())
     logger.info("=" * 60)
 
