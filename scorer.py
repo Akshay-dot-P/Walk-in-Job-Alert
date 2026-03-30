@@ -5,7 +5,7 @@ import time
 import logging
 import requests
 from datetime import datetime, timezone
-from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS
+from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS, KNOWN_MNCS
 
 logger = logging.getLogger(__name__)
 
@@ -25,21 +25,16 @@ USER_PROMPT_PREFIX = (
     '  "job_title": "normalized title string",\n'
     '  "company": "company name or empty string",\n'
     '  "company_tier": "MNC or startup or mid-tier or unknown",\n'
+    '  "domain": "SOC or GRC or AppSec or VAPT or CloudSec or IAM or Forensics or Risk or Fraud-AML or General",\n'
     '  "legitimacy_score": 1-10,\n'
     '  "red_flags": [],\n'
     '  "summary": "one sentence",\n'
     '  "is_intern": true or false,\n'
-    '  "is_fresher_eligible": true or false,\n'
-    '  "experience_required": "e.g. 0-2 years or null",\n'
-    '  "work_mode": "remote or hybrid or onsite or unknown",\n'
-    '  "skills_required": ["skill1", "skill2"],\n'
+    '  "experience_required": "e.g. 0-2 years or freshers or null",\n'
+    '  "skills_required": "comma-separated skills e.g. SIEM, Python, ISO 27001 or empty string",\n'
     '  "salary_range": "e.g. 4-6 LPA or null",\n'
     '  "apply_url": "direct application URL or null",\n'
-    '  "notice_period": "immediate or 30 days or null",\n'
-    '  "openings_count": number or null,\n'
-    '  "posted_date": "YYYY-MM-DD or null",\n'
-    '  "application_deadline": "YYYY-MM-DD or null",\n'
-    '  "domain": "SOC or GRC or AppSec or VAPT or CloudSec or IAM or Forensics or General"\n'
+    '  "posted_date": "YYYY-MM-DD or null"\n'
     '}\n\n'
     "SCORING RUBRIC:\n"
     "9-10: MNC or well-known company, detailed JD with specific skills, "
@@ -59,8 +54,8 @@ USER_PROMPT_PREFIX = (
     "- Missing physical address is NORMAL for online jobs — do not penalize\n"
     "- No walk-in date expected — this is an online job posting\n"
     "- is_intern=true if: intern, internship, stipend, trainee, apprentice\n"
-    "- is_fresher_eligible=true if: fresher, 0 years, 0-2 years, entry level, intern\n"
-    "- domain: pick closest from SOC/GRC/AppSec/VAPT/CloudSec/IAM/Forensics/General\n\n"
+    "- skills_required must be a plain comma-separated STRING, not a list/array\n"
+    "- domain: pick closest from SOC/GRC/AppSec/VAPT/CloudSec/IAM/Forensics/Risk/Fraud-AML/General\n\n"
     "LISTING:\n"
 )
 
@@ -106,21 +101,18 @@ def sanitize(text: str) -> str:
 
 
 # =============================================================================
-# PRE-FILTER
+# PRE-FILTER  (unchanged from original)
 # =============================================================================
 
 REJECT_PATTERNS = [
-    # LinkedIn job count pages — "X,000+ Role jobs in Country"
     "jobs in united states", "jobs in india", "jobs in united kingdom",
     "jobs in canada", "jobs in australia", "jobs in singapore",
     "jobs in germany", "jobs in europe", "+ jobs",
     "new jobs", "(1,713 new)", "(244 new)",
-    # Profile/person pages
     "| ceh certified", "| cissp", "| gcfa", "| ejpt",
     "penetration tester| python", "cyber security professional",
     "helping organizations secure", "satish kumar", "deepak pokhrel",
     "ramavath rakesh",
-    # Personal achievement / experience posts
     "excited to share that i", "thrilled to share that i",
     "excited to announce that i", "i have been selected",
     "i have kicked off my", "officially completed my",
@@ -129,13 +121,10 @@ REJECT_PATTERNS = [
     "my internship at", "my 6-month internship", "my internship journey",
     "left bangalore to pursue", "kickstart your cybersecurity career!",
     "roadmap to become", "read this be",
-    # Garbage pages
     "log in or sign up", "sign up", "join now", "linkedin india",
     "linkedin: log in", "page not found", "404", "jobs at ", "careers at ",
-    # Course posts
     "free cybersecurity online", "with certificate for everyone",
     "per month (source:", "leetcode/glassdoor",
-    # Irrelevant roles
     "food experience", "chef", "restaurant",
     "accounts receivable", "accounts payable", "legal entity controller",
     "head of global finance", "monetization operation",
@@ -151,10 +140,9 @@ REJECT_PATTERNS = [
     "chartered accountant",
 ]
 
-# Titles matching these regex patterns are rejected
 REJECT_REGEX = [
-    r'^\d[\d,]+\+?\s+\w',        # "2,000+ Information Security..." or "48,000+ Malware..."
-    r'^\d+\s+\w+.*jobs in',      # "768 Information Security Advisor jobs in..."
+    r'^\d[\d,]+\+?\s+\w',
+    r'^\d+\s+\w+.*jobs in',
 ]
 
 
@@ -164,65 +152,34 @@ def is_relevant(listing: dict) -> bool:
     combined = title + " " + desc
     url      = (listing.get("url") or listing.get("job_url") or "").lower()
 
-    # ------------------------------------------------------------------
-    # 1. URL-based rejects — fastest check, do it first
-    # ------------------------------------------------------------------
-    # LinkedIn profile pages (linkedin.com/in/username) are people, not jobs
     if "linkedin.com/in/" in url:
         return False
-
-    # ------------------------------------------------------------------
-    # 2. Regex-based rejects (job count pages like "2,000+ jobs in India")
-    # ------------------------------------------------------------------
     for pattern in REJECT_REGEX:
         if re.match(pattern, title, re.IGNORECASE):
             return False
-
-    # ------------------------------------------------------------------
-    # 3. Title-based keyword rejects
-    # ------------------------------------------------------------------
     if any(p in title for p in REJECT_PATTERNS):
         return False
-
-    # ------------------------------------------------------------------
-    # 4. Profile page pattern — catches profiles that slipped past URL check
-    #    Pattern: "Firstname Lastname - Job Title @ Company"
-    #    These are LinkedIn profile headlines, not job postings
-    # ------------------------------------------------------------------
     if re.match(r'^[a-z]+ [a-z]+(,? [a-z]+)? - .{5,} @', title):
         return False
 
-    # ------------------------------------------------------------------
-    # 5. Content-based rejects — articles, advice posts, course promos
-    #    Check combined so we catch these even if title looks innocent
-    # ------------------------------------------------------------------
     CONTENT_REJECTS = [
-        # Course/certification promos masquerading as internships
         "offers free", "free cyber security virtual", "free online cyber",
         "free cybersecurity online", "virtual internship for college",
         "with certificate for everyone",
-        # Retrospective / experience posts (not hiring)
         "meet our interns", "my internship at", "my internship journey",
         "officially completed my", "i have completed",
         "excited to share that i", "thrilled to announce",
-        # Advice / resource posts
         "cheat sheet", "roadmap to become", "where to find",
         "how to get into", "tips for", "guide to",
-        # Scam awareness posts (ironic — they mention internship scams)
         "rise of fake internships", "beware of internship",
         "reality check", "fake internship",
-        # Interview experience writeups (not job postings)
         "interview experience", "interview process at",
-        # Question/opinion posts
         "is this enough for", "what salary can freshers expect",
         "per month (source:", "leetcode/glassdoor",
     ]
     if any(p in combined for p in CONTENT_REJECTS):
         return False
 
-    # ------------------------------------------------------------------
-    # 6. Walk-in rejects — you want online jobs only
-    # ------------------------------------------------------------------
     WALKIN_REJECTS = [
         "walk-in", "walk in interview", "walkin interview",
         "walk-in drive", "walkin drive", "direct interview",
@@ -231,10 +188,6 @@ def is_relevant(listing: dict) -> bool:
     if any(p in combined for p in WALKIN_REJECTS):
         return False
 
-    # ------------------------------------------------------------------
-    # 7. Non-cybersecurity domain rejects
-    #    Catches VLSI, hardware, non-relevant fields slipping through
-    # ------------------------------------------------------------------
     DOMAIN_REJECTS = [
         "vlsi", "embedded systems", "mechanical engineer",
         "civil engineer", "electrical engineer",
@@ -247,19 +200,9 @@ def is_relevant(listing: dict) -> bool:
     if any(p in title for p in DOMAIN_REJECTS):
         return False
 
-    # ------------------------------------------------------------------
-    # 8. Experience filter — drop clearly senior roles (saves Groq calls)
-    #    Catches "15+ years", "10-15 years" etc in title
-    # ------------------------------------------------------------------
     if re.search(r'\b(1[0-9]|20)\+?\s*years?\b', title):
         return False
 
-    # ------------------------------------------------------------------
-    # 9. Must match a target role OR intern+security combo
-    #    Changed: require role match in TITLE specifically, not just anywhere
-    #    in combined text — description-only matches let through too many
-    #    irrelevant listings (e.g. a marketing post mentioning "security" once)
-    # ------------------------------------------------------------------
     has_role_in_title   = any(r in title for r in TARGET_ROLES)
     has_intern_in_title = any(k in title for k in INTERN_KEYWORDS)
     has_sec_in_combined = any(k in combined for k in [
@@ -279,7 +222,7 @@ def pre_filter(listings: list) -> list:
 
 
 # =============================================================================
-# GROQ CALL — with exponential backoff retry on 429
+# GROQ CALL  (unchanged from original — uses retry-after header)
 # =============================================================================
 
 def call_groq(listing_text: str, retries: int = 4) -> str:
@@ -296,7 +239,7 @@ def call_groq(listing_text: str, retries: int = 4) -> str:
             {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
         ],
         "temperature": 0.1,
-        "max_tokens":  800,
+        "max_tokens":  600,
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -309,24 +252,16 @@ def call_groq(listing_text: str, retries: int = 4) -> str:
                               json=payload, timeout=30)
 
             if r.status_code == 429:
-                # Read retry-after header if present, else use exponential backoff
                 retry_after = r.headers.get("retry-after") or r.headers.get("x-ratelimit-reset-requests")
-                if retry_after:
-                    wait = float(retry_after) + 1
-                else:
-                    wait = 10 * (2 ** (attempt - 1))  # 10s, 20s, 40s, 80s
-                logger.warning(
-                    "Groq 429 rate limit (attempt %d/%d) — waiting %.0fs",
-                    attempt, retries, wait
-                )
+                wait = float(retry_after) + 1 if retry_after else 10 * (2 ** (attempt - 1))
+                logger.warning("Groq 429 rate limit (attempt %d/%d) — waiting %.0fs",
+                               attempt, retries, wait)
                 time.sleep(wait)
                 continue
 
             if r.status_code == 400:
-                try:
-                    err_msg = r.json().get("error", {}).get("message", r.text[:200])
-                except Exception:
-                    err_msg = r.text[:200]
+                try:    err_msg = r.json().get("error", {}).get("message", r.text[:200])
+                except: err_msg = r.text[:200]
                 logger.error("Groq 400: %s", err_msg)
 
             r.raise_for_status()
@@ -339,6 +274,34 @@ def call_groq(listing_text: str, retries: int = 4) -> str:
 
     raise RuntimeError(f"Groq failed after {retries} attempts")
 
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+
+def _resolve_tier(company: str, ai_tier: str) -> str:
+    """Override to MNC if company is in known list."""
+    if any(mnc in (company or "").lower() for mnc in KNOWN_MNCS):
+        return "MNC"
+    return ai_tier if ai_tier in ("MNC", "mid-tier", "startup") else "unknown"
+
+
+def _merge_company(name: str, tier: str) -> str:
+    """'Accenture' + 'MNC' → 'Accenture (MNC)'"""
+    name = (name or "").strip() or "Unknown"
+    return f"{name} ({tier})"
+
+
+def _skills_to_str(skills) -> str:
+    """Normalise skills — model may return list or string."""
+    if isinstance(skills, list):
+        return ", ".join(str(s).strip() for s in skills if s)
+    return str(skills or "").strip()
+
+
+# =============================================================================
+# SCORE ONE LISTING
+# =============================================================================
 
 def score_listing(listing: dict) -> dict | None:
     listing_text = (
@@ -361,37 +324,34 @@ def score_listing(listing: dict) -> dict | None:
             raise ValueError("No JSON in response")
         d = json.loads(raw[start : end + 1])
 
+        ai_name = d.get("company") or listing.get("company", "")
+        ai_tier = _resolve_tier(ai_name, d.get("company_tier", "unknown"))
+
+        # ── Build result dict — keys match SHEET_COLUMNS exactly ──────────────
         result = {
             "scraped_at":           datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "source":               listing.get("source", ""),
-            "url":                  listing.get("job_url") or listing.get("url", ""),
             "job_title":            d.get("job_title")  or listing.get("title", ""),
-            "company":              d.get("company")    or listing.get("company", ""),
-            "company_tier":         d.get("company_tier", "unknown"),
+            "company":              _merge_company(ai_name, ai_tier),
             "domain":               d.get("domain", "General"),
             "legitimacy_score":     int(d.get("legitimacy_score", 1)),
-            "red_flags":            d.get("red_flags", []),
+            "red_flags":            d.get("red_flags", []),   # stored as list; _save_listing converts
             "summary":              d.get("summary", ""),
             "is_intern":            bool(d.get("is_intern", False)),
-            "is_fresher_eligible":  bool(d.get("is_fresher_eligible", False)),
-            "experience_required":  d.get("experience_required"),
-            "work_mode":            d.get("work_mode", "unknown"),
-            "skills_required":      d.get("skills_required", []),
-            "salary_range":         d.get("salary_range"),
+            "experience_required":  d.get("experience_required") or "",
+            "skills_required":      _skills_to_str(d.get("skills_required", "")),
+            "salary_range":         d.get("salary_range") or "",
             "apply_url":            d.get("apply_url") or listing.get("job_url", ""),
-            "notice_period":        d.get("notice_period"),
-            "openings_count":       d.get("openings_count"),
-            "posted_date":          d.get("posted_date"),
-            "application_deadline": d.get("application_deadline"),
-            "status":               "pending",
+            "posted_date":          d.get("posted_date") or "",
+            "source":               listing.get("source", ""),
+            "url":                  listing.get("job_url") or listing.get("url", ""),
+            "status":               "New",
         }
 
-        tags = []
-        if result["is_intern"]:           tags.append("INTERN")
-        if result["is_fresher_eligible"]: tags.append("FRESHER-OK")
+        tag = "INTERN" if result["is_intern"] else "regular"
         logger.info("  [%s] %s @ %s | score=%d | %s",
-                    "/".join(tags) or "regular",
-                    result["job_title"][:35], result["company"][:20],
+                    tag,
+                    result["job_title"][:35],
+                    result["company"][:25],
                     result["legitimacy_score"],
                     result["experience_required"] or "?")
         return result
@@ -404,21 +364,22 @@ def score_listing(listing: dict) -> dict | None:
         return None
 
 
+# =============================================================================
+# SCORE ALL
+# =============================================================================
+
 def score_all(listings: list, min_score: int = 4) -> list:
     relevant = pre_filter(listings)
     if not relevant:
         logger.info("Nothing relevant after pre-filter")
         return []
 
-    # Dedup by company+title BEFORE scoring
-    # Prevents scoring the same posting 7 times just because it appeared
-    # in multiple RSS queries with slightly different URLs
+    # Dedup by company+title before scoring (prevents scoring same post N times)
     seen_key: set[str] = set()
     deduped = []
     for l in relevant:
         title   = sanitize(l.get("title", "")).lower().strip()
         company = sanitize(l.get("company", "")).lower().strip()
-        # For RSS posts with no company, use title alone as key
         key = f"{company}|{title}" if company else title
         if key in seen_key:
             continue
@@ -431,10 +392,9 @@ def score_all(listings: list, min_score: int = 4) -> list:
     scored = []
     logger.info("Scoring %d listings via Groq...", len(deduped))
 
-    for i, listing in enumerate(deduped):  # ← use deduped, not relevant
-        
+    for i, listing in enumerate(deduped):
         logger.info("Scoring %d/%d: %s",
-                    i + 1, len(relevant),
+                    i + 1, len(deduped),
                     sanitize(listing.get("title", "?"))[:55])
         result = score_listing(listing)
 
@@ -445,10 +405,7 @@ def score_all(listings: list, min_score: int = 4) -> list:
             continue
 
         scored.append(result)
+        time.sleep(3)   # Groq free tier: 30 req/min
 
-        # Groq free tier: 30 req/min = 2s minimum between calls
-        # Use 3s to give headroom and avoid hitting the limit
-        time.sleep(3)
-
-    logger.info("Done: %d/%d passed", len(scored), len(relevant))
+    logger.info("Done: %d/%d passed", len(scored), len(deduped))
     return scored
