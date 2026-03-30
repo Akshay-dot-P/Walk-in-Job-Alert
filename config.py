@@ -116,11 +116,11 @@ MIN_LEGITIMACY_SCORE = 4
 GROQ_MODEL = "llama-3.1-8b-instant"
 
 SHEET_COLUMNS = [
-    "scraped_at", "job_title", "company", "company_tier", "domain",
+    "scraped_at", "job_title", "company", "domain",
     "legitimacy_score", "red_flags", "summary",
-    "is_intern", "is_fresher_eligible", "experience_required",
-    "work_mode", "skills_required", "salary_range",
-    "apply_url", "notice_period", "openings_count",
-    "posted_date", "application_deadline",
+    "is_intern", "experience_required",
+    "skills_required", "salary_range",
+    "apply_url",
+    "posted_date",
     "source", "url", "status",
 ]
