@@ -146,24 +146,16 @@ def _build_seen_sets(worksheet) -> tuple[set[str], set[str]]:
     return seen_urls, seen_company_titles
 
 
-def _is_duplicate(
-    listing: dict,
-    seen_urls: set[str],
-    seen_company_dates: set[str],
-) -> bool:
-    """
-    Return True if this listing is a duplicate of something already in the sheet.
-
-    Check 1 (primary): exact URL match
-    Check 2 (fallback): same company name + same walk-in date
-    """
+def _is_duplicate(listing, seen_urls, seen_company_titles) -> bool:
     url = str(listing.get("url", "")).strip()
     if url and url in seen_urls:
         return True
 
     company = str(listing.get("company", "")).lower().strip()
-    date = str(listing.get("walk_in_date", "")).strip()
-    if company and date and f"{company}|{date}" in seen_company_dates:
+    title   = str(listing.get("job_title", "")).lower().strip()  # ← job_title
+    if company and title and f"{company}|{title}" in seen_company_titles:
+        return True
+    if not company and title and title in seen_company_titles:   # ← title-only fallback
         return True
 
     return False
