@@ -72,31 +72,31 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
     worksheet = spreadsheet.sheet1
 
     # Bootstrap headers on a fresh/empty sheet
-existing_headers = worksheet.row_values(1)
+    existing_headers = worksheet.row_values(1)
 
-if not existing_headers:
-    logger.info("Empty sheet — writing headers.")
-    worksheet.append_row(SHEET_COLUMNS)
-
-elif existing_headers != SHEET_COLUMNS:
-    all_rows = worksheet.get_all_values()
-    data_row_count = len(all_rows) - 1 if len(all_rows) > 1 else 0
-
-    if data_row_count == 0:
-        # No data rows — safe to rewrite headers automatically
-        logger.info("Wrong headers, no data — rewriting headers.")
-        worksheet.delete_rows(1)
-        worksheet.insert_row(SHEET_COLUMNS, 1)
+    if not existing_headers:
+        logger.info("Empty sheet — writing headers.")
+        worksheet.append_row(SHEET_COLUMNS)
+    
+    elif existing_headers != SHEET_COLUMNS:
+        all_rows = worksheet.get_all_values()
+        data_row_count = len(all_rows) - 1 if len(all_rows) > 1 else 0
+    
+        if data_row_count == 0:
+            # No data rows — safe to rewrite headers automatically
+            logger.info("Wrong headers, no data — rewriting headers.")
+            worksheet.delete_rows(1)
+            worksheet.insert_row(SHEET_COLUMNS, 1)
+        else:
+            # Data exists — warn but don't touch it
+            logger.warning(
+                "Sheet has %d rows under OLD headers. "
+                "Clear the sheet manually in your browser to fix. "
+                "Dedup still works via URL matching.",
+                data_row_count
+            )
     else:
-        # Data exists — warn but don't touch it
-        logger.warning(
-            "Sheet has %d rows under OLD headers. "
-            "Clear the sheet manually in your browser to fix. "
-            "Dedup still works via URL matching.",
-            data_row_count
-        )
-else:
-    logger.info("Sheet headers OK.")
+        logger.info("Sheet headers OK.")
     return worksheet
 
 
