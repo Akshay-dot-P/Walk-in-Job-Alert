@@ -52,8 +52,8 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
 
         if data_row_count == 0:
             logger.info("Wrong headers, no data — rewriting headers.")
-            worksheet.delete_rows(1)
-            worksheet.insert_row(SHEET_COLUMNS, 1)
+            worksheet.clear()                          # wipes everything safely
+            worksheet.update("A1", [SHEET_COLUMNS])   # write header row
         else:
             logger.warning(
                 "Sheet has %d rows under OLD headers. "
