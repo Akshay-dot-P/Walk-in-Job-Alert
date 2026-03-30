@@ -29,7 +29,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 LOCATION            = "Bengaluru, Karnataka, India"
-HOURS_OLD           = 9
+HOURS_OLD           = 72
 RESULTS_PER_TERM    = 40
 
 FQ_FRESHER = (
