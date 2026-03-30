@@ -124,3 +124,26 @@ SHEET_COLUMNS = [
     "posted_date",
     "source", "url", "status",
 ]
+
+KNOWN_MNCS = [
+    "accenture", "ibm", "deloitte", "kpmg", "pwc", "ey", "ernst",
+    "wipro", "infosys", "tcs", "hcl", "cognizant", "capgemini",
+    "tech mahindra", "mphasis", "hexaware", "ltimindtree", "birlasoft",
+    "palo alto", "crowdstrike", "mandiant", "microsoft", "cisco",
+    "symantec", "mcafee", "fortinet", "secureworks", "qualys",
+    "rapid7", "tenable", "check point", "cyberark", "sailpoint",
+    "hdfc bank", "icici bank", "axis bank", "kotak mahindra",
+    "sbi", "state bank", "yes bank", "indusind",
+    "jpmorgan", "jp morgan", "goldman sachs", "morgan stanley",
+    "citi", "citibank", "barclays", "deutsche bank", "bnp paribas",
+    "hsbc", "standard chartered", "societe generale", "ubs",
+    "bajaj finserv", "bajaj allianz", "hdfc life", "icici prudential",
+    "max life", "aditya birla", "razorpay", "paytm", "phonepe",
+    "wells fargo", "american express", "amex", "mastercard",
+    "visa", "paypal", "fidelity", "blackrock", "state street",
+    "bdo", "grant thornton", "caterpillar", "synopsys", "lseg",
+    "oracle", "sap", "salesforce", "google", "amazon", "meta",
+]
+ 
+
+ 
