@@ -72,18 +72,31 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
     worksheet = spreadsheet.sheet1
 
     # Bootstrap headers on a fresh/empty sheet
-    existing_headers = worksheet.row_values(1)
-    if not existing_headers:
-        logger.info("Setting up sheet headers (first run).")
-        worksheet.append_row(SHEET_COLUMNS)
-    elif existing_headers != SHEET_COLUMNS:
-        logger.warning(
-            f"Sheet headers don't match SHEET_COLUMNS. "
-            f"Expected: {SHEET_COLUMNS}\nFound: {existing_headers}\n"
-            "Data will still be written but column alignment may be off. "
-            "Clear the sheet and re-run to fix headers."
-        )
+existing_headers = worksheet.row_values(1)
 
+if not existing_headers:
+    logger.info("Empty sheet — writing headers.")
+    worksheet.append_row(SHEET_COLUMNS)
+
+elif existing_headers != SHEET_COLUMNS:
+    all_rows = worksheet.get_all_values()
+    data_row_count = len(all_rows) - 1 if len(all_rows) > 1 else 0
+
+    if data_row_count == 0:
+        # No data rows — safe to rewrite headers automatically
+        logger.info("Wrong headers, no data — rewriting headers.")
+        worksheet.delete_rows(1)
+        worksheet.insert_row(SHEET_COLUMNS, 1)
+    else:
+        # Data exists — warn but don't touch it
+        logger.warning(
+            "Sheet has %d rows under OLD headers. "
+            "Clear the sheet manually in your browser to fix. "
+            "Dedup still works via URL matching.",
+            data_row_count
+        )
+else:
+    logger.info("Sheet headers OK.")
     return worksheet
 
 
