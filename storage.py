@@ -105,38 +105,45 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
 # =============================================================================
 
 def _build_seen_sets(worksheet) -> tuple[set[str], set[str]]:
-    """
-    Read the full sheet once and return two sets for fast O(1) dedup lookups:
-      seen_urls         — all job URLs already stored
-      seen_company_dates — all "company|walk_in_date" pairs already stored
-
-    Reading the whole sheet once (rather than querying per-listing) is much
-    faster for batches of 50-150 listings.
-    """
     seen_urls: set[str] = set()
-    seen_company_dates: set[str] = set()
+    seen_company_titles: set[str] = set()         # ← renamed, job_title era
 
     try:
-        records = worksheet.get_all_records()
+        all_values = worksheet.get_all_values()   # ← never crashes, reads raw rows
+
+        if not all_values or len(all_values) < 2:
+            logger.info("Sheet is empty or header-only — no dedup history.")
+            return seen_urls, seen_company_titles
+
+        headers = all_values[0]
+        rows    = all_values[1:]
+
+        col = {h: i for i, h in enumerate(headers) if h}  # ← builds index map
+
+        url_idx     = col.get("url")
+        company_idx = col.get("company")
+        title_idx   = col.get("job_title")        # ← job_title instead of walk_in_date
+
+        for row in rows:
+            if url_idx is not None and url_idx < len(row):
+                url = row[url_idx].strip()
+                if url:
+                    seen_urls.add(url)
+
+            company = (row[company_idx].lower().strip()
+                       if company_idx is not None and company_idx < len(row) else "")
+            title   = (row[title_idx].lower().strip()
+                       if title_idx   is not None and title_idx   < len(row) else "")
+
+            if company and title:
+                seen_company_titles.add(f"{company}|{title}")  # ← company+title
+            elif title:
+                seen_company_titles.add(title)  # ← title-only for RSS posts
+
     except Exception as e:
-        logger.error(f"Could not read sheet for dedup check: {e}")
-        return seen_urls, seen_company_dates
+        logger.error("Dedup read failed: %s — all listings treated as new", e)
 
-    for row in records:
-        url = str(row.get("url", "")).strip()
-        if url:
-            seen_urls.add(url)
-
-        company = str(row.get("company", "")).lower().strip()
-        date = str(row.get("walk_in_date", "")).strip()
-        if company and date:
-            seen_company_dates.add(f"{company}|{date}")
-
-    logger.info(
-        f"Dedup index built: {len(seen_urls)} unique URLs, "
-        f"{len(seen_company_dates)} company+date pairs in sheet"
-    )
-    return seen_urls, seen_company_dates
+    return seen_urls, seen_company_titles
 
 
 def _is_duplicate(
