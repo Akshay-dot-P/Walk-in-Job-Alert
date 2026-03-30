@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    started_at = datetime.now(timezone.utc)
     logger.info("=" * 60)
-    logger.info("Cyber Job Scanner started at %s",
-                datetime.now(timezone.utc).isoformat())
+    logger.info("Cyber Job Scanner started at %s", started_at.isoformat())
     logger.info("=" * 60)
 
     logger.info("--- PHASE 1: Scraping ---")
@@ -47,14 +47,15 @@ def main():
     logger.info("--- PHASE 4: Telegram Alerts ---")
     notify_all(new_listings, total_scraped=len(raw_listings))
 
-    interns  = sum(1 for l in new_listings if l.get("is_intern"))
-    freshers = sum(1 for l in new_listings if l.get("is_fresher_eligible"))
+    # ── Summary ───────────────────────────────────────────────────────────────
+    elapsed  = (datetime.now(timezone.utc) - started_at).seconds
+    n_intern = sum(1 for l in new_listings if l.get("is_intern"))
+    n_jobs   = len(new_listings) - n_intern
 
     logger.info("=" * 60)
-    logger.info("COMPLETE | Scraped: %d | Scored: %d | New: %d",
-                len(raw_listings), len(scored), len(new_listings))
-    logger.info("  Intern: %d | Fresher-eligible: %d", interns, freshers)
-                
+    logger.info("COMPLETE | Scraped: %d | Scored: %d | New: %d | Runtime: %ds",
+                len(raw_listings), len(scored), len(new_listings), elapsed)
+    logger.info("  Internships: %d | Jobs: %d", n_intern, n_jobs)
     logger.info("=" * 60)
 
 
