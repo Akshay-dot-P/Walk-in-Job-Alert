@@ -53,6 +53,7 @@ USER_PROMPT_PREFIX = (
     "- Missing salary is NORMAL — do not penalize\n"
     "- Missing physical address is NORMAL for online jobs — do not penalize\n"
     "- No walk-in date expected — this is an online job posting\n"
+    "- Unknown or startup company is NOT a red flag — score based on role relevance, not company fame\n"
     "- is_intern=true if: intern, internship, stipend, trainee, apprentice\n"
     "- skills_required must be a plain comma-separated STRING, not a list/array\n"
     "- domain: pick closest from SOC/GRC/AppSec/VAPT/CloudSec/IAM/Forensics/Risk/Fraud-AML/General\n\n"
