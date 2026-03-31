@@ -203,6 +203,26 @@ def is_relevant(listing: dict) -> bool:
     if re.search(r'\b(1[0-9]|20)\+?\s*years?\b', title):
         return False
 
+        # ── Senior/management title filter ────────────────────────────────────────
+    SENIOR_REJECTS = [
+        "lead soc", "lead security", "lead analyst", "lead engineer",
+        "lead service", "lead siem", "lead consultant",
+        " sr. engineer", " sr engineer", "senior engineer",
+        "senior security analyst", "senior soc analyst",
+        "senior operations", "senior specialist",
+        "manager ", "supervisor", "director",
+        "head of", "vice president", " vp ",
+        "ciso", "principal engineer", "principal analyst", "staff engineer",
+    ]
+    SENIOR_EXCEPTIONS = [
+        "senior associate",    # Big 4 entry-level title
+        "sr associate", "sr. associate",
+    ]
+    has_senior    = any(p in title for p in SENIOR_REJECTS)
+    has_exception = any(p in title for p in SENIOR_EXCEPTIONS)
+    if has_senior and not has_exception:
+        return False
+
     has_role_in_title   = any(r in title for r in TARGET_ROLES)
     has_intern_in_title = any(k in title for k in INTERN_KEYWORDS)
     has_sec_in_combined = any(k in combined for k in [
