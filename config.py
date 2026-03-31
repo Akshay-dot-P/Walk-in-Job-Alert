@@ -116,13 +116,12 @@ MIN_LEGITIMACY_SCORE = 3
 GROQ_MODEL = "llama-3.1-8b-instant"
 
 SHEET_COLUMNS = [
-    "scraped_at", "job_title", "company", "domain",
-    "legitimacy_score", "red_flags", "summary",
+    "scraped_at", "job_title", "company", "domain", "apply_url",
+    "legitimacy_score", "summary",
     "experience_required",
     "skills_required", "salary_range",
-    "apply_url",
     "posted_date",
-    "source", "url", "status",
+    "source", "status",
 ]
 
 KNOWN_MNCS = [
