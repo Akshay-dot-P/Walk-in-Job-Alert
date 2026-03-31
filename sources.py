@@ -58,7 +58,7 @@ def qa(role): return f"({role}) {FQ_ALL}"
 
 LINKEDIN_TERMS = [
     # SOC / Blue Team
-    qf('"SOC analyst" OR "L1 SOC analyst" OR "security operations analyst"'),
+    qf('"SOC analyst" OR "L1 SOC analyst" OR "security operations analyst" OR "l1 analyst" OR "tier 1 analyst"'),
     qf('"L2 SOC analyst" OR "tier 1 analyst" OR "blue team analyst"'),
     qf('"cyber defense analyst" OR "security operations center analyst"'),
     # SIEM
@@ -80,7 +80,7 @@ LINKEDIN_TERMS = [
     qf('"bug bounty" OR "vulnerability researcher" OR "web application pentest"'),
     qf('"network pentest" OR "mobile pentest" OR "API security tester"'),
     # Vulnerability Management
-    qf('"vulnerability analyst" OR "vulnerability management analyst"'),
+    qf('"vulnerability analyst" OR "vulnerability management analyst" OR "vulnerability analyst"'),
     qf('"VA analyst" OR "Qualys analyst" OR "Tenable analyst"'),
     qf('"patch management analyst" OR "security assessment analyst"'),
     # AppSec / DevSecOps
