@@ -56,6 +56,10 @@ USER_PROMPT_PREFIX = (
     "- is_intern=true if: intern, internship, stipend, trainee, apprentice\n"
     "- skills_required must be a plain comma-separated STRING, not a list/array\n"
     "- domain: pick closest from SOC/GRC/AppSec/VAPT/CloudSec/IAM/Forensics/Risk/Fraud-AML/General\n\n"
+    "- SENIOR ROLES: titles containing Lead, Manager, Supervisor, Director, Sr. Engineer,\n"
+    "  Senior Engineer, Principal, VP, CISO must score 1-4 regardless of company prestige.\n"
+    "  Exception: 'Senior Associate' and 'Sr. Associate' at Big 4 firms (EY/PwC/Deloitte/KPMG)\n"
+    "  are entry-level titles and may score normally.\n\n"
     "LISTING:\n"
 )
 
