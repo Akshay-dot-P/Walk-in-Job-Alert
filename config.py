@@ -118,7 +118,7 @@ GROQ_MODEL = "llama-3.1-8b-instant"
 SHEET_COLUMNS = [
     "scraped_at", "job_title", "company", "domain",
     "legitimacy_score", "red_flags", "summary",
-    "is_intern", "experience_required",
+    "experience_required",
     "skills_required", "salary_range",
     "apply_url",
     "posted_date",
