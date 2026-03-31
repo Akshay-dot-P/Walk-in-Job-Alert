@@ -455,6 +455,18 @@ def fetch_linkedin_posts() -> list[dict]:
                 if len(desc.strip()) < 80:
                     continue
 
+              
+                # ADDED — 8 lines
+                published = entry.get("published_parsed")
+                if published:
+                    import time as _time
+                    age_days = (_time.time() - _time.mktime(published)) / 86400
+                    if age_days > 30:
+                        continue
+                # If published_parsed is missing we let it through  
+
+
+              
                 # ── All checks passed — keep this entry ──
                 seen.add(link)
                 valid += 1
