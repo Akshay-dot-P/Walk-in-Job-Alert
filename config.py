@@ -124,7 +124,7 @@ SHEET_COLUMNS = [
     "source",
     
 ]
-# "legitimacy_score", "skills_required",
+# "legitimacy_score", "skills_required", "status",
 
 KNOWN_MNCS = [
     "accenture", "ibm", "deloitte", "kpmg", "pwc", "ey", "ernst",
