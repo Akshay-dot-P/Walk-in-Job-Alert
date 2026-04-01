@@ -119,9 +119,9 @@ SHEET_COLUMNS = [
     "scraped_at", "job_title", "company", "domain", "apply_url", "status",
     "summary",
     "experience_required",
-    "salary_range",
     "posted_date",
     "source",
+    "salary_range",
     
 ]
 # "legitimacy_score", "skills_required", "status",
