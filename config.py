@@ -121,7 +121,7 @@ SHEET_COLUMNS = [
     "experience_required",
     "posted_date",
     "source",
-    "salary_range",
+    "salary_range"
     
 ]
 # "legitimacy_score", "skills_required", "status",
