@@ -123,7 +123,6 @@ SHEET_COLUMNS = [
     "posted_date",
     "source",
     "salary_range", 
-    "url",
 ]
 
 KNOWN_MNCS = [
