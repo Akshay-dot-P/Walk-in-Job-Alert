@@ -122,7 +122,8 @@ SHEET_COLUMNS = [
     "experience_required",
     "posted_date",
     "source",
-    "salary_range",    
+    "salary_range", 
+    "url",
 ]
 
 KNOWN_MNCS = [
