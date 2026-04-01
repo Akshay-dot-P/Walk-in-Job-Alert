@@ -461,7 +461,7 @@ def fetch_linkedin_posts() -> list[dict]:
                 if published:
                     import time as _time
                     age_days = (_time.time() - _time.mktime(published)) / 86400
-                    if age_days > 30:
+                    if age_days > 40:
                         continue
                 # If published_parsed is missing we let it through  
 
