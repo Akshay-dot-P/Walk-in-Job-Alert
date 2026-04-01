@@ -124,7 +124,6 @@ SHEET_COLUMNS = [
     "salary_range"
     
 ]
-# "legitimacy_score", "skills_required", "status",
 
 KNOWN_MNCS = [
     "accenture", "ibm", "deloitte", "kpmg", "pwc", "ey", "ernst",
