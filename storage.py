@@ -125,6 +125,99 @@ def _is_duplicate(listing, seen_urls, seen_company_titles) -> bool:
     return False
 
 
+
+def _set_status_dropdown(worksheet) -> None:
+    """
+    Apply a dropdown data-validation rule to the entire 'status' column
+    so you can click any cell and pick from: New / Applied / Interview /
+    Rejected / Offer / Not Relevant.
+    Uses gspread's DataValidationRule with a list of values.
+    Silently skips if the column isn't found or the API call fails.
+    """
+    try:
+        headers = worksheet.row_values(1)
+        if "status" not in headers:
+            return
+        status_col_letter = chr(ord('A') + headers.index("status"))
+        # Apply to rows 2–1000 (all data rows)
+        col_range = f"{status_col_letter}2:{status_col_letter}1000"
+ 
+        # Build a setDataValidation request via the Sheets API batchUpdate
+        rule = {
+            "condition": {
+                "type": "ONE_OF_LIST",
+                "values": [
+                    {"userEnteredValue": v}
+                    for v in ["New", "Applied", "Interview", "Rejected", "Offer", "Not Relevant"]
+                ],
+            },
+            "showCustomUi": True,
+            "strict": False,   # allow free-text too, just show the dropdown
+        }
+        worksheet.spreadsheet.batch_update({
+            "requests": [{
+                "setDataValidation": {
+                    "range": {
+                        "sheetId":          worksheet.id,
+                        "startRowIndex":    1,       # row 2 (0-indexed)
+                        "endRowIndex":      1000,
+                        "startColumnIndex": headers.index("status"),
+                        "endColumnIndex":   headers.index("status") + 1,
+                    },
+                    "rule": rule,
+                }
+            }]
+        })
+        logger.info("Status dropdown applied to column %s.", status_col_letter)
+    except Exception as exc:
+        logger.warning("Could not apply status dropdown (non-fatal): %s", exc)
+ 
+ 
+ 
+    seen_urls:           set[str] = set()
+    seen_company_titles: set[str] = set()
+ 
+    try:
+        all_values = worksheet.get_all_values()
+ 
+        if not all_values or len(all_values) < 2:
+            logger.info("Sheet is empty or header-only — no dedup history.")
+            return seen_urls, seen_company_titles
+ 
+        headers = all_values[0]
+        rows    = all_values[1:]
+        col     = {h: i for i, h in enumerate(headers) if h}
+ 
+        # Support both old sheets ("url") and new sheets ("apply_url")
+        url_idx     = col.get("apply_url") if col.get("apply_url") is not None else col.get("url")
+        company_idx = col.get("company")
+        title_idx   = col.get("job_title")
+ 
+        for row in rows:
+            if url_idx is not None and url_idx < len(row):
+                url = row[url_idx].strip()
+                if url:
+                    seen_urls.add(url)
+ 
+            company = (row[company_idx].lower().strip()
+                       if company_idx is not None and company_idx < len(row) else "")
+            title   = (row[title_idx].lower().strip()
+                       if title_idx   is not None and title_idx   < len(row) else "")
+ 
+            if company and title:
+                seen_company_titles.add(f"{company}|{title}")
+            elif title:
+                seen_company_titles.add(title)
+ 
+    except Exception as e:
+        logger.error("Dedup read failed: %s — all listings treated as new", e)
+ 
+    logger.info("Dedup index: %d URLs, %d company+title pairs",
+                len(seen_urls), len(seen_company_titles))
+    return seen_urls, seen_company_titles
+
+
+
 def _save_listing(worksheet, listing: dict) -> bool:
     try:
         row = []
