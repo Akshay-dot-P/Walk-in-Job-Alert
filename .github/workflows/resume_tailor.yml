@@ -1,22 +1,17 @@
 name: Resume Tailor
 
-# Triggers:
-#   1. Automatically after walkin_alert.yml finishes (so tailoring runs on fresh jobs)
-#   2. Manually from the Actions tab whenever you want
 on:
   workflow_run:
-    workflows: ["Walk-in Job Alert"]   # must match the 'name:' field in walkin_alert.yml
+    workflows: ["Walk-in Job Scanner"]   # Make sure this matches your main workflow name
     types: [completed]
-  workflow_dispatch:                   # manual trigger button in GitHub Actions UI
+  workflow_dispatch:
 
 jobs:
   tailor:
-    # Only run if the triggering workflow succeeded (skip if it crashed)
-    # For manual dispatch, always run
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
-
+    
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -24,30 +19,22 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-tailor-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-tailor-
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install gspread google-auth requests reportlab
+          pip install gspread google-auth requests reportlab groq
 
       - name: Run resume tailor
         env:
-          GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
-          TELEGRAM_TOKEN:      ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
-          GOOGLE_CREDS_JSON:   ${{ secrets.GOOGLE_CREDS_JSON }}
-          SHEET_NAME:          ${{ secrets.SHEET_NAME }}
-          WORKSHEET_NAME:      ${{ secrets.WORKSHEET_NAME }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
         run: python resume_tailor.py
