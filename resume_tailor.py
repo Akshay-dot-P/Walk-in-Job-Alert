@@ -9,7 +9,7 @@ this script:
   4. Marks the row tailored_resume = "sent" in the sheet
 
 Secrets needed (already in your repo):
-  GROQ_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GOOGLE_CREDS_JSON
+  GROQ_API_KEY, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GOOGLE_CREDS_JSON
 
 One new column is added to the sheet automatically: tailored_resume
 """
@@ -336,7 +336,7 @@ def build_pdf(data: dict) -> bytes:
 # ─────────────────────────────────────────────────────────
 def send_pdf_telegram(pdf_bytes: bytes, filename: str, caption: str) -> bool:
     """Send a PDF file to Telegram. Returns True on success."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     try:
         resp = requests.post(
             url,
