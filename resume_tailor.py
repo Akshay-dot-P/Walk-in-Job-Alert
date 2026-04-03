@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # Config (from environment / GitHub secrets)
 # ─────────────────────────────────────────────────────────
 GROQ_API_KEY       = os.environ["GROQ_API_KEY"]
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 GOOGLE_CREDS_JSON  = os.environ["GOOGLE_CREDS_JSON"]
 SHEET_NAME         = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
