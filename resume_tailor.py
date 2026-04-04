@@ -9,7 +9,7 @@ this script:
   4. Marks the row tailored_resume = "sent" in the sheet
 
 Secrets needed (already in your repo):
-  GROQ_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GOOGLE_CREDS_JSON
+  GROQ_API_KEY, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GOOGLE_CREDS_JSON
 
 One new column is added to the sheet automatically: tailored_resume
 """
