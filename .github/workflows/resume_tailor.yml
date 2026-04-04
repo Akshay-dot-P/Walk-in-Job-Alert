@@ -27,6 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
+          run: pip install gspread reportlab requests
           pip install gspread google-auth requests reportlab groq
 
       - name: Run resume tailor
