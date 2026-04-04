@@ -336,7 +336,7 @@ def build_pdf(data: dict) -> bytes:
 # ─────────────────────────────────────────────────────────
 def send_pdf_telegram(pdf_bytes: bytes, filename: str, caption: str) -> bool:
     """Send a PDF file to Telegram. Returns True on success."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
     try:
         resp = requests.post(
             url,
