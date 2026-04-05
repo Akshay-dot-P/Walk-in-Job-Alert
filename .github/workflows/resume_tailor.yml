@@ -84,4 +84,5 @@ jobs:
           WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
           RELEASE_TAG: ${{ steps.create_tag.outputs.tag_name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
         run: python update_sheet_with_links.py
