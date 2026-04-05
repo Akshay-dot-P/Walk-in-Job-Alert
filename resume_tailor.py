@@ -395,7 +395,7 @@ def get_worksheet():
         scopes=[
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
-    ],
+        ],
     )
     
     gc = gspread.Client(auth=creds)
