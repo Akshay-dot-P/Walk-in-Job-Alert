@@ -1,43 +1,86 @@
+# .github/workflows/resume_tailor.yml
 name: Resume Tailor
 
 on:
-  workflow_run:
-    workflows: ["Walk-in Job Scanner"]   # Make sure this matches your main workflow name
-    types: [completed]
-  workflow_dispatch:
+  schedule:
+    - cron: '30 2,7,13 * * *'  # 8 AM, 1 PM, 7 PM IST
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
-  tailor:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
-    
+  generate-and-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    
+    permissions:
+      contents: write  # Required to create releases
+    
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.12"
-
+          python-version: '3.11'
+      
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install gspread reportlab requests
-          pip install -r requirements.txt
-          pip install google-api-python-client==2.108.0
           pip install gspread google-auth requests reportlab groq
-
-      - name: Run resume tailor
+      
+      - name: Generate tailored resumes
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: python resume_tailor.py
+      
+      - name: Create release tag
+        id: create_tag
+        run: |
+          TAG_NAME="resumes-$(date +%Y-%m-%d-%H-%M-%S)"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Created tag: $TAG_NAME"
+      
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.create_tag.outputs.tag_name }}
+          release_name: "Tailored Resumes - ${{ steps.create_tag.outputs.tag_name }}"
+          body: "Automatically generated tailored resumes for cybersecurity job applications"
+          draft: false
+          prerelease: false
+      
+      - name: Upload PDFs to release
+        run: |
+          UPLOAD_URL="${{ steps.create_release.outputs.upload_url }}"
+          # Remove the {?name,label} suffix from upload URL
+          UPLOAD_URL="${UPLOAD_URL%\{*}"
+          
+          for pdf in $RUNNER_TEMP/generated_resumes/*.pdf; do
+            if [ -f "$pdf" ]; then
+              filename=$(basename "$pdf")
+              echo "Uploading: $filename"
+              
+              curl \
+                -X POST \
+                -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                -H "Content-Type: application/pdf" \
+                --data-binary @"$pdf" \
+                "${UPLOAD_URL}?name=${filename}"
+            fi
+          done
+      
+      - name: Update Google Sheet with download links
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          RELEASE_TAG: ${{ steps.create_tag.outputs.tag_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python update_sheet_with_links.py
