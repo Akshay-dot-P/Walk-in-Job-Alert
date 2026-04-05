@@ -247,7 +247,7 @@ def build_pdf_exact_format(data: dict, output_path: Path):
         fontName='Helvetica',
         fontSize=10,
         leading=12,
-        alignment=TA_CENTER,
+        alignment=TA_LEFT,
         spaceAfter=12,
     )
     
