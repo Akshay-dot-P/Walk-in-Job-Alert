@@ -51,7 +51,10 @@ GITHUB_RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
 # Your base resume content
 BASE_RESUME = """
 AKSHAY P
-+91 7483473945 | akshayp7841@gmail.com | LinkedIn | Portfolio | GitHub
++91 7483473945 | akshayp7841@gmail.com<br/>
+<a href="https://linkedin.com/in/YOUR_USERNAME">LinkedIn</a> |
+<a href="https://yourportfolio.com">Portfolio</a> |
+<a href="https://github.com/YOUR_USERNAME">GitHub</a>b
 
 EDUCATION
 Presidency College | Master of Computer Applications (MCA) · CGPA 7.29 | 2021–2023 | Bengaluru
@@ -238,7 +241,7 @@ def build_pdf_exact_format(data: dict, output_path: Path):
         fontName='Helvetica-Bold',
         fontSize=20,
         leading=24,
-        alignment=TA_LEFT,
+        alignment=TA_CENTER,
         spaceAfter=6,
     )
     
@@ -247,7 +250,7 @@ def build_pdf_exact_format(data: dict, output_path: Path):
         fontName='Helvetica',
         fontSize=10,
         leading=12,
-        alignment=TA_LEFT,
+        alignment=TA_CENTER,
         spaceAfter=12,
     )
     
