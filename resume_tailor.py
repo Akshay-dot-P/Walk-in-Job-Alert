@@ -36,7 +36,7 @@ GOOGLE_CREDS_JSON = os.environ["GOOGLE_CREDS_JSON"]
 SHEET_NAME = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
 WORKSHEET_NAME = os.environ.get("WORKSHEET_NAME", "Sheet1")
 GROQ_MODEL = "llama-3.1-8b-instant"
-MAX_JOBS_PER_RUN = 20
+MAX_JOBS_PER_RUN = 2
 TAILORED_COL = "tailored_resume"
 
 # This directory will hold generated PDFs that GitHub Actions will upload
