@@ -28,7 +28,8 @@ def get_worksheet():
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
     gc = gspread.Client(auth=creds)
-    sh = gc.open(SHEET_NAME)
+    sh = gc.open_by_key(os.environ["SHEET_ID"])
+    ws = sh.worksheet(WORKSHEET_NAME)
     return sh.worksheet(WORKSHEET_NAME)
 
 def main():
