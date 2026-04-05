@@ -449,7 +449,7 @@ def main():
     # Connect to sheet
     try:
         ws = get_worksheet()
-        logger.info(f"Connected: {SHEET_NAME} / {WORKSHEET_NAME}")
+        logger.info(f"Connected: {SHEET_NAME} ")
     except Exception as e:
         logger.error(f"Sheet connection failed: {e}")
         sys.exit(1)
