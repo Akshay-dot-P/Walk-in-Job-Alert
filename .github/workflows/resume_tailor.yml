@@ -25,6 +25,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install gspread google-auth requests reportlab groq
+          pip install -r requirements.txt
+          pip install python-docx==1.1.2 google-api-python-client==2.108.0 beautifulsoup4==4.12.3
       
       - name: Generate tailored resumes
         env:
