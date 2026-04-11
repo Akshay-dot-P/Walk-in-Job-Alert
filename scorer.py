@@ -1,436 +1,829 @@
-import os
-import re
-import json
-import time
-import logging
-import requests
-from datetime import datetime, timezone
-from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS, KNOWN_MNCS
+"""
+resume_tailor.py
+================
+Generates tailored DOCX + PDF resumes for every New job in the sheet.
 
+WHAT'S IN THIS VERSION:
+  - MAX_JOBS_PER_RUN = 10
+  - 3 projects total; 2 selected per resume based on domain
+  - New skills layout: SOC Operations / SIEM & Monitoring / Threat Intelligence /
+    Systems & Networking / Automation
+  - Hyperlink fix: replaces [[PLACEHOLDERS]] inside w:hyperlink elements correctly
+  - No Professional Summary section (removed)
+  - No Git icon (drawing elements stripped from project title paragraphs)
+  - PDF via LibreOffice (free, perfect formatting, no Drive quota)
+  - Both DOCX and PDF committed to GitHub resumes/ folder
+  - Dynamic tool injection per JD keywords
+  - Company intelligence for 18 major Bangalore hirers
+
+PLACEHOLDER MAP (must match resume_template.docx exactly):
+  [[AMZ_B1]] [[AMZ_B2]] [[AMZ_B3]]
+  [[P1_TITLE]] [[P1_TECH]] [[P1_B1]] [[P1_B2]] [[P1_B3]]
+  [[P2_TITLE]] [[P2_TECH]] [[P2_B1]] [[P2_B2]] [[P2_B3]]
+  [[SK_SOC]] [[SK_SIEM]] [[SK_TI]] [[SK_SYS]] [[SK_AUTO]]
+
+ADD TO requirements.txt:
+  python-docx==1.1.2
+  beautifulsoup4==4.12.3
+  google-api-python-client==2.108.0
+
+WORKFLOW must have:
+  permissions: contents: write
+  - run: sudo apt-get install -y libreoffice
+"""
+
+import os, sys, re, json, time, io, base64, logging, requests, subprocess, tempfile, copy
+from pathlib import Path
+from docx import Document
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+import gspread
+from google.oauth2.service_account import Credentials
+from bs4 import BeautifulSoup
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 logger = logging.getLogger(__name__)
 
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+# ─────────────────────────────────────────────────────────────────────────────
+# Config
+# ─────────────────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = (
-    "You output only raw valid JSON. "
-    "No markdown. No explanation. No preamble. No code fences."
-)
+SHEET_NAME        = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
+GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL        = "llama-3.1-8b-instant"
+GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
+MAX_JOBS_PER_RUN  = 10
+TEMPLATE_PATH     = Path(__file__).parent / "resume_template.docx"
+GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "")
+GITHUB_BRANCH     = os.environ.get("GITHUB_REF_NAME", "main")
+RESUMES_FOLDER    = "resumes"
 
-USER_PROMPT_PREFIX = (
-    "You are an expert analyst of the Indian job market, "
-    "specializing in Bangalore cybersecurity hiring for freshers and interns.\n\n"
-    "Analyze the job listing below and return ONLY a valid JSON object.\n\n"
-    "Required keys:\n"
-    '{\n'
-    '  "job_title": "normalized title string",\n'
-    '  "company": "company name or empty string",\n'
-    '  "company_tier": "MNC or startup or mid-tier or unknown",\n'
-    '  "domain": "SOC or GRC or AppSec or VAPT or CloudSec or IAM or Forensics or Risk or Fraud-AML or General",\n'
-    '  "legitimacy_score": 1-10,\n'
-    '  "red_flags": [],\n'
-    '  "summary": "one sentence",\n'
-    '  "is_intern": true or false,\n'
-    '  "experience_required": "e.g. 0-2 years or freshers or null",\n'
-    '  "skills_required": "comma-separated skills e.g. SIEM, Python, ISO 27001 or empty string",\n'
-    '  "salary_range": "e.g. 4-6 LPA or null",\n'
-    '  "apply_url": "direct application URL or null",\n'
-    '  "posted_date": "YYYY-MM-DD or null"\n'
-    '}\n\n'
-    "SCORING RUBRIC:\n"
-    "9-10: MNC or well-known company, detailed JD with specific skills, "
-    "      realistic salary (3-12 LPA for fresher/0-2yr), direct apply link, "
-    "      clear eligibility criteria, no red flags\n"
-    "7-8:  Recognizable company, decent JD, apply link present, "
-    "      realistic expectations, minor info gaps\n"
-    "5-6:  Unknown/startup company but specific role, real skills listed, "
-    "      legitimate-looking apply link or source, no scam signals\n"
-    "3-4:  Vague JD, no salary info, no company name, "
-    "      but no active scam signals detected\n"
-    "1-2:  ANY of: registration/training fee required, guaranteed placement/interview, "
-    "      unrealistic salary (50k/month fresher), no apply link + no company name, "
-    "      obvious fake or spam posting\n\n"
-    "IMPORTANT RULES:\n"
-    "- Missing salary is NORMAL — do not penalize\n"
-    "- Missing physical address is NORMAL for online jobs — do not penalize\n"
-    "- No walk-in date expected — this is an online job posting\n"
-    "- Unknown or startup company is NOT a red flag — score based on role relevance, not company fame\n"
-    "- is_intern=true if: intern, internship, stipend, trainee, apprentice\n"
-    "- skills_required must be a plain comma-separated STRING, not a list/array\n"
-    "- domain: pick closest from SOC/GRC/AppSec/VAPT/CloudSec/IAM/Forensics/Risk/Fraud-AML/General\n\n"
-    "- SENIOR ROLES: titles containing Lead, Manager, Supervisor, Director, Sr. Engineer,\n"
-    "  Senior Engineer, Principal, VP, CISO must score 1-4 regardless of company prestige.\n"
-    "  Exception: 'Senior Associate' and 'Sr. Associate' at Big 4 firms (EY/PwC/Deloitte/KPMG)\n"
-    "  are entry-level titles and may score normally.\n\n"
-    "LISTING:\n"
-)
-
-# =============================================================================
-# SANITIZE
-# =============================================================================
-
-def sanitize(text: str) -> str:
-    if not text:
-        return ""
-    result = []
-    for ch in text:
-        cp = ord(ch)
-        if 0x1D400 <= cp <= 0x1D419:   result.append(chr(ord('A') + cp - 0x1D400))
-        elif 0x1D41A <= cp <= 0x1D433: result.append(chr(ord('a') + cp - 0x1D41A))
-        elif 0x1D434 <= cp <= 0x1D44D: result.append(chr(ord('A') + cp - 0x1D434))
-        elif 0x1D44E <= cp <= 0x1D467: result.append(chr(ord('a') + cp - 0x1D44E))
-        elif 0x1D468 <= cp <= 0x1D481: result.append(chr(ord('A') + cp - 0x1D468))
-        elif 0x1D482 <= cp <= 0x1D49B: result.append(chr(ord('a') + cp - 0x1D482))
-        elif 0x1D5D4 <= cp <= 0x1D5ED: result.append(chr(ord('A') + cp - 0x1D5D4))
-        elif 0x1D5EE <= cp <= 0x1D607: result.append(chr(ord('a') + cp - 0x1D5EE))
-        elif 0x1D63C <= cp <= 0x1D655: result.append(chr(ord('A') + cp - 0x1D63C))
-        elif 0x1D656 <= cp <= 0x1D66F: result.append(chr(ord('a') + cp - 0x1D656))
-        elif 0x1D7CE <= cp <= 0x1D7D7: result.append(chr(ord('0') + cp - 0x1D7CE))
-        elif 0x1D400 <= cp <= 0x1D7FF: result.append('')
-        elif cp > 0xFFFF:               result.append(' ')
-        else:                           result.append(ch)
-    text = ''.join(result)
-
-    replacements = {
-        '\u2018': "'", '\u2019': "'", '\u201C': '"', '\u201D': '"',
-        '\u2013': '-', '\u2014': '-', '\u2026': '...', '\u00A0': ' ',
-        '\u2032': "'", '\u2033': '"', '\u00B4': "'",
-    }
-    for src, dst in replacements.items():
-        text = text.replace(src, dst)
-
-    text = re.sub(r'[\u2600-\u27FF\uFE00-\uFE0F\u2702-\u27B0]', ' ', text)
-    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
-    text = re.sub(r'[ \t]+', ' ', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
-
-
-# =============================================================================
-# PRE-FILTER  (unchanged from original)
-# =============================================================================
-
-REJECT_PATTERNS = [
-    "jobs in united states", "jobs in india", "jobs in united kingdom",
-    "jobs in canada", "jobs in australia", "jobs in singapore",
-    "jobs in germany", "jobs in europe", "+ jobs",
-    "new jobs", "(1,713 new)", "(244 new)",
-    "| ceh certified", "| cissp", "| gcfa", "| ejpt",
-    "penetration tester| python", "cyber security professional",
-    "helping organizations secure", "satish kumar", "deepak pokhrel",
-    "ramavath rakesh",
-    "excited to share that i", "thrilled to share that i",
-    "excited to announce that i", "i have been selected",
-    "i have kicked off my", "officially completed my",
-    "i am starting a new position", "im starting a new position",
-    "i'm starting a new position", "i have started",
-    "my internship at", "my 6-month internship", "my internship journey",
-    "left bangalore to pursue", "kickstart your cybersecurity career!",
-    "roadmap to become", "read this be",
-    "log in or sign up", "sign up", "join now", "linkedin india",
-    "linkedin: log in", "page not found", "404", "jobs at ", "careers at ",
-    "free cybersecurity online", "with certificate for everyone",
-    "per month (source:", "leetcode/glassdoor",
-    "food experience", "chef", "restaurant",
-    "accounts receivable", "accounts payable", "legal entity controller",
-    "head of global finance", "monetization operation",
-    "marketing operations", "lead generation", "payroll",
-    "global people support", "talent acquisition",
-    "content writer", "seo specialist", "social media manager",
-    "graphic designer", "ux designer",
-    "mechanical engineer", "civil engineer", "electrical engineer",
-    "customer support", "customer service", "call center", "bpo",
-    "supply chain", "logistics", "warehouse",
-    "teacher", "professor", "lecturer",
-    "medical officer", "nurse", "doctor",
-    "chartered accountant",
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
 ]
 
-REJECT_REGEX = [
-    r'^\d[\d,]+\+?\s+\w',
-    r'^\d+\s+\w+.*jobs in',
-]
+# ─────────────────────────────────────────────────────────────────────────────
+# 3 PROJECTS
+#
+# PROJECT 1 — soc_auto: SOC Automation & Threat Detection Lab
+#   Covers: SOC, SIEM, IR, DFIR, Threat Intel, Malware, Network Security
+#   Combines original Cybersecurity Home Lab content with SOAR automation,
+#   Sigma rules, and Telegram alert integration.
+#
+# PROJECT 2 — vuln_scanner: Vulnerability Scanner & Patch Prioritization Engine
+#   Covers: VAPT, Vuln Management, AppSec, Network Security
+#   Combines original Automated Vulnerability Scanning with OWASP Top 10
+#   checker, EPSS scoring from FIRST.org API, and remediation SLA calculator.
+#
+# PROJECT 3 — phishing_osint: Phishing & OSINT Threat Intelligence Tool
+#   Covers: Threat Intel, OSINT, Phishing, IR, Fraud, AML
+#   Multi-API enrichment pipeline: VirusTotal, AbuseIPDB, WHOIS, DNS.
+#   Telegram bot interface, bulk CSV scanner, typosquatting detector.
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def is_relevant(listing: dict) -> bool:
-    title    = sanitize(listing.get("title", "")).lower()
-    desc     = sanitize(listing.get("description", "")).lower()
-    combined = title + " " + desc
-    url      = (listing.get("url") or listing.get("job_url") or "").lower()
-
-    if "linkedin.com/in/" in url:
-        return False
-    for pattern in REJECT_REGEX:
-        if re.match(pattern, title, re.IGNORECASE):
-            return False
-    if any(p in title for p in REJECT_PATTERNS):
-        return False
-    if re.match(r'^[a-z]+ [a-z]+(,? [a-z]+)? - .{5,} @', title):
-        return False
-
-    CONTENT_REJECTS = [
-        "offers free", "free cyber security virtual", "free online cyber",
-        "free cybersecurity online", "virtual internship for college",
-        "with certificate for everyone",
-        "meet our interns", "my internship at", "my internship journey",
-        "officially completed my", "i have completed",
-        "excited to share that i", "thrilled to announce",
-        "cheat sheet", "roadmap to become", "where to find",
-        "how to get into", "tips for", "guide to",
-        "rise of fake internships", "beware of internship",
-        "reality check", "fake internship",
-        "interview experience", "interview process at",
-        "is this enough for", "what salary can freshers expect",
-        "per month (source:", "leetcode/glassdoor",
-    ]
-    if any(p in combined for p in CONTENT_REJECTS):
-        return False
-
-    WALKIN_REJECTS = [
-        "walk-in", "walk in interview", "walkin interview",
-        "walk-in drive", "walkin drive", "direct interview",
-        "mega drive", "hiring drive",
-    ]
-    if any(p in combined for p in WALKIN_REJECTS):
-        return False
-
-    DOMAIN_REJECTS = [
-        "vlsi", "embedded systems", "mechanical engineer",
-        "civil engineer", "electrical engineer",
-        "accounts receivable", "accounts payable",
-        "content writer", "graphic designer", "ux designer",
-        "customer support", "customer service", "call center",
-        "supply chain", "logistics", "teacher", "professor",
-        "medical officer", "nurse", "chartered accountant",
-    ]
-    if any(p in title for p in DOMAIN_REJECTS):
-        return False
-
-    if re.search(r'\b(1[0-9]|20)\+?\s*years?\b', title):
-        return False
-
-        # ── Senior/management title filter ────────────────────────────────────────
-    SENIOR_REJECTS = [
-        "lead soc", "lead security", "lead analyst", "lead engineer",
-        "lead service", "lead siem", "lead consultant",
-        " sr. engineer", " sr engineer", "senior engineer",
-        "senior security analyst", "senior soc analyst",
-        "senior operations", "senior specialist",
-        "manager ", "supervisor", "director",
-        "head of", "vice president", " vp ",
-        "ciso", "principal engineer", "principal analyst", "staff engineer",
-    ]
-    SENIOR_EXCEPTIONS = [
-        "senior associate",    # Big 4 entry-level title
-        "sr associate", "sr. associate",
-    ]
-    has_senior    = any(p in title for p in SENIOR_REJECTS)
-    has_exception = any(p in title for p in SENIOR_EXCEPTIONS)
-    if has_senior and not has_exception:
-        return False
-
-    has_role_in_title   = any(r in title for r in TARGET_ROLES)
-    has_intern_in_title = any(k in title for k in INTERN_KEYWORDS)
-    has_sec_in_combined = any(k in combined for k in [
-        "security", "cyber", "risk", "compliance", "grc", "audit",
-        "fraud", "kyc", "aml", "privacy", "cloud", "network",
-        "forensic", "malware", "threat", "vulnerability",
-    ])
-
-    return has_role_in_title or (has_intern_in_title and has_sec_in_combined)
-
-
-def pre_filter(listings: list) -> list:
-    kept    = [l for l in listings if is_relevant(l)]
-    dropped = len(listings) - len(kept)
-    logger.info("Pre-filter: %d/%d kept, %d dropped", len(kept), len(listings), dropped)
-    return kept
-
-
-# =============================================================================
-# GROQ CALL  (unchanged from original — uses retry-after header)
-# =============================================================================
-
-def call_groq(listing_text: str, retries: int = 4) -> str:
-    api_key = os.environ.get("GROQ_API_KEY", "")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY not set")
-
-    safe = sanitize(listing_text)[:2500]
-
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
+PROJECTS = {
+    "soc_auto": {
+        "title":  "SOC Automation & Threat Detection Lab",
+        "github": "https://github.com/Akshay-dot-P/soc-threat-lab",
+        "tech_base": ["Python", "Splunk", "Wireshark", "Nmap", "MITRE ATT&CK", "Sigma rules"],
+        "tech_swappable": {
+            r"qradar|ibm qradar":                          ["QRadar"],
+            r"elastic|kibana|elk":                         ["Elastic SIEM"],
+            r"sentinel|azure sentinel|microsoft sentinel": ["Azure Sentinel"],
+            r"crowdstrike|falcon|edr|xdr":                 ["CrowdStrike Falcon"],
+            r"defender|microsoft defender|mde":            ["Microsoft Defender"],
+            r"suricata|snort|zeek|ids\b|ips\b":            ["Suricata IDS"],
+            r"burp suite|burp|owasp|appsec|web app":       ["Burp Suite"],
+            r"metasploit|exploit|pentest|vapt":            ["Metasploit"],
+            r"volatility|memory forensics|dfir":           ["Volatility"],
+            r"soar|playbook|automation|orchestration":     ["SOAR playbook"],
+            r"grafana|dashboard|visuali":                  ["Grafana"],
+            r"sysmon|windows event|evtx":                  ["Sysmon"],
+        },
+        "bullets": [
+            "Deployed Splunk SIEM with SPL correlation searches for brute-force detection (index=* failed | stats count by src_ip), lateral movement, and privilege escalation; mapped TTPs to MITRE ATT&CK (T1110, T1078, T1059) and wrote PICERL incident report.",
+            "Built automated SOAR-style detection pipeline: Python script ingests Splunk alerts, runs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification — reducing mean time to triage by automating repetitive L1 tasks.",
+            "Converted detection logic to Sigma rules (vendor-neutral format used by enterprise SOCs); performed TCP/IP analysis in Wireshark to detect SYN scans, DNS tunnelling, and plaintext credential exposure on unencrypted sessions.",
         ],
-        "temperature": 0.1,
-        "max_tokens":  600,
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type":  "application/json",
-    }
+    },
 
+    "vuln_scanner": {
+        "title":  "Vulnerability Scanner & Patch Prioritization Engine",
+        "github": "https://github.com/Akshay-dot-P/vuln-scanner",
+        "tech_base": ["Python", "Bash", "Nessus", "OpenVAS", "NVD API", "CVSS/EPSS scoring"],
+        "tech_swappable": {
+            r"qualys":                                    ["Qualys"],
+            r"tenable|nessus":                           ["Nessus"],
+            r"openvas":                                  ["OpenVAS"],
+            r"burp suite|burp|owasp|web app|appsec":    ["Burp Suite", "OWASP ZAP"],
+            r"nmap|network scan|port scan":              ["Nmap"],
+            r"cve|nvd|cvss":                             ["NVD API"],
+            r"epss|exploit probability|first\.org":     ["EPSS API (FIRST.org)"],
+            r"patch|remediation|sla|prioriti":          ["remediation SLA calculator"],
+            r"sast|bandit|semgrep|secure code":         ["Semgrep SAST"],
+            r"container|docker|trivy|kubernetes":       ["Trivy container scanner"],
+        },
+        "bullets": [
+            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS REST APIs in Python; generates CVE reports classified by CVSS severity with remediation guidance; implemented EPSS scoring from FIRST.org API to prioritise by actual exploit probability — a metric rarely used by freshers.",
+            "Developed OWASP Top 10 automated web checker that sends crafted HTTP requests to test targets and detects injection, broken auth, and SSRF vulnerabilities; documented query-level SQL injection exploit and parameterised query remediation.",
+            "Automated scan scheduling via Bash and cron; built delta-scan logic comparing consecutive runs to flag newly discovered CVEs and calculate remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) for patch compliance tracking.",
+        ],
+    },
+
+    "phishing_osint": {
+        "title":  "Phishing & OSINT Threat Intelligence Tool",
+        "github": "https://github.com/Akshay-dot-P/phishing-osint-tool",
+        "tech_base": ["Python", "VirusTotal API", "AbuseIPDB", "WHOIS", "Telegram bot", "DNS analysis"],
+        "tech_swappable": {
+            r"shodan|censys|internet scan":              ["Shodan API"],
+            r"maltego|graph|relationship|link analysis": ["graph visualisation"],
+            r"osint|open source intel|reconnaissance":  ["theHarvester", "OSINT framework"],
+            r"phishing|url|domain|malicious link":      ["URLScan.io"],
+            r"fraud|aml|financial crime|transaction":   ["fraud pattern matching"],
+            r"threat intel|cti|ioc|indicator":          ["MISP IOC feeds"],
+            r"typosquat|brand|impersonat":              ["typosquatting detector"],
+            r"email|header|spf|dkim|dmarc":             ["email header analyser"],
+            r"ip|geolocation|asn|reputation":           ["IPInfo API"],
+            r"telegram|bot|alert|notification":         ["Telegram bot"],
+        },
+        "bullets": [
+            "Built multi-API threat intelligence pipeline: submits suspicious URLs/IPs to VirusTotal, AbuseIPDB, and URLScan.io simultaneously; cross-references WHOIS registration age, DNS records, and SSL certificate details to produce a unified phishing probability score.",
+            "Implemented typosquatting domain detector that generates character-substitution variants of brand domains and checks live DNS resolution — catches brand-impersonation attacks before they are reported to threat feeds.",
+            "Deployed Telegram bot interface enabling analysts to submit URLs for live IOC enrichment and receive structured threat reports in-chat; supports bulk CSV input/output for incident response workflows where analysts triage multiple URLs simultaneously.",
+        ],
+    },
+}
+
+# Which 2 projects to show on the resume for each domain
+DOMAIN_TO_PROJECTS = {
+    "SOC":        ("soc_auto",       "phishing_osint"),
+    "VAPT":       ("vuln_scanner",   "soc_auto"),
+    "AppSec":     ("vuln_scanner",   "soc_auto"),
+    "GRC":        ("phishing_osint", "vuln_scanner"),
+    "Risk":       ("phishing_osint", "vuln_scanner"),
+    "Fraud-AML":  ("phishing_osint", "soc_auto"),
+    "CloudSec":   ("soc_auto",       "vuln_scanner"),
+    "IAM":        ("soc_auto",       "phishing_osint"),
+    "Forensics":  ("soc_auto",       "phishing_osint"),
+    "Network":    ("soc_auto",       "vuln_scanner"),
+    "General":    ("soc_auto",       "vuln_scanner"),
+}
+
+AMAZON_BASE = [
+    "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, mirroring the structured alert triage and escalation workflow used in SOC Tier 1 analyst roles.",
+    "Performed root cause analysis on seller claims to identify policy violations and anomalous patterns; escalated findings to senior reviewers, demonstrating investigative instincts central to SOC and fraud analyst operations.",
+    "Maintained audit-ready case documentation recording investigation findings, decisions, and corrective actions, establishing the evidence chain-of-custody discipline required for security incident reporting and IT audit.",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIXED SKILL VALUES — never generated by LLM (prevents verbose rewrites + bold bug)
+# Exact terms from your resume screenshot. LLM never touches these.
+# We select the most relevant subset per domain in Python.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FIXED_SKILLS = {
+    "SK_SOC": {
+        "base": "Alert triage, incident investigation, log analysis, threat detection, escalation, false positive analysis",
+        "domain_append": {
+            "GRC":       ", compliance monitoring",
+            "Risk":      ", risk escalation",
+            "Fraud-AML": ", fraud triage",
+        },
+    },
+    "SK_SIEM": {
+        "base": "Splunk (SPL), Elastic SIEM (basic), Windows Event Logs, Sysmon, Wireshark",
+        "domain_append": {},
+    },
+    "SK_TI": {
+        "base": "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, Cyber Kill Chain",
+        "domain_append": {
+            "Fraud-AML": ", AML typologies",
+            "GRC":       ", threat landscape reporting",
+        },
+    },
+    "SK_SYS": {
+        "base": "Windows internals, Linux fundamentals, TCP/IP, DNS, HTTP/S, firewall and IDS/IPS concepts",
+        "domain_append": {
+            "CloudSec": ", AWS (IAM, CloudTrail, GuardDuty basics)",
+            "IAM":      ", Active Directory (basics)",
+        },
+    },
+    "SK_AUTO": {
+        "base": "Python, Bash (basic), regular expressions",
+        "domain_append": {
+            "CloudSec":  ", boto3",
+            "AppSec":    ", OWASP ZAP (basic)",
+            "VAPT":      ", Nmap scripting",
+        },
+    },
+}
+
+
+def compute_skills(domain: str) -> dict:
+    """Return the 5 skill strings for this domain. Pure Python, no LLM."""
+    result = {}
+    for key, data in FIXED_SKILLS.items():
+        value = data["base"]
+        for d, extra in data["domain_append"].items():
+            if d.lower() == domain.lower():
+                value += extra
+                break
+        result[key] = value
+    return result
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Company intelligence
+# ─────────────────────────────────────────────────────────────────────────────
+
+COMPANY_INTEL = {
+    "wipro": {
+        "framing":   "Wipro hires L1 SOC analysts for 24x7 SIEM monitoring shifts. Value: process adherence, SLA discipline, shift documentation, escalation workflows.",
+        "keywords":  ["24x7 SOC", "SLA adherence", "shift documentation", "SIEM operations", "incident escalation"],
+        "skills_first": ["Splunk", "SIEM", "alert triage", "incident escalation", "documentation"],
+    },
+    "tcs": {
+        "framing":   "TCS values structured compliance and certification alignment. Hires for ISO 27001 ISMS, VAPT, process-oriented security delivery.",
+        "keywords":  ["ISMS", "ISO 27001", "compliance audit", "vulnerability assessment"],
+        "skills_first": ["ISO 27001", "VAPT", "compliance", "audit documentation"],
+    },
+    "infosys": {
+        "framing":   "Infosys values learning agility, documentation quality, multi-client delivery adaptability.",
+        "keywords":  ["multi-client delivery", "documentation quality"],
+        "skills_first": ["Python", "Splunk", "documentation", "compliance"],
+    },
+    "hcl": {
+        "framing":   "HCL SecureCloud emphasises cloud-native security. Highlight AWS, cloud IAM, detection engineering.",
+        "keywords":  ["cloud security", "AWS security", "cloud IAM"],
+        "skills_first": ["AWS", "cloud security", "Python", "SIEM"],
+    },
+    "cognizant": {
+        "framing":   "Cognizant hires for 24x7 SOC and BFSI compliance. Value: investigation rigour, BFSI frameworks.",
+        "keywords":  ["SOC operations", "BFSI security", "compliance monitoring"],
+        "skills_first": ["SIEM", "alert triage", "compliance", "documentation"],
+    },
+    "capgemini": {
+        "framing":   "Capgemini bridges GRC consulting and technical security for European clients.",
+        "keywords":  ["GRC", "NIST", "compliance reporting"],
+        "skills_first": ["GRC", "NIST CSF", "cloud security", "compliance"],
+    },
+    "deloitte": {
+        "framing":   "Deloitte Cyber Risk Advisory: ITGC audits, GRC, BFSI. Value: communicating risk in business terms, ITGC/SOX, client reports.",
+        "keywords":  ["cyber risk advisory", "ITGC", "SOX", "GRC consulting"],
+        "skills_first": ["GRC", "ITGC", "ISO 27001", "NIST CSF", "audit documentation"],
+    },
+    "kpmg": {
+        "framing":   "KPMG IT Advisory: ITGC/IS audit. Value: control testing, audit evidence, SOX/ITGC methodology. CISA valued.",
+        "keywords":  ["IT audit", "ITGC", "SOX", "CISA", "control testing"],
+        "skills_first": ["IT audit", "ITGC", "ISO 27001", "audit documentation"],
+    },
+    "pwc": {
+        "framing":   "PwC Cyber Risk: regulatory landscape knowledge (RBI, SEBI, GDPR, PDPB), structured risk recommendations.",
+        "keywords":  ["cyber risk", "regulatory compliance", "data privacy", "GDPR"],
+        "skills_first": ["GRC", "data privacy", "GDPR", "NIST CSF"],
+    },
+    "ey": {
+        "framing":   "EY GDS Bangalore: GRC and IT audit delivery. Value: structured audit execution, international standards.",
+        "keywords":  ["GRC", "IT audit", "risk assurance", "ITGC"],
+        "skills_first": ["IT audit", "GRC", "ISO 27001", "compliance"],
+    },
+    "jpmorgan": {
+        "framing":   "JPMorgan: technology risk, Basel III operational risk, AML/KYC operations.",
+        "keywords":  ["technology risk", "operational risk", "AML", "transaction monitoring"],
+        "skills_first": ["operational risk", "AML", "compliance", "Python"],
+    },
+    "goldman sachs": {
+        "framing":   "Goldman Sachs: ITGC, control testing, audit independence. Value: documentation rigour.",
+        "keywords":  ["technology audit", "ITGC", "internal audit", "SOX"],
+        "skills_first": ["IT audit", "ITGC", "SOX", "audit documentation"],
+    },
+    "deutsche bank": {
+        "framing":   "Deutsche Bank: KYC, AML, information security. Value: investigative accuracy, AML/KYC process knowledge.",
+        "keywords":  ["KYC", "AML", "information security", "transaction monitoring"],
+        "skills_first": ["KYC", "AML", "compliance", "documentation"],
+    },
+    "citi": {
+        "framing":   "Citi: fraud detection, risk analytics. Value: pattern recognition, Python/data skills, anomaly detection.",
+        "keywords":  ["risk analytics", "fraud detection", "transaction monitoring"],
+        "skills_first": ["fraud detection", "Python", "risk assessment"],
+    },
+    "amazon": {
+        "framing":   "Amazon: LP lens — Dive Deep, Bias for Action, Insist on Highest Standards. Automation mindset.",
+        "keywords":  ["dive deep", "automation", "AWS", "security at scale"],
+        "skills_first": ["Python", "AWS", "automation", "Bash", "SIEM"],
+    },
+    "google": {
+        "framing":   "Google: technical depth, automation, systems thinking.",
+        "keywords":  ["security engineering", "automation", "threat analysis"],
+        "skills_first": ["Python", "Bash", "Linux", "automation", "threat intelligence"],
+    },
+    "microsoft": {
+        "framing":   "Microsoft: bridge identity, cloud, and security. Azure/AD/Sentinel.",
+        "keywords":  ["Azure security", "Microsoft Sentinel", "Active Directory", "Zero Trust"],
+        "skills_first": ["Azure", "Active Directory", "cloud security", "IAM"],
+    },
+    "hdfc bank": {
+        "framing":   "HDFC Bank: fraud detection, AML, RBI compliance.",
+        "keywords":  ["fraud analytics", "AML", "RBI compliance", "transaction monitoring"],
+        "skills_first": ["fraud detection", "AML", "compliance", "audit documentation"],
+    },
+    "bajaj finserv": {
+        "framing":   "Bajaj Finserv: fraud/risk operations for large NBFC.",
+        "keywords":  ["fraud operations", "IT risk", "NBFC compliance"],
+        "skills_first": ["fraud detection", "risk assessment", "compliance"],
+    },
+}
+
+
+def get_company_intel(company_raw: str) -> dict | None:
+    name = re.sub(r"\s*\(.*?\)\s*$", "", company_raw).strip().lower()
+    for key, intel in COMPANY_INTEL.items():
+        if key in name or name in key:
+            logger.info("  Company intel: %s", key)
+            return intel
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dynamic tool selection per JD
+# ─────────────────────────────────────────────────────────────────────────────
+
+def select_tools(project_key: str, jd_text: str, max_tools: int = 5) -> list[str]:
+    proj     = PROJECTS[project_key]
+    jd_lower = jd_text.lower()
+    base     = list(proj["tech_base"])
+    extra    = []
+    for pattern, tools in proj["tech_swappable"].items():
+        if re.search(pattern, jd_lower):
+            for t in tools:
+                if t not in base and t not in extra:
+                    extra.append(t)
+    return (base + extra)[:max_tools]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Company web scraping (fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HDRS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+}
+
+
+def scrape_company(company_raw: str) -> str:
+    name = re.sub(r"\s*\(.*?\)\s*$", "", company_raw).strip()
+    if not name or name.lower() in ("unknown", ""):
+        return ""
+    try:
+        q    = requests.utils.quote(f"{name} cybersecurity about mission")
+        resp = requests.get(f"https://html.duckduckgo.com/html/?q={q}",
+                            headers=_HDRS, timeout=8)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.select("a.result__a"):
+            href = a.get("href", "")
+            if href.startswith("http") and not any(
+                    x in href for x in ["linkedin.com", "glassdoor.com", "indeed.com"]):
+                pg   = requests.get(href, headers=_HDRS, timeout=8)
+                s2   = BeautifulSoup(pg.text, "html.parser")
+                for tag in s2(["script", "style", "nav", "footer", "header"]):
+                    tag.decompose()
+                main = s2.find("main") or s2.find("article") or s2
+                text = " ".join(p.get_text(" ", strip=True)
+                                for p in main.find_all("p") if len(p.get_text()) > 40)
+                if len(text) > 100:
+                    return text[:800]
+    except Exception:
+        pass
+    return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JSON repair
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _repair_json(raw: str) -> str:
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    raw = re.sub(r"\s*```$", "",          raw.strip())
+    raw = raw.replace("\u201c", '"').replace("\u201d", '"')
+    raw = raw.replace("\u2018", "'").replace("\u2019", "'")
+    raw = re.sub(r",\s*([\}\]])", r"\1",  raw)
+    # Fix invalid JSON escapes: \& \# \! etc. (only \", \\, \/, \b \f \n \r \t \uXXXX are valid)
+    raw = re.sub(r'\\([^"\\/bfnrtu])', r'\1', raw)
+    return raw.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Groq LLM
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _call_groq(system: str, user: str, retries: int = 3) -> str:
+    payload = {
+        "model":       GROQ_MODEL,
+        "temperature": 0.15,
+        "max_tokens":  2500,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user},
+        ],
+    }
+    hdrs = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     for attempt in range(1, retries + 1):
         try:
-            r = requests.post(GROQ_API_URL, headers=headers,
-                              json=payload, timeout=30)
-
+            r = requests.post(GROQ_URL, json=payload, headers=hdrs, timeout=35)
             if r.status_code == 429:
-                retry_after = r.headers.get("retry-after") or r.headers.get("x-ratelimit-reset-requests")
-                wait = float(retry_after) + 1 if retry_after else 10 * (2 ** (attempt - 1))
-                logger.warning("Groq 429 rate limit (attempt %d/%d) — waiting %.0fs",
-                               attempt, retries, wait)
+                wait = 25 * attempt
+                logger.warning("  Groq 429 — waiting %ds (attempt %d/%d)", wait, attempt, retries)
                 time.sleep(wait)
                 continue
-
-            if r.status_code == 400:
-                try:    err_msg = r.json().get("error", {}).get("message", r.text[:200])
-                except: err_msg = r.text[:200]
-                logger.error("Groq 400: %s", err_msg)
-
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
-
-        except requests.exceptions.Timeout:
-            logger.warning("Groq timeout attempt %d/%d", attempt, retries)
-            if attempt < retries:
-                time.sleep(5 * attempt)
-
-    raise RuntimeError(f"Groq failed after {retries} attempts")
+        except requests.RequestException as exc:
+            logger.warning("  Groq error attempt %d: %s", attempt, exc)
+            time.sleep(5 * attempt)
+    raise RuntimeError("Groq API failed after retries.")
 
 
-# =============================================================================
-# HELPERS
-# =============================================================================
+def generate_content(job: dict, p1_key: str, p2_key: str,
+                     intel: dict | None, scraped_ctx: str,
+                     p1_tools: list, p2_tools: list) -> dict:
 
-def _resolve_tier(company: str, ai_tier: str) -> str:
-    """Override to MNC if company is in known list."""
-    if any(mnc in (company or "").lower() for mnc in KNOWN_MNCS):
-        return "MNC"
-    return ai_tier if ai_tier in ("MNC", "mid-tier", "startup") else "unknown"
+    p1 = PROJECTS[p1_key]
+    p2 = PROJECTS[p2_key]
 
+    if intel:
+        co_ctx = (
+            f"\nCOMPANY FRAMING: {intel['framing']}\n"
+            f"Priority keywords: {', '.join(intel['keywords'][:5])}\n"
+            f"Skills to foreground: {', '.join(intel['skills_first'])}\n"
+            f"Do NOT write 'Eager to contribute to X' — let keywords appear naturally.\n"
+        )
+    elif scraped_ctx:
+        co_ctx = f"\nCOMPANY CONTEXT: {scraped_ctx[:400]}\nUse vocabulary signals naturally.\n"
+    else:
+        co_ctx = ""
 
-def _merge_company(name: str, tier: str) -> str:
-    """'Accenture' + 'MNC' → 'Accenture (MNC)'"""
-    name = (name or "").strip() or "Unknown"
-    return f"{name} ({tier})"
-
-
-def _skills_to_str(skills) -> str:
-    """Normalise skills — model may return list or string."""
-    if isinstance(skills, list):
-        return ", ".join(str(s).strip() for s in skills if s)
-    return str(skills or "").strip()
-
-
-# =============================================================================
-# SCORE ONE LISTING
-# =============================================================================
-
-def score_listing(listing: dict) -> dict | None:
-    listing_text = (
-        "SOURCE: "       + sanitize(listing.get("source", ""))                        + "\n"
-        "TITLE: "        + sanitize(listing.get("title", ""))                         + "\n"
-        "COMPANY: "      + sanitize(listing.get("company", ""))                       + "\n"
-        "LOCATION: "     + sanitize(listing.get("location", ""))                      + "\n"
-        "DATE POSTED: "  + sanitize(listing.get("date_posted", ""))                   + "\n"
-        "URL: "          + sanitize(listing.get("job_url") or listing.get("url",""))  + "\n"
-        "DESCRIPTION:\n" + sanitize(listing.get("description", ""))[:1600]
+    system = (
+        "You are a senior cybersecurity resume writer for the Indian job market. "
+        "You write ATS-optimised, factual, concise bullets that fit on one page. "
+        "Never fabricate tools, certifications, or experience not in the source material. "
+        "CRITICAL: Return ONLY a valid JSON object. "
+        "Internal double-quotes MUST be escaped as \\\". "
+        "No markdown fences. No comments. No trailing commas."
     )
 
+    user = f"""JOB:
+  Title:   {job['job_title']}
+  Company: {job['company']}
+  Domain:  {job['domain']}
+  Summary: {job['summary']}
+  Skills:  {job['skills']}
+{co_ctx}
+SINGLE-PAGE RULE: Each bullet must be max 160 characters (2 lines at 9.5pt).
+
+Return a JSON object with EXACTLY these 13 keys. All values are strings.
+Internal double-quotes MUST be escaped as \\". The & character must stay as & (NOT \\&).
+
+{{
+  "AMZ_B1": "Rewrite with 1-2 domain keywords (factual, action verb, max 160 chars): {AMAZON_BASE[0]}",
+  "AMZ_B2": "Rewrite with 1-2 domain keywords (factual, action verb, max 160 chars): {AMAZON_BASE[1]}",
+  "AMZ_B3": "Rewrite with 1-2 domain keywords (factual, action verb, max 160 chars): {AMAZON_BASE[2]}",
+
+  "P1_TITLE": "{p1['title']}",
+  "P1_TECH":  "{', '.join(p1_tools)}",
+  "P1_B1": "Rewrite using tools in P1_TECH where relevant (factual, max 160 chars): {p1['bullets'][0]}",
+  "P1_B2": "Rewrite using tools in P1_TECH where relevant (factual, max 160 chars): {p1['bullets'][1]}",
+  "P1_B3": "Rewrite using tools in P1_TECH where relevant (factual, max 160 chars): {p1['bullets'][2]}",
+
+  "P2_TITLE": "{p2['title']}",
+  "P2_TECH":  "{', '.join(p2_tools)}",
+  "P2_B1": "Rewrite using tools in P2_TECH where relevant (factual, max 160 chars): {p2['bullets'][0]}",
+  "P2_B2": "Rewrite using tools in P2_TECH where relevant (factual, max 160 chars): {p2['bullets'][1]}",
+  "P2_B3": "Rewrite using tools in P2_TECH where relevant (factual, max 160 chars): {p2['bullets'][2]}"
+}}
+
+Rules:
+- Every bullet opens with a past-tense action verb (Built, Deployed, Conducted, Triaged, Implemented)
+- & must stay as & — never write \\&
+- Escape internal double-quotes with backslash
+- Max 160 characters per bullet"""
+
+    raw = _call_groq(system, user)
+    raw = _repair_json(raw)
+
     try:
-        raw = call_groq(listing_text)
-        raw = re.sub(r"```json\s*", "", raw)
-        raw = re.sub(r"```\s*",     "", raw)
-        start = raw.find("{")
-        end   = raw.rfind("}")
-        if start == -1 or end == -1:
-            raise ValueError("No JSON in response")
-        d = json.loads(raw[start : end + 1])
+        content = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("  JSON parse failed (%s) — attempting repair...", exc)
+        fixed = re.sub(
+            r'("(?:SK_\w+|AMZ_B\d|P[12]_(?:TITLE|TECH|B\d))":\s*)"(.*?)"(?=\s*[,}])',
+            lambda m: m.group(1) + '"' + m.group(2).replace('"', '\\"') + '"',
+            raw, flags=re.DOTALL
+        )
+        try:
+            content = json.loads(fixed)
+            logger.info("  JSON repair succeeded.")
+        except json.JSONDecodeError as exc2:
+            logger.error("JSON repair failed: %s\nFirst 500: %s", exc2, raw[:500])
+            raise exc2
 
-        ai_name = d.get("company") or listing.get("company", "")
-        ai_tier = _resolve_tier(ai_name, d.get("company_tier", "unknown"))
+    expected = [
+        "AMZ_B1", "AMZ_B2", "AMZ_B3",
+        "P1_TITLE", "P1_TECH", "P1_B1", "P1_B2", "P1_B3",
+        "P2_TITLE", "P2_TECH", "P2_B1", "P2_B2", "P2_B3",
+    ]
+    missing = [k for k in expected if k not in content]
+    if missing:
+        raise ValueError(f"LLM response missing keys: {missing}")
 
-        # ── Build result dict — keys match SHEET_COLUMNS exactly ──────────────
-        result = {
-            "scraped_at":           datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "job_title":            d.get("job_title")  or listing.get("title", ""),
-            "company":              _merge_company(ai_name, ai_tier),
-            "domain":               d.get("domain", "General"),
-            "legitimacy_score":     int(d.get("legitimacy_score", 1)),
-            "red_flags":            d.get("red_flags", []),   # stored as list; _save_listing converts
-            "summary":              d.get("summary", ""),
-            "is_intern":            bool(d.get("is_intern", False)),
-            "experience_required":  d.get("experience_required") or "",
-            "skills_required":      _skills_to_str(d.get("skills_required", "")),
-            "salary_range":         d.get("salary_range") or "",
-            "apply_url":            d.get("apply_url") or listing.get("job_url", ""),
-            "posted_date":          d.get("posted_date") or "",
-            "source":               listing.get("source", ""),
-            "url":                  listing.get("job_url") or listing.get("url", ""),
-            "status":               "New",
-        }
+    # Merge in the pre-computed (fixed) skill values — never from LLM
+    content.update(compute_skills(job["domain"]))
 
-        tag = "INTERN" if result["is_intern"] else "regular"
-        logger.info("  [%s] %s @ %s | score=%d | %s",
-                    tag,
-                    result["job_title"][:35],
-                    result["company"][:25],
-                    result["legitimacy_score"],
-                    result["experience_required"] or "?")
-        return result
-
-    except json.JSONDecodeError as e:
-        logger.error("JSON error '%s': %s", listing.get("title","?")[:40], e)
-        return None
-    except Exception as e:
-        logger.error("Error '%s': %s", listing.get("title","?")[:40], e)
-        return None
+    return content
 
 
-# =============================================================================
-# SCORE ALL
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# DOCX template fill
+# KEY FIX: replaces placeholders inside w:hyperlink elements too, by iterating
+# all w:t elements in the paragraph rather than just para.runs
+# ─────────────────────────────────────────────────────────────────────────────
 
-def score_all(listings: list, min_score: int = 4) -> list:
-    relevant = pre_filter(listings)
-    if not relevant:
-        logger.info("Nothing relevant after pre-filter")
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def _replace_in_para(para, placeholder: str, replacement: str) -> bool:
+    """
+    Replace [[PLACEHOLDER]] in the specific w:t element that contains it.
+    Does NOT merge all text into the first w:t (which would make values bold
+    if the first run happens to be the bold label run).
+    Works for both normal runs and runs nested inside w:hyperlink elements.
+    """
+    all_t = para._p.findall(f".//{{{W_NS}}}t")
+
+    # First pass: check if any single w:t contains the full placeholder
+    for t in all_t:
+        if t.text and placeholder in t.text:
+            t.text = t.text.replace(placeholder, replacement)
+            if t.text and (t.text[0] == " " or t.text[-1] == " "):
+                t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            return True
+
+    # Second pass: placeholder may be split across multiple w:t elements
+    full = "".join(t.text or "" for t in all_t)
+    if placeholder not in full:
+        return False
+    # Merge-and-replace fallback (only hit when placeholder is split across runs)
+    new_text = full.replace(placeholder, replacement)
+    if all_t:
+        all_t[0].text = new_text
+        if new_text and (new_text[0] == " " or new_text[-1] == " "):
+            all_t[0].set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        for t in all_t[1:]:
+            t.text = ""
+    return True
+
+
+def fill_template(content: dict) -> bytes:
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError("resume_template.docx not found in repo root.")
+
+    doc = Document(str(TEMPLATE_PATH))
+    replacements = {f"[[{k}]]": v for k, v in content.items()}
+
+    for para in doc.paragraphs:
+        full = "".join(
+            (t.text or "")
+            for t in para._p.findall(f".//{{{W_NS}}}t")
+        )
+        for ph, val in replacements.items():
+            if ph in full:
+                _replace_in_para(para, ph, val)
+                full = full.replace(ph, val)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PDF via LibreOffice (zero quota, perfect formatting)
+# Workflow must have: sudo apt-get install -y libreoffice
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_pdf(docx_bytes: bytes) -> bytes:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        docx_path = os.path.join(tmpdir, "resume.docx")
+        with open(docx_path, "wb") as f:
+            f.write(docx_bytes)
+
+        result = subprocess.run(
+            ["libreoffice", "--headless", "--convert-to", "pdf",
+             "--outdir", tmpdir, docx_path],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"LibreOffice failed: {result.stderr[:300]}")
+
+        pdf_path = os.path.join(tmpdir, "resume.pdf")
+        if not os.path.exists(pdf_path):
+            raise FileNotFoundError("LibreOffice did not produce resume.pdf")
+
+        with open(pdf_path, "rb") as f:
+            return f.read()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub storage
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _safe(s: str, n: int = 35) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "_", s)[:n]
+
+
+def _github_commit(filename: str, file_bytes: bytes, message: str) -> str:
+    path    = f"{RESUMES_FOLDER}/{filename}"
+    api_url = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/contents/{path}"
+    headers = {
+        "Authorization":        f"Bearer {GITHUB_TOKEN}",
+        "Accept":               "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    sha     = None
+    existing = requests.get(api_url, headers=headers, timeout=10)
+    if existing.status_code == 200:
+        sha = existing.json().get("sha")
+
+    payload = {
+        "message": message,
+        "content": base64.b64encode(file_bytes).decode(),
+        "branch":  GITHUB_BRANCH,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    resp = requests.put(api_url, json=payload, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return f"https://raw.githubusercontent.com/{GITHUB_REPOSITORY}/{GITHUB_BRANCH}/{path}"
+
+
+def upload_to_github(docx_bytes: bytes, pdf_bytes: bytes, job: dict) -> tuple[str, str]:
+    base = f"Resume_{_safe(job['job_title'])}_{_safe(job['company'])}"
+    msg  = f"Resume: {job['job_title']} @ {job['company']}"
+    return (
+        _github_commit(f"{base}.docx", docx_bytes, msg),
+        _github_commit(f"{base}.pdf",  pdf_bytes,  msg),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google Sheets helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_creds() -> Credentials:
+    creds_json = os.environ.get("GOOGLE_CREDS_JSON", "")
+    if not creds_json:
+        raise EnvironmentError("GOOGLE_CREDS_JSON not set.")
+    return Credentials.from_service_account_info(json.loads(creds_json), scopes=SCOPES)
+
+
+def ensure_column(ws, name: str) -> int:
+    headers = ws.row_values(1)
+    if name not in headers:
+        idx = len(headers) + 1
+        ws.update_cell(1, idx, name)
+        headers.append(name)
+        logger.info("Added column '%s' at position %d.", name, idx)
+        return idx
+    return headers.index(name) + 1
+
+
+def get_pending_jobs(ws, doc_col: int) -> list[dict]:
+    """
+    Jobs where status=New and resume_doc_link is empty.
+    Generate resume BEFORE applying — not after.
+    """
+    all_rows = ws.get_all_values()
+    if len(all_rows) < 2:
         return []
 
-    # Dedup by company+title before scoring (prevents scoring same post N times)
-    seen_key: set[str] = set()
-    deduped = []
-    for l in relevant:
-        title   = sanitize(l.get("title", "")).lower().strip()
-        company = sanitize(l.get("company", "")).lower().strip()
-        key = f"{company}|{title}" if company else title
-        if key in seen_key:
+    headers = all_rows[0]
+    col     = {h: i for i, h in enumerate(headers)}
+
+    def _get(row, key):
+        i = col.get(key)
+        return row[i].strip() if i is not None and i < len(row) else ""
+
+    SKIP = {"applied", "rejected", "not_relevant", "offer", "interview"}
+    pending = []
+    for row_num, row in enumerate(all_rows[1:], start=2):
+        status   = _get(row, "status").lower()
+        doc_link = row[doc_col - 1].strip() if (doc_col - 1) < len(row) else ""
+        if status == "new" and not doc_link:
+            pending.append({
+                "row_num":   row_num,
+                "job_title": _get(row, "job_title") or "Cybersecurity Role",
+                "company":   _get(row, "company")   or "Unknown",
+                "domain":    _get(row, "domain")     or "General",
+                "summary":   _get(row, "summary"),
+                "skills":    _get(row, "skills_required"),
+            })
+    return pending
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    logger.info("=" * 60)
+    logger.info("Resume Tailor started")
+    logger.info("=" * 60)
+
+    for name, val in [("GROQ_API_KEY", GROQ_API_KEY),
+                      ("GITHUB_TOKEN", GITHUB_TOKEN),
+                      ("GITHUB_REPOSITORY", GITHUB_REPOSITORY)]:
+        if not val:
+            logger.error("%s is not set.", name)
+            sys.exit(1)
+
+    if not TEMPLATE_PATH.exists():
+        logger.error("resume_template.docx not found in repo root.")
+        sys.exit(1)
+
+    creds   = _get_creds()
+    gc      = gspread.authorize(creds)
+    ws      = gc.open(SHEET_NAME).sheet1
+    logger.info("Connected to Google Sheets.")
+
+    doc_col = ensure_column(ws, "resume_doc_link")
+    pdf_col = ensure_column(ws, "resume_pdf_link")
+
+    pending = get_pending_jobs(ws, doc_col)
+    if not pending:
+        logger.info("No New jobs with empty resume_doc_link. Nothing to do.")
+        sys.exit(0)
+
+    logger.info("Found %d pending job(s). Processing up to %d.",
+                len(pending), MAX_JOBS_PER_RUN)
+    pending = pending[:MAX_JOBS_PER_RUN]
+
+    success = 0
+    for i, job in enumerate(pending, 1):
+        logger.info("-" * 50)
+        logger.info("[%d/%d] %s @ %s  (domain: %s)",
+                    i, len(pending), job["job_title"], job["company"], job["domain"])
+        try:
+            p1_key, p2_key = DOMAIN_TO_PROJECTS.get(job["domain"], ("soc_auto", "vuln_scanner"))
+            logger.info("  Projects: %s + %s", p1_key, p2_key)
+
+            jd_text  = f"{job['skills']} {job['summary']} {job['job_title']}"
+            p1_tools = select_tools(p1_key, jd_text)
+            p2_tools = select_tools(p2_key, jd_text)
+            logger.info("  P1 tools: %s", ", ".join(p1_tools))
+            logger.info("  P2 tools: %s", ", ".join(p2_tools))
+
+            intel       = get_company_intel(job["company"])
+            scraped_ctx = "" if intel else scrape_company(job["company"])
+
+            logger.info("  Generating content via Groq...")
+            content    = generate_content(job, p1_key, p2_key, intel, scraped_ctx,
+                                          p1_tools, p2_tools)
+            logger.info("  Content generated.")
+
+            docx_bytes = fill_template(content)
+            logger.info("  Template filled (%d bytes).", len(docx_bytes))
+
+            logger.info("  Generating PDF via LibreOffice...")
+            pdf_bytes  = generate_pdf(docx_bytes)
+            logger.info("  PDF generated (%d bytes).", len(pdf_bytes))
+
+            doc_url, pdf_url = upload_to_github(docx_bytes, pdf_bytes, job)
+
+            ws.update_cell(job["row_num"], doc_col, doc_url)
+            ws.update_cell(job["row_num"], pdf_col, pdf_url)
+            logger.info("  ✓ Done — Doc: %s", doc_url)
+
+            success += 1
+            time.sleep(4)
+
+        except Exception as exc:
+            logger.error("  ✗ Failed: %s", exc)
             continue
-        seen_key.add(key)
-        deduped.append(l)
 
-    logger.info("Pre-score dedup: %d → %d (removed %d duplicates)",
-                len(relevant), len(deduped), len(relevant) - len(deduped))
+    logger.info("=" * 60)
+    logger.info("Done: %d/%d succeeded.", success, len(pending))
+    logger.info("=" * 60)
 
-    scored = []
-    logger.info("Scoring %d listings via Groq...", len(deduped))
 
-    for i, listing in enumerate(deduped):
-        logger.info("Scoring %d/%d: %s",
-                    i + 1, len(deduped),
-                    sanitize(listing.get("title", "?"))[:55])
-        result = score_listing(listing)
-
-        if result is None:
-            continue
-        if result["legitimacy_score"] < min_score:
-            logger.info("  -> Dropped score=%d", result["legitimacy_score"])
-            continue
-
-        scored.append(result)
-        time.sleep(3)   # Groq free tier: 30 req/min
-
-    logger.info("Done: %d/%d passed", len(scored), len(deduped))
-    return scored
+if __name__ == "__main__":
+    main()
