@@ -1,35 +1,27 @@
 """
-resume_tailor.py
-================
-Generates tailored DOCX + PDF resumes for every New job in the sheet.
+resume_tailor.py  ── Complete version with validation, smart skills, URL shortening.
 
-WHAT'S IN THIS VERSION:
-  - MAX_JOBS_PER_RUN = 10
-  - 3 projects total; 2 selected per resume based on domain
-  - New skills layout: SOC Operations / SIEM & Monitoring / Threat Intelligence /
-    Systems & Networking / Automation
-  - Hyperlink fix: replaces [[PLACEHOLDERS]] inside w:hyperlink elements correctly
-  - No Professional Summary section (removed)
-  - No Git icon (drawing elements stripped from project title paragraphs)
-  - PDF via LibreOffice (free, perfect formatting, no Drive quota)
-  - Both DOCX and PDF committed to GitHub resumes/ folder
-  - Dynamic tool injection per JD keywords
-  - Company intelligence for 18 major Bangalore hirers
+WHAT'S NEW IN THIS VERSION:
+  • Smart skill profiles — 3 sets selected by role type (SOC/Security, Networking/Entry,
+    GRC/Risk/Fraud), combining both skill sets you provided
+  • 4 Amazon bullets (restored, stronger)
+  • Validation model: gemma2-9b-it (Groq free) — separate model = independent review
+  • VALIDATION_MODE: lenient (0 calls) / normal (1 call, ATS score) /
+    strict (2 calls: ATS review + GitHub similar-projects research)
+  • URL shortening via TinyURL API (free, no key) — clean links in sheet
+  • validation_notes column added to sheet
 
-PLACEHOLDER MAP (must match resume_template.docx exactly):
-  [[AMZ_B1]] [[AMZ_B2]] [[AMZ_B3]]
-  [[P1_TITLE]] [[P1_TECH]] [[P1_B1]] [[P1_B2]] [[P1_B3]]
-  [[P2_TITLE]] [[P2_TECH]] [[P2_B1]] [[P2_B2]] [[P2_B3]]
-  [[SK_SOC]] [[SK_SIEM]] [[SK_TI]] [[SK_SYS]] [[SK_AUTO]]
+GROQ MODELS USED:
+  Generator  : llama-3.1-8b-instant  (fast, free)
+  Validator  : gemma2-9b-it           (different architecture = independent judgement)
+
+SET IN resume_tailor.yml env section:
+  VALIDATION_MODE: normal   # lenient | normal | strict
 
 ADD TO requirements.txt:
   python-docx==1.1.2
   beautifulsoup4==4.12.3
   google-api-python-client==2.108.0
-
-WORKFLOW must have:
-  permissions: contents: write
-  - run: sudo apt-get install -y libreoffice
 """
 
 import os, sys, re, json, time, io, base64, logging, requests, subprocess, tempfile, copy
@@ -59,7 +51,8 @@ logger = logging.getLogger(__name__)
 
 SHEET_NAME        = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
 GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL        = "llama-3.1-8b-instant"
+GROQ_GEN_MODEL    = "llama-3.1-8b-instant"    # resume generation
+GROQ_VAL_MODEL    = "gemma2-9b-it"             # validation — different model = independent review
 GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
 MAX_JOBS_PER_RUN  = 10
 TEMPLATE_PATH     = Path(__file__).parent / "resume_template.docx"
@@ -67,6 +60,8 @@ GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "")
 GITHUB_BRANCH     = os.environ.get("GITHUB_REF_NAME", "main")
 RESUMES_FOLDER    = "resumes"
+# lenient=0 Groq calls  |  normal=1 call (ATS score)  |  strict=2 calls (full review + GitHub)
+VALIDATION_MODE   = os.environ.get("VALIDATION_MODE", "normal").lower().strip()
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -74,22 +69,91 @@ SCOPES = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SMART SKILL PROFILES
+#
+# Three sets selected by role type. Combines BOTH skill sets you provided.
+# Selector logic is in compute_skills() below.
+#
+# PROFILE A — SOC / Security / Threat / DFIR / Network
+#   Uses the "monitoring-forward" labels from your screenshot
+#
+# PROFILE B — Entry-level / Networking / Systems / Generalist
+#   Uses the original "Networking / OS & Scripting / SIEM" format
+#   Better for roles that explicitly ask for networking or infra background
+#
+# PROFILE C — GRC / Risk / Fraud / Compliance / Audit
+#   Based on what LinkedIn/Reddit/actual resumes show for these roles
+#   (Big4 consulting, BFSI compliance, IT audit freshers)
+# ─────────────────────────────────────────────────────────────────────────────
+
+SKILL_PROFILES = {
+    "soc_security": {
+        # Labels matching your screenshot exactly
+        "SK_SOC":  "Alert triage, incident investigation, log analysis, threat detection, escalation, false positive analysis",
+        "SK_SIEM": "Splunk (SPL), Elastic SIEM (basic), Windows Event Logs, Sysmon, Wireshark",
+        "SK_TI":   "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, Cyber Kill Chain",
+        "SK_SYS":  "Windows internals, Linux fundamentals, TCP/IP, DNS, HTTP/S, firewall and IDS/IPS concepts",
+        "SK_AUTO": "Python, Bash (basic), regular expressions",
+    },
+    "soc_security_cloud": {
+        # SOC/Security with cloud — adds AWS basics
+        "SK_SOC":  "Alert triage, incident investigation, log analysis, threat detection, escalation, false positive analysis",
+        "SK_SIEM": "Splunk (SPL), Elastic SIEM (basic), Windows Event Logs, Sysmon, Wireshark",
+        "SK_TI":   "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, Cyber Kill Chain",
+        "SK_SYS":  "Windows internals, Linux fundamentals, TCP/IP, DNS, HTTP/S, firewall and IDS/IPS concepts, AWS (IAM, CloudTrail, GuardDuty basics)",
+        "SK_AUTO": "Python, Bash (basic), regular expressions, boto3",
+    },
+    "networking_entry": {
+        # Entry-level / networking / systems-forward — uses original format
+        "SK_SOC":  "Networking: TCP/IP, OSI model, DNS, HTTP/S, firewall concepts, IDS/IPS concepts",
+        "SK_SIEM": "OS & Scripting: Linux (log analysis, grep, netstat), Windows internals, Active Directory, PowerShell, Python, Bash",
+        "SK_TI":   "SIEM & Tools: Splunk (SPL), Wireshark, PCAP analysis, Windows Event Logs, Nmap",
+        "SK_SYS":  "Security Operations Centre (SOC): Alert triage, log analysis, security monitoring, threat detection, incident escalation",
+        "SK_AUTO": "Security Frameworks: MITRE ATT&CK, Incident Response (PICERL), OWASP Top 10",
+        "_custom_labels": True,   # flag: labels themselves are the skill category names
+    },
+    "grc_risk_fraud": {
+        # GRC / Risk / Compliance / Audit / Fraud / AML
+        # Based on LinkedIn/Reddit/Big4 resumes for 0-2yr roles in India:
+        #   r/cybersecurity, r/fintech, LinkedIn #hiring posts for GRC freshers
+        #   Big4 associate programmes, BFSI compliance JDs
+        "SK_SOC":  "GRC & Compliance: NIST CSF, ISO 27001 (concepts), PCI-DSS, GDPR/PDPB, SOX/ITGC basics, compliance monitoring",
+        "SK_SIEM": "Risk & Audit: Risk assessment, control testing, audit documentation, vendor risk, RCSA basics, third-party risk",
+        "SK_TI":   "Fraud & AML: Transaction monitoring, AML typologies, KYC/CDD, sanctions screening, financial crime indicators",
+        "SK_SYS":  "Systems & Tools: Python, Excel (pivot, VLOOKUP), SQL (basic), Linux fundamentals, Windows internals",
+        "SK_AUTO": "Frameworks: MITRE ATT&CK, OWASP Top 10, Incident Response (PICERL), audit trail documentation",
+        "_custom_labels": True,
+    },
+}
+
+# Domain → profile mapping
+DOMAIN_SKILL_PROFILE = {
+    "SOC":        "soc_security",
+    "VAPT":       "soc_security",
+    "AppSec":     "soc_security",
+    "Forensics":  "soc_security",
+    "CloudSec":   "soc_security_cloud",
+    "IAM":        "soc_security_cloud",
+    "Network":    "networking_entry",
+    "GRC":        "grc_risk_fraud",
+    "Risk":       "grc_risk_fraud",
+    "Fraud-AML":  "grc_risk_fraud",
+    "General":    "soc_security",      # default to SOC for unknown roles
+}
+
+
+def compute_skills(domain: str) -> dict:
+    """
+    Return the 5 skill placeholder values for this domain.
+    Pure Python — never goes near the LLM.
+    """
+    profile_key = DOMAIN_SKILL_PROFILE.get(domain, "soc_security")
+    profile     = SKILL_PROFILES[profile_key]
+    return {k: v for k, v in profile.items() if not k.startswith("_")}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 3 PROJECTS
-#
-# PROJECT 1 — soc_auto: SOC Automation & Threat Detection Lab
-#   Covers: SOC, SIEM, IR, DFIR, Threat Intel, Malware, Network Security
-#   Combines original Cybersecurity Home Lab content with SOAR automation,
-#   Sigma rules, and Telegram alert integration.
-#
-# PROJECT 2 — vuln_scanner: Vulnerability Scanner & Patch Prioritization Engine
-#   Covers: VAPT, Vuln Management, AppSec, Network Security
-#   Combines original Automated Vulnerability Scanning with OWASP Top 10
-#   checker, EPSS scoring from FIRST.org API, and remediation SLA calculator.
-#
-# PROJECT 3 — phishing_osint: Phishing & OSINT Threat Intelligence Tool
-#   Covers: Threat Intel, OSINT, Phishing, IR, Fraud, AML
-#   Multi-API enrichment pipeline: VirusTotal, AbuseIPDB, WHOIS, DNS.
-#   Telegram bot interface, bulk CSV scanner, typosquatting detector.
 # ─────────────────────────────────────────────────────────────────────────────
 
 PROJECTS = {
@@ -104,12 +168,12 @@ PROJECTS = {
             r"crowdstrike|falcon|edr|xdr":                 ["CrowdStrike Falcon"],
             r"defender|microsoft defender|mde":            ["Microsoft Defender"],
             r"suricata|snort|zeek|ids\b|ips\b":            ["Suricata IDS"],
-            r"burp suite|burp|owasp|appsec|web app":       ["Burp Suite"],
+            r"burp suite|burp|appsec|web app":             ["Burp Suite"],
             r"metasploit|exploit|pentest|vapt":            ["Metasploit"],
             r"volatility|memory forensics|dfir":           ["Volatility"],
-            r"soar|playbook|automation|orchestration":     ["SOAR playbook"],
-            r"grafana|dashboard|visuali":                  ["Grafana"],
-            r"sysmon|windows event|evtx":                  ["Sysmon"],
+            r"soar|playbook|automation":                   ["SOAR playbook"],
+            r"grafana|dashboard":                          ["Grafana"],
+            r"sysmon|evtx":                                ["Sysmon"],
         },
         "bullets": [
             "Deployed Splunk SIEM with SPL correlation searches for brute-force detection (index=* failed | stats count by src_ip), lateral movement, and privilege escalation; mapped TTPs to MITRE ATT&CK (T1110, T1078, T1059) and wrote PICERL incident report.",
@@ -123,21 +187,18 @@ PROJECTS = {
         "github": "https://github.com/Akshay-dot-P/vuln-scanner",
         "tech_base": ["Python", "Bash", "Nessus", "OpenVAS", "NVD API", "CVSS/EPSS scoring"],
         "tech_swappable": {
-            r"qualys":                                    ["Qualys"],
-            r"tenable|nessus":                           ["Nessus"],
-            r"openvas":                                  ["OpenVAS"],
-            r"burp suite|burp|owasp|web app|appsec":    ["Burp Suite", "OWASP ZAP"],
-            r"nmap|network scan|port scan":              ["Nmap"],
-            r"cve|nvd|cvss":                             ["NVD API"],
-            r"epss|exploit probability|first\.org":     ["EPSS API (FIRST.org)"],
-            r"patch|remediation|sla|prioriti":          ["remediation SLA calculator"],
-            r"sast|bandit|semgrep|secure code":         ["Semgrep SAST"],
-            r"container|docker|trivy|kubernetes":       ["Trivy container scanner"],
+            r"qualys":                               ["Qualys"],
+            r"tenable":                             ["Tenable.io"],
+            r"burp suite|burp|owasp|web app":       ["Burp Suite", "OWASP ZAP"],
+            r"nmap|network scan":                   ["Nmap"],
+            r"epss|exploit probability":            ["EPSS API (FIRST.org)"],
+            r"sast|bandit|semgrep|secure code":     ["Semgrep SAST"],
+            r"container|docker|trivy|kubernetes":   ["Trivy container scanner"],
         },
         "bullets": [
-            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS REST APIs in Python; generates CVE reports classified by CVSS severity with remediation guidance; implemented EPSS scoring from FIRST.org API to prioritise by actual exploit probability — a metric rarely used by freshers.",
-            "Developed OWASP Top 10 automated web checker that sends crafted HTTP requests to test targets and detects injection, broken auth, and SSRF vulnerabilities; documented query-level SQL injection exploit and parameterised query remediation.",
-            "Automated scan scheduling via Bash and cron; built delta-scan logic comparing consecutive runs to flag newly discovered CVEs and calculate remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) for patch compliance tracking.",
+            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS REST APIs in Python; generates CVE reports classified by CVSS severity; implemented EPSS scoring from FIRST.org API to prioritise by actual exploit probability — a metric rarely used by freshers.",
+            "Developed OWASP Top 10 automated web checker that sends crafted HTTP requests to detect injection, broken auth, and SSRF vulnerabilities; documented SQL injection exploit and parameterised query remediation.",
+            "Automated scan scheduling via Bash and cron; built delta-scan logic to flag newly discovered CVEs and calculate remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) for patch compliance tracking.",
         ],
     },
 
@@ -146,26 +207,23 @@ PROJECTS = {
         "github": "https://github.com/Akshay-dot-P/phishing-osint-tool",
         "tech_base": ["Python", "VirusTotal API", "AbuseIPDB", "WHOIS", "Telegram bot", "DNS analysis"],
         "tech_swappable": {
-            r"shodan|censys|internet scan":              ["Shodan API"],
-            r"maltego|graph|relationship|link analysis": ["graph visualisation"],
-            r"osint|open source intel|reconnaissance":  ["theHarvester", "OSINT framework"],
-            r"phishing|url|domain|malicious link":      ["URLScan.io"],
-            r"fraud|aml|financial crime|transaction":   ["fraud pattern matching"],
-            r"threat intel|cti|ioc|indicator":          ["MISP IOC feeds"],
-            r"typosquat|brand|impersonat":              ["typosquatting detector"],
-            r"email|header|spf|dkim|dmarc":             ["email header analyser"],
-            r"ip|geolocation|asn|reputation":           ["IPInfo API"],
-            r"telegram|bot|alert|notification":         ["Telegram bot"],
+            r"shodan|censys":                        ["Shodan API"],
+            r"osint|open source intel|recon":        ["theHarvester"],
+            r"phishing|url|domain|malicious link":   ["URLScan.io"],
+            r"fraud|aml|financial crime":            ["fraud pattern matching"],
+            r"threat intel|cti|ioc|indicator":       ["MISP IOC feeds"],
+            r"typosquat|brand|impersonat":           ["typosquatting detector"],
+            r"email|spf|dkim|dmarc":                 ["email header analyser"],
+            r"ip|geolocation|asn|reputation":        ["IPInfo API"],
         },
         "bullets": [
-            "Built multi-API threat intelligence pipeline: submits suspicious URLs/IPs to VirusTotal, AbuseIPDB, and URLScan.io simultaneously; cross-references WHOIS registration age, DNS records, and SSL certificate details to produce a unified phishing probability score.",
-            "Implemented typosquatting domain detector that generates character-substitution variants of brand domains and checks live DNS resolution — catches brand-impersonation attacks before they are reported to threat feeds.",
-            "Deployed Telegram bot interface enabling analysts to submit URLs for live IOC enrichment and receive structured threat reports in-chat; supports bulk CSV input/output for incident response workflows where analysts triage multiple URLs simultaneously.",
+            "Built multi-API threat intelligence pipeline: submits suspicious URLs/IPs to VirusTotal, AbuseIPDB, and URLScan.io simultaneously; cross-references WHOIS registration age, DNS records, and SSL details to produce a unified phishing probability score.",
+            "Implemented typosquatting domain detector generating character-substitution variants of brand domains and checking live DNS resolution — catches brand-impersonation attacks before they reach threat feeds.",
+            "Deployed Telegram bot interface enabling analysts to submit URLs for live IOC enrichment; supports bulk CSV input/output for incident response workflows and includes OSINT enrichment via theHarvester for domain profiling.",
         ],
     },
 }
 
-# Which 2 projects to show on the resume for each domain
 DOMAIN_TO_PROJECTS = {
     "SOC":        ("soc_auto",       "phishing_osint"),
     "VAPT":       ("vuln_scanner",   "soc_auto"),
@@ -184,164 +242,71 @@ AMAZON_BASE = [
     "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, mirroring the structured alert triage and escalation workflow used in SOC Tier 1 analyst roles.",
     "Performed root cause analysis on seller claims to identify policy violations and anomalous patterns; escalated findings to senior reviewers, demonstrating investigative instincts central to SOC and fraud analyst operations.",
     "Maintained audit-ready case documentation recording investigation findings, decisions, and corrective actions, establishing the evidence chain-of-custody discipline required for security incident reporting and IT audit.",
+    "Collaborated with compliance and risk teams to enforce regulatory policies, identify process control gaps, and implement corrective actions — building operational instincts directly applicable to GRC analyst, risk management, and compliance monitoring roles.",
 ]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FIXED SKILL VALUES — never generated by LLM (prevents verbose rewrites + bold bug)
-# Exact terms from your resume screenshot. LLM never touches these.
-# We select the most relevant subset per domain in Python.
-# ─────────────────────────────────────────────────────────────────────────────
-
-FIXED_SKILLS = {
-    "SK_SOC": {
-        "base": "Alert triage, incident investigation, log analysis, threat detection, escalation, false positive analysis",
-        "domain_append": {
-            "GRC":       ", compliance monitoring",
-            "Risk":      ", risk escalation",
-            "Fraud-AML": ", fraud triage",
-        },
-    },
-    "SK_SIEM": {
-        "base": "Splunk (SPL), Elastic SIEM (basic), Windows Event Logs, Sysmon, Wireshark",
-        "domain_append": {},
-    },
-    "SK_TI": {
-        "base": "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, Cyber Kill Chain",
-        "domain_append": {
-            "Fraud-AML": ", AML typologies",
-            "GRC":       ", threat landscape reporting",
-        },
-    },
-    "SK_SYS": {
-        "base": "Windows internals, Linux fundamentals, TCP/IP, DNS, HTTP/S, firewall and IDS/IPS concepts",
-        "domain_append": {
-            "CloudSec": ", AWS (IAM, CloudTrail, GuardDuty basics)",
-            "IAM":      ", Active Directory (basics)",
-        },
-    },
-    "SK_AUTO": {
-        "base": "Python, Bash (basic), regular expressions",
-        "domain_append": {
-            "CloudSec":  ", boto3",
-            "AppSec":    ", OWASP ZAP (basic)",
-            "VAPT":      ", Nmap scripting",
-        },
-    },
-}
-
-
-def compute_skills(domain: str) -> dict:
-    """Return the 5 skill strings for this domain. Pure Python, no LLM."""
-    result = {}
-    for key, data in FIXED_SKILLS.items():
-        value = data["base"]
-        for d, extra in data["domain_append"].items():
-            if d.lower() == domain.lower():
-                value += extra
-                break
-        result[key] = value
-    return result
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Company intelligence
 # ─────────────────────────────────────────────────────────────────────────────
 
 COMPANY_INTEL = {
-    "wipro": {
-        "framing":   "Wipro hires L1 SOC analysts for 24x7 SIEM monitoring shifts. Value: process adherence, SLA discipline, shift documentation, escalation workflows.",
-        "keywords":  ["24x7 SOC", "SLA adherence", "shift documentation", "SIEM operations", "incident escalation"],
-        "skills_first": ["Splunk", "SIEM", "alert triage", "incident escalation", "documentation"],
-    },
-    "tcs": {
-        "framing":   "TCS values structured compliance and certification alignment. Hires for ISO 27001 ISMS, VAPT, process-oriented security delivery.",
-        "keywords":  ["ISMS", "ISO 27001", "compliance audit", "vulnerability assessment"],
-        "skills_first": ["ISO 27001", "VAPT", "compliance", "audit documentation"],
-    },
-    "infosys": {
-        "framing":   "Infosys values learning agility, documentation quality, multi-client delivery adaptability.",
-        "keywords":  ["multi-client delivery", "documentation quality"],
-        "skills_first": ["Python", "Splunk", "documentation", "compliance"],
-    },
-    "hcl": {
-        "framing":   "HCL SecureCloud emphasises cloud-native security. Highlight AWS, cloud IAM, detection engineering.",
-        "keywords":  ["cloud security", "AWS security", "cloud IAM"],
-        "skills_first": ["AWS", "cloud security", "Python", "SIEM"],
-    },
-    "cognizant": {
-        "framing":   "Cognizant hires for 24x7 SOC and BFSI compliance. Value: investigation rigour, BFSI frameworks.",
-        "keywords":  ["SOC operations", "BFSI security", "compliance monitoring"],
-        "skills_first": ["SIEM", "alert triage", "compliance", "documentation"],
-    },
-    "capgemini": {
-        "framing":   "Capgemini bridges GRC consulting and technical security for European clients.",
-        "keywords":  ["GRC", "NIST", "compliance reporting"],
-        "skills_first": ["GRC", "NIST CSF", "cloud security", "compliance"],
-    },
-    "deloitte": {
-        "framing":   "Deloitte Cyber Risk Advisory: ITGC audits, GRC, BFSI. Value: communicating risk in business terms, ITGC/SOX, client reports.",
-        "keywords":  ["cyber risk advisory", "ITGC", "SOX", "GRC consulting"],
-        "skills_first": ["GRC", "ITGC", "ISO 27001", "NIST CSF", "audit documentation"],
-    },
-    "kpmg": {
-        "framing":   "KPMG IT Advisory: ITGC/IS audit. Value: control testing, audit evidence, SOX/ITGC methodology. CISA valued.",
-        "keywords":  ["IT audit", "ITGC", "SOX", "CISA", "control testing"],
-        "skills_first": ["IT audit", "ITGC", "ISO 27001", "audit documentation"],
-    },
-    "pwc": {
-        "framing":   "PwC Cyber Risk: regulatory landscape knowledge (RBI, SEBI, GDPR, PDPB), structured risk recommendations.",
-        "keywords":  ["cyber risk", "regulatory compliance", "data privacy", "GDPR"],
-        "skills_first": ["GRC", "data privacy", "GDPR", "NIST CSF"],
-    },
-    "ey": {
-        "framing":   "EY GDS Bangalore: GRC and IT audit delivery. Value: structured audit execution, international standards.",
-        "keywords":  ["GRC", "IT audit", "risk assurance", "ITGC"],
-        "skills_first": ["IT audit", "GRC", "ISO 27001", "compliance"],
-    },
-    "jpmorgan": {
-        "framing":   "JPMorgan: technology risk, Basel III operational risk, AML/KYC operations.",
-        "keywords":  ["technology risk", "operational risk", "AML", "transaction monitoring"],
-        "skills_first": ["operational risk", "AML", "compliance", "Python"],
-    },
-    "goldman sachs": {
-        "framing":   "Goldman Sachs: ITGC, control testing, audit independence. Value: documentation rigour.",
-        "keywords":  ["technology audit", "ITGC", "internal audit", "SOX"],
-        "skills_first": ["IT audit", "ITGC", "SOX", "audit documentation"],
-    },
-    "deutsche bank": {
-        "framing":   "Deutsche Bank: KYC, AML, information security. Value: investigative accuracy, AML/KYC process knowledge.",
-        "keywords":  ["KYC", "AML", "information security", "transaction monitoring"],
-        "skills_first": ["KYC", "AML", "compliance", "documentation"],
-    },
-    "citi": {
-        "framing":   "Citi: fraud detection, risk analytics. Value: pattern recognition, Python/data skills, anomaly detection.",
-        "keywords":  ["risk analytics", "fraud detection", "transaction monitoring"],
-        "skills_first": ["fraud detection", "Python", "risk assessment"],
-    },
-    "amazon": {
-        "framing":   "Amazon: LP lens — Dive Deep, Bias for Action, Insist on Highest Standards. Automation mindset.",
-        "keywords":  ["dive deep", "automation", "AWS", "security at scale"],
-        "skills_first": ["Python", "AWS", "automation", "Bash", "SIEM"],
-    },
-    "google": {
-        "framing":   "Google: technical depth, automation, systems thinking.",
-        "keywords":  ["security engineering", "automation", "threat analysis"],
-        "skills_first": ["Python", "Bash", "Linux", "automation", "threat intelligence"],
-    },
-    "microsoft": {
-        "framing":   "Microsoft: bridge identity, cloud, and security. Azure/AD/Sentinel.",
-        "keywords":  ["Azure security", "Microsoft Sentinel", "Active Directory", "Zero Trust"],
-        "skills_first": ["Azure", "Active Directory", "cloud security", "IAM"],
-    },
-    "hdfc bank": {
-        "framing":   "HDFC Bank: fraud detection, AML, RBI compliance.",
-        "keywords":  ["fraud analytics", "AML", "RBI compliance", "transaction monitoring"],
-        "skills_first": ["fraud detection", "AML", "compliance", "audit documentation"],
-    },
-    "bajaj finserv": {
-        "framing":   "Bajaj Finserv: fraud/risk operations for large NBFC.",
-        "keywords":  ["fraud operations", "IT risk", "NBFC compliance"],
-        "skills_first": ["fraud detection", "risk assessment", "compliance"],
-    },
+    "wipro":         {"framing": "24x7 SOC shifts. Value: SLA discipline, shift documentation, SIEM operations.",
+                      "keywords": ["24x7 SOC", "SLA adherence", "shift documentation"],
+                      "skills_first": ["Splunk", "SIEM", "alert triage"]},
+    "tcs":           {"framing": "ISO 27001 ISMS, VAPT, compliance delivery.",
+                      "keywords": ["ISMS", "ISO 27001", "compliance audit"],
+                      "skills_first": ["ISO 27001", "VAPT", "compliance"]},
+    "infosys":       {"framing": "Multi-client delivery, documentation quality.",
+                      "keywords": ["documentation quality", "multi-client"],
+                      "skills_first": ["Python", "Splunk", "documentation"]},
+    "hcl":           {"framing": "Cloud-native security, AWS, detection engineering.",
+                      "keywords": ["cloud security", "AWS security"],
+                      "skills_first": ["AWS", "cloud security", "Python"]},
+    "cognizant":     {"framing": "24x7 SOC, BFSI compliance, investigation rigour.",
+                      "keywords": ["SOC operations", "BFSI security"],
+                      "skills_first": ["SIEM", "alert triage", "compliance"]},
+    "capgemini":     {"framing": "GRC consulting, cloud security, European clients.",
+                      "keywords": ["GRC", "NIST", "compliance reporting"],
+                      "skills_first": ["GRC", "NIST CSF", "cloud security"]},
+    "deloitte":      {"framing": "GRC consulting, ITGC/SOX audits, client risk reports.",
+                      "keywords": ["cyber risk advisory", "ITGC", "SOX"],
+                      "skills_first": ["GRC", "ITGC", "ISO 27001", "audit documentation"]},
+    "kpmg":          {"framing": "ITGC/IS audit practice. CISA valued. Control testing.",
+                      "keywords": ["IT audit", "ITGC", "SOX", "CISA"],
+                      "skills_first": ["IT audit", "ITGC", "audit documentation"]},
+    "pwc":           {"framing": "Cyber risk advisory. Regulatory compliance (RBI, SEBI, GDPR, PDPB).",
+                      "keywords": ["cyber risk", "regulatory compliance", "GDPR"],
+                      "skills_first": ["GRC", "data privacy", "GDPR", "NIST CSF"]},
+    "ey":            {"framing": "EY GDS IT audit and GRC delivery. Structured audit methodology.",
+                      "keywords": ["GRC", "IT audit", "ITGC"],
+                      "skills_first": ["IT audit", "GRC", "ISO 27001", "compliance"]},
+    "jpmorgan":      {"framing": "Technology risk, Basel III, AML/KYC operations.",
+                      "keywords": ["technology risk", "AML", "operational risk"],
+                      "skills_first": ["operational risk", "AML", "compliance"]},
+    "goldman sachs": {"framing": "Internal tech audit, ITGC, control testing.",
+                      "keywords": ["technology audit", "ITGC", "SOX"],
+                      "skills_first": ["IT audit", "ITGC", "SOX"]},
+    "deutsche bank": {"framing": "KYC, AML, information security.",
+                      "keywords": ["KYC", "AML", "transaction monitoring"],
+                      "skills_first": ["KYC", "AML", "compliance"]},
+    "citi":          {"framing": "Fraud detection, risk analytics, anomaly detection.",
+                      "keywords": ["fraud detection", "risk analytics"],
+                      "skills_first": ["fraud detection", "Python", "risk assessment"]},
+    "amazon":        {"framing": "LP lens: Dive Deep, Bias for Action, automation mindset.",
+                      "keywords": ["dive deep", "automation", "AWS"],
+                      "skills_first": ["Python", "AWS", "automation", "Bash"]},
+    "google":        {"framing": "Technical depth, automation, systems thinking.",
+                      "keywords": ["security engineering", "automation"],
+                      "skills_first": ["Python", "Bash", "Linux", "automation"]},
+    "microsoft":     {"framing": "Azure, AD, Sentinel. Growth mindset.",
+                      "keywords": ["Azure security", "Active Directory", "Zero Trust"],
+                      "skills_first": ["Azure", "Active Directory", "cloud security"]},
+    "hdfc bank":     {"framing": "Fraud detection, AML, RBI compliance.",
+                      "keywords": ["AML", "RBI compliance", "fraud analytics"],
+                      "skills_first": ["fraud detection", "AML", "compliance"]},
+    "bajaj finserv": {"framing": "Fraud/risk operations, NBFC compliance.",
+                      "keywords": ["fraud operations", "IT risk"],
+                      "skills_first": ["fraud detection", "risk assessment"]},
 }
 
 
@@ -355,7 +320,7 @@ def get_company_intel(company_raw: str) -> dict | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dynamic tool selection per JD
+# Dynamic tool selection
 # ─────────────────────────────────────────────────────────────────────────────
 
 def select_tools(project_key: str, jd_text: str, max_tools: int = 5) -> list[str]:
@@ -375,9 +340,7 @@ def select_tools(project_key: str, jd_text: str, max_tools: int = 5) -> list[str
 # Company web scraping (fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_HDRS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-}
+_HDRS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36"}
 
 
 def scrape_company(company_raw: str) -> str:
@@ -408,7 +371,58 @@ def scrape_company(company_raw: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JSON repair
+# GitHub research (strict mode only)
+# Searches GitHub for cybersec projects from 0-2yr experience candidates,
+# summarises what similar projects do well.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def research_github_projects(domain: str, job_title: str) -> str:
+    """
+    Search GitHub for similar projects from entry-level / fresher candidates.
+    Returns a short summary of patterns found.
+    Only called in strict validation mode.
+    """
+    # Map domain to useful GitHub search terms
+    DOMAIN_SEARCH = {
+        "SOC":       "SOC automation SIEM detection lab",
+        "VAPT":      "vulnerability scanner CVE CVSS python",
+        "GRC":       "GRC compliance automation NIST ISO27001 python",
+        "Risk":      "risk management compliance framework python",
+        "Fraud-AML": "AML transaction monitoring fraud detection python",
+        "CloudSec":  "cloud security AWS IAM audit python",
+        "General":   "cybersecurity portfolio entry level",
+    }
+    query = DOMAIN_SEARCH.get(domain, "cybersecurity portfolio")
+    encoded = requests.utils.quote(f"{query} language:Python stars:>2")
+    url = f"https://api.github.com/search/repositories?q={encoded}&sort=stars&per_page=5"
+
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        if not items:
+            return ""
+
+        notes = []
+        for item in items[:4]:
+            name    = item.get("full_name", "")
+            desc    = item.get("description", "") or ""
+            stars   = item.get("stargazers_count", 0)
+            topics  = ", ".join(item.get("topics", [])[:5])
+            notes.append(f"{name} (⭐{stars}): {desc[:100]} | topics: {topics}")
+
+        return "\n".join(notes)
+    except Exception as exc:
+        logger.debug("GitHub research failed: %s", exc)
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Groq helpers — two models, same interface
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _repair_json(raw: str) -> str:
@@ -417,20 +431,15 @@ def _repair_json(raw: str) -> str:
     raw = raw.replace("\u201c", '"').replace("\u201d", '"')
     raw = raw.replace("\u2018", "'").replace("\u2019", "'")
     raw = re.sub(r",\s*([\}\]])", r"\1",  raw)
-    # Fix invalid JSON escapes: \& \# \! etc. (only \", \\, \/, \b \f \n \r \t \uXXXX are valid)
+    # Fix invalid JSON escapes: \& \# etc.
     raw = re.sub(r'\\([^"\\/bfnrtu])', r'\1', raw)
     return raw.strip()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Groq LLM
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _call_groq(system: str, user: str, retries: int = 3) -> str:
+def _call_groq(system: str, user: str, model: str,
+               max_tokens: int = 2500, retries: int = 3) -> str:
     payload = {
-        "model":       GROQ_MODEL,
-        "temperature": 0.15,
-        "max_tokens":  2500,
+        "model": model, "temperature": 0.15, "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user",   "content": user},
@@ -450,34 +459,36 @@ def _call_groq(system: str, user: str, retries: int = 3) -> str:
         except requests.RequestException as exc:
             logger.warning("  Groq error attempt %d: %s", attempt, exc)
             time.sleep(5 * attempt)
-    raise RuntimeError("Groq API failed after retries.")
+    raise RuntimeError(f"Groq ({model}) failed after retries.")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Resume content generation (llama-3.1-8b-instant)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def generate_content(job: dict, p1_key: str, p2_key: str,
                      intel: dict | None, scraped_ctx: str,
                      p1_tools: list, p2_tools: list) -> dict:
-
     p1 = PROJECTS[p1_key]
     p2 = PROJECTS[p2_key]
 
+    co_ctx = ""
     if intel:
         co_ctx = (
             f"\nCOMPANY FRAMING: {intel['framing']}\n"
-            f"Priority keywords: {', '.join(intel['keywords'][:5])}\n"
-            f"Skills to foreground: {', '.join(intel['skills_first'])}\n"
+            f"Priority keywords: {', '.join(intel['keywords'][:4])}\n"
             f"Do NOT write 'Eager to contribute to X' — let keywords appear naturally.\n"
         )
     elif scraped_ctx:
-        co_ctx = f"\nCOMPANY CONTEXT: {scraped_ctx[:400]}\nUse vocabulary signals naturally.\n"
-    else:
-        co_ctx = ""
+        co_ctx = f"\nCOMPANY CONTEXT: {scraped_ctx[:400]}\n"
 
     system = (
         "You are a senior cybersecurity resume writer for the Indian job market. "
-        "You write ATS-optimised, factual, concise bullets that fit on one page. "
-        "Never fabricate tools, certifications, or experience not in the source material. "
-        "CRITICAL: Return ONLY a valid JSON object. "
+        "You write ATS-optimised, factual, concise bullets. "
+        "Never fabricate tools or experience not in source material. "
+        "Return ONLY a valid JSON object. "
         "Internal double-quotes MUST be escaped as \\\". "
+        "The & character stays as & — never write \\&. "
         "No markdown fences. No comments. No trailing commas."
     )
 
@@ -488,36 +499,36 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
   Summary: {job['summary']}
   Skills:  {job['skills']}
 {co_ctx}
-SINGLE-PAGE RULE: Each bullet must be max 160 characters (2 lines at 9.5pt).
+SINGLE-PAGE RULE: Each bullet max 160 characters (2 lines at 9.5pt Source Sans Pro).
 
-Return a JSON object with EXACTLY these 13 keys. All values are strings.
-Internal double-quotes MUST be escaped as \\". The & character must stay as & (NOT \\&).
+Return JSON with EXACTLY these 16 keys:
 
 {{
   "AMZ_B1": "Rewrite with 1-2 domain keywords (factual, action verb, max 160 chars): {AMAZON_BASE[0]}",
   "AMZ_B2": "Rewrite with 1-2 domain keywords (factual, action verb, max 160 chars): {AMAZON_BASE[1]}",
   "AMZ_B3": "Rewrite with 1-2 domain keywords (factual, action verb, max 160 chars): {AMAZON_BASE[2]}",
+  "AMZ_B4": "Rewrite with 1-2 domain keywords (factual, action verb, max 160 chars): {AMAZON_BASE[3]}",
 
   "P1_TITLE": "{p1['title']}",
   "P1_TECH":  "{', '.join(p1_tools)}",
-  "P1_B1": "Rewrite using tools in P1_TECH where relevant (factual, max 160 chars): {p1['bullets'][0]}",
-  "P1_B2": "Rewrite using tools in P1_TECH where relevant (factual, max 160 chars): {p1['bullets'][1]}",
-  "P1_B3": "Rewrite using tools in P1_TECH where relevant (factual, max 160 chars): {p1['bullets'][2]}",
+  "P1_B1": "Rewrite using tools in P1_TECH (factual, max 160 chars): {p1['bullets'][0]}",
+  "P1_B2": "Rewrite using tools in P1_TECH (factual, max 160 chars): {p1['bullets'][1]}",
+  "P1_B3": "Rewrite using tools in P1_TECH (factual, max 160 chars): {p1['bullets'][2]}",
 
   "P2_TITLE": "{p2['title']}",
   "P2_TECH":  "{', '.join(p2_tools)}",
-  "P2_B1": "Rewrite using tools in P2_TECH where relevant (factual, max 160 chars): {p2['bullets'][0]}",
-  "P2_B2": "Rewrite using tools in P2_TECH where relevant (factual, max 160 chars): {p2['bullets'][1]}",
-  "P2_B3": "Rewrite using tools in P2_TECH where relevant (factual, max 160 chars): {p2['bullets'][2]}"
+  "P2_B1": "Rewrite using tools in P2_TECH (factual, max 160 chars): {p2['bullets'][0]}",
+  "P2_B2": "Rewrite using tools in P2_TECH (factual, max 160 chars): {p2['bullets'][1]}",
+  "P2_B3": "Rewrite using tools in P2_TECH (factual, max 160 chars): {p2['bullets'][2]}"
 }}
 
 Rules:
-- Every bullet opens with a past-tense action verb (Built, Deployed, Conducted, Triaged, Implemented)
-- & must stay as & — never write \\&
+- Every bullet opens with past-tense action verb (Built, Deployed, Triaged, Conducted)
+- & stays as & — never \\&
 - Escape internal double-quotes with backslash
-- Max 160 characters per bullet"""
+- Max 160 chars per bullet"""
 
-    raw = _call_groq(system, user)
+    raw = _call_groq(system, user, GROQ_GEN_MODEL)
     raw = _repair_json(raw)
 
     try:
@@ -525,19 +536,15 @@ Rules:
     except json.JSONDecodeError as exc:
         logger.warning("  JSON parse failed (%s) — attempting repair...", exc)
         fixed = re.sub(
-            r'("(?:SK_\w+|AMZ_B\d|P[12]_(?:TITLE|TECH|B\d))":\s*)"(.*?)"(?=\s*[,}])',
+            r'("(?:AMZ_B\d|P[12]_(?:TITLE|TECH|B\d))":\s*)"(.*?)"(?=\s*[,}])',
             lambda m: m.group(1) + '"' + m.group(2).replace('"', '\\"') + '"',
             raw, flags=re.DOTALL
         )
-        try:
-            content = json.loads(fixed)
-            logger.info("  JSON repair succeeded.")
-        except json.JSONDecodeError as exc2:
-            logger.error("JSON repair failed: %s\nFirst 500: %s", exc2, raw[:500])
-            raise exc2
+        content = json.loads(fixed)
+        logger.info("  JSON repair succeeded.")
 
     expected = [
-        "AMZ_B1", "AMZ_B2", "AMZ_B3",
+        "AMZ_B1", "AMZ_B2", "AMZ_B3", "AMZ_B4",
         "P1_TITLE", "P1_TECH", "P1_B1", "P1_B2", "P1_B3",
         "P2_TITLE", "P2_TECH", "P2_B1", "P2_B2", "P2_B3",
     ]
@@ -545,16 +552,116 @@ Rules:
     if missing:
         raise ValueError(f"LLM response missing keys: {missing}")
 
-    # Merge in the pre-computed (fixed) skill values — never from LLM
+    # Merge computed (fixed) skill values — never from LLM
     content.update(compute_skills(job["domain"]))
-
     return content
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DOCX template fill
-# KEY FIX: replaces placeholders inside w:hyperlink elements too, by iterating
-# all w:t elements in the paragraph rather than just para.runs
+# VALIDATION (gemma2-9b-it — different model = independent judgement)
+#
+# Three modes matching the VALIDATION_MODE env var:
+#
+#   lenient : 0 Groq calls — skip entirely, just log
+#   normal  : 1 Groq call  — ATS score + missing keywords (~150 tokens)
+#   strict  : 1 Groq call  — full review: ATS + missing kw + improvements
+#             + GitHub project comparison (what similar repos did better)
+#             Uses GitHub API research done before this call
+#
+# Why gemma2-9b-it?
+#   Different training data and architecture than llama-3.1-8b.
+#   A second model catching what the first one missed is closer to a real
+#   independent ATS check. Both are on Groq free tier.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def validate_resume(content: dict, job: dict,
+                    github_notes: str, mode: str) -> dict:
+    """
+    Validate the generated resume content.
+
+    mode=lenient → instant return, 0 Groq calls
+    mode=normal  → 1 Groq call, ATS score + missing keywords
+    mode=strict  → 1 Groq call, full ATS review + GitHub comparison
+    """
+    EMPTY = {"ats_score": "skipped", "missing_keywords": "", "improvements": "", "github_insight": ""}
+
+    if mode == "lenient":
+        logger.info("  Validation: lenient — skipped")
+        return EMPTY
+
+    # Build bullet text for the validator
+    bullets = " | ".join(filter(None, [
+        content.get("AMZ_B1",""), content.get("AMZ_B2",""),
+        content.get("AMZ_B3",""), content.get("AMZ_B4",""),
+        content.get("P1_B1",""), content.get("P1_B2",""),
+        content.get("P2_B1",""), content.get("P2_B2",""),
+    ]))
+    title      = job.get("job_title", "")
+    skills_req = job.get("skills", "")
+
+    # ── NORMAL mode ───────────────────────────────────────────────────────────
+    if mode == "normal":
+        prompt = (
+            f"Job title: {title}\n"
+            f"JD keywords: {skills_req[:200]}\n"
+            f"Resume bullets: {bullets[:500]}\n\n"
+            "You are an ATS system. Score the keyword match and find gaps.\n"
+            "Return raw JSON only — no markdown:\n"
+            '{"ats_score":<1-10>,"missing_keywords":"<max 6 keywords comma-separated>"}'
+        )
+        try:
+            raw  = _call_groq(
+                "You are a strict ATS system. Return only valid JSON, no markdown.",
+                prompt, GROQ_VAL_MODEL, max_tokens=150
+            )
+            data = json.loads(_repair_json(raw))
+            data.setdefault("improvements", "")
+            data.setdefault("github_insight", "")
+            logger.info("  Validation (normal) ATS=%s missing=%s",
+                        data.get("ats_score"), data.get("missing_keywords", "")[:60])
+            return data
+        except Exception as exc:
+            logger.warning("  Validation failed: %s", exc)
+            return EMPTY
+
+    # ── STRICT mode ───────────────────────────────────────────────────────────
+    github_section = ""
+    if github_notes:
+        github_section = (
+            f"\nSimilar GitHub projects from entry-level developers:\n{github_notes[:600]}\n"
+            "Based on these, note ONE thing they did better or differently.\n"
+        )
+
+    prompt = (
+        f"Job: {title} | Domain: {job.get('domain','')}\n"
+        f"JD keywords: {skills_req[:250]}\n"
+        f"Resume bullets: {bullets[:600]}\n"
+        f"{github_section}\n"
+        "You are a strict ATS reviewer checking a fresher resume targeting 0-2yr roles.\n"
+        "Return raw JSON only — no markdown:\n"
+        "{\n"
+        '  "ats_score": <1-10>,\n'
+        '  "missing_keywords": "<max 8 comma-separated>",\n'
+        '  "improvements": "<2 specific fixes max 200 chars>",\n'
+        '  "github_insight": "<1 thing similar GitHub projects did better max 150 chars>"\n'
+        "}"
+    )
+    try:
+        raw  = _call_groq(
+            "You are a strict ATS reviewer. Return only valid JSON, no markdown.",
+            prompt, GROQ_VAL_MODEL, max_tokens=300
+        )
+        data = json.loads(_repair_json(raw))
+        logger.info("  Validation (strict) ATS=%s missing=%s",
+                    data.get("ats_score"), data.get("missing_keywords", "")[:60])
+        return data
+    except Exception as exc:
+        logger.warning("  Validation failed: %s", exc)
+        return EMPTY
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DOCX template fill — replaces placeholder in the specific w:t that holds it
 # ─────────────────────────────────────────────────────────────────────────────
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -562,14 +669,13 @@ W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 def _replace_in_para(para, placeholder: str, replacement: str) -> bool:
     """
-    Replace [[PLACEHOLDER]] in the specific w:t element that contains it.
-    Does NOT merge all text into the first w:t (which would make values bold
-    if the first run happens to be the bold label run).
-    Works for both normal runs and runs nested inside w:hyperlink elements.
+    Replace placeholder in the specific w:t element containing it.
+    Does NOT merge into the first w:t (which would cause bold-bleed into
+    label runs). Works for runs nested inside w:hyperlink elements too.
     """
     all_t = para._p.findall(f".//{{{W_NS}}}t")
 
-    # First pass: check if any single w:t contains the full placeholder
+    # First pass: find the specific w:t with the full placeholder
     for t in all_t:
         if t.text and placeholder in t.text:
             t.text = t.text.replace(placeholder, replacement)
@@ -577,11 +683,10 @@ def _replace_in_para(para, placeholder: str, replacement: str) -> bool:
                 t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
             return True
 
-    # Second pass: placeholder may be split across multiple w:t elements
+    # Fallback: placeholder split across multiple w:t (rare)
     full = "".join(t.text or "" for t in all_t)
     if placeholder not in full:
         return False
-    # Merge-and-replace fallback (only hit when placeholder is split across runs)
     new_text = full.replace(placeholder, replacement)
     if all_t:
         all_t[0].text = new_text
@@ -600,10 +705,7 @@ def fill_template(content: dict) -> bytes:
     replacements = {f"[[{k}]]": v for k, v in content.items()}
 
     for para in doc.paragraphs:
-        full = "".join(
-            (t.text or "")
-            for t in para._p.findall(f".//{{{W_NS}}}t")
-        )
+        full = "".join(t.text or "" for t in para._p.findall(f".//{{{W_NS}}}t"))
         for ph, val in replacements.items():
             if ph in full:
                 _replace_in_para(para, ph, val)
@@ -616,8 +718,7 @@ def fill_template(content: dict) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PDF via LibreOffice (zero quota, perfect formatting)
-# Workflow must have: sudo apt-get install -y libreoffice
+# PDF via LibreOffice
 # ─────────────────────────────────────────────────────────────────────────────
 
 def generate_pdf(docx_bytes: bytes) -> bytes:
@@ -625,21 +726,38 @@ def generate_pdf(docx_bytes: bytes) -> bytes:
         docx_path = os.path.join(tmpdir, "resume.docx")
         with open(docx_path, "wb") as f:
             f.write(docx_bytes)
-
         result = subprocess.run(
-            ["libreoffice", "--headless", "--convert-to", "pdf",
-             "--outdir", tmpdir, docx_path],
+            ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", tmpdir, docx_path],
             capture_output=True, text=True, timeout=60,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"LibreOffice failed: {result.stderr[:300]}")
-
+            raise RuntimeError(f"LibreOffice: {result.stderr[:200]}")
         pdf_path = os.path.join(tmpdir, "resume.pdf")
         if not os.path.exists(pdf_path):
             raise FileNotFoundError("LibreOffice did not produce resume.pdf")
-
         with open(pdf_path, "rb") as f:
             return f.read()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# URL shortening via TinyURL (free, no API key required)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def shorten_url(long_url: str) -> str:
+    """
+    Shorten a URL using TinyURL's free API (no key, no signup).
+    Falls back to original URL on any error.
+    """
+    try:
+        resp = requests.get(
+            f"https://tinyurl.com/api-create.php?url={requests.utils.quote(long_url)}",
+            timeout=8
+        )
+        if resp.status_code == 200 and resp.text.startswith("https://tinyurl.com"):
+            return resp.text.strip()
+    except Exception:
+        pass
+    return long_url
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -662,7 +780,6 @@ def _github_commit(filename: str, file_bytes: bytes, message: str) -> str:
     existing = requests.get(api_url, headers=headers, timeout=10)
     if existing.status_code == 200:
         sha = existing.json().get("sha")
-
     payload = {
         "message": message,
         "content": base64.b64encode(file_bytes).decode(),
@@ -670,7 +787,6 @@ def _github_commit(filename: str, file_bytes: bytes, message: str) -> str:
     }
     if sha:
         payload["sha"] = sha
-
     resp = requests.put(api_url, json=payload, headers=headers, timeout=30)
     resp.raise_for_status()
     return f"https://raw.githubusercontent.com/{GITHUB_REPOSITORY}/{GITHUB_BRANCH}/{path}"
@@ -708,14 +824,9 @@ def ensure_column(ws, name: str) -> int:
 
 
 def get_pending_jobs(ws, doc_col: int) -> list[dict]:
-    """
-    Jobs where status=New and resume_doc_link is empty.
-    Generate resume BEFORE applying — not after.
-    """
     all_rows = ws.get_all_values()
     if len(all_rows) < 2:
         return []
-
     headers = all_rows[0]
     col     = {h: i for i, h in enumerate(headers)}
 
@@ -723,7 +834,6 @@ def get_pending_jobs(ws, doc_col: int) -> list[dict]:
         i = col.get(key)
         return row[i].strip() if i is not None and i < len(row) else ""
 
-    SKIP = {"applied", "rejected", "not_relevant", "offer", "interview"}
     pending = []
     for row_num, row in enumerate(all_rows[1:], start=2):
         status   = _get(row, "status").lower()
@@ -746,7 +856,7 @@ def get_pending_jobs(ws, doc_col: int) -> list[dict]:
 
 def main():
     logger.info("=" * 60)
-    logger.info("Resume Tailor started")
+    logger.info("Resume Tailor started  (validation=%s)", VALIDATION_MODE)
     logger.info("=" * 60)
 
     for name, val in [("GROQ_API_KEY", GROQ_API_KEY),
@@ -765,16 +875,16 @@ def main():
     ws      = gc.open(SHEET_NAME).sheet1
     logger.info("Connected to Google Sheets.")
 
-    doc_col = ensure_column(ws, "resume_doc_link")
-    pdf_col = ensure_column(ws, "resume_pdf_link")
+    doc_col   = ensure_column(ws, "resume_doc_link")
+    pdf_col   = ensure_column(ws, "resume_pdf_link")
+    val_col   = ensure_column(ws, "validation_notes")
 
     pending = get_pending_jobs(ws, doc_col)
     if not pending:
         logger.info("No New jobs with empty resume_doc_link. Nothing to do.")
         sys.exit(0)
 
-    logger.info("Found %d pending job(s). Processing up to %d.",
-                len(pending), MAX_JOBS_PER_RUN)
+    logger.info("Found %d pending. Processing up to %d.", len(pending), MAX_JOBS_PER_RUN)
     pending = pending[:MAX_JOBS_PER_RUN]
 
     success = 0
@@ -783,35 +893,74 @@ def main():
         logger.info("[%d/%d] %s @ %s  (domain: %s)",
                     i, len(pending), job["job_title"], job["company"], job["domain"])
         try:
+            # 1. Projects + tools
             p1_key, p2_key = DOMAIN_TO_PROJECTS.get(job["domain"], ("soc_auto", "vuln_scanner"))
-            logger.info("  Projects: %s + %s", p1_key, p2_key)
-
             jd_text  = f"{job['skills']} {job['summary']} {job['job_title']}"
             p1_tools = select_tools(p1_key, jd_text)
             p2_tools = select_tools(p2_key, jd_text)
-            logger.info("  P1 tools: %s", ", ".join(p1_tools))
-            logger.info("  P2 tools: %s", ", ".join(p2_tools))
+            logger.info("  Projects: %s (%s) + %s (%s)",
+                        p1_key, ", ".join(p1_tools[:3]),
+                        p2_key, ", ".join(p2_tools[:3]))
 
+            # 2. GitHub research — strict mode only (saves time + API calls)
+            github_notes = ""
+            if VALIDATION_MODE == "strict":
+                logger.info("  Researching GitHub projects (strict mode)...")
+                github_notes = research_github_projects(job["domain"], job["job_title"])
+                if github_notes:
+                    logger.info("  Found %d chars of GitHub context.", len(github_notes))
+
+            # 3. Company intelligence
             intel       = get_company_intel(job["company"])
             scraped_ctx = "" if intel else scrape_company(job["company"])
 
-            logger.info("  Generating content via Groq...")
-            content    = generate_content(job, p1_key, p2_key, intel, scraped_ctx,
-                                          p1_tools, p2_tools)
+            # 4. Generate resume content
+            logger.info("  Generating content via Groq (llama-3.1-8b-instant)...")
+            content = generate_content(job, p1_key, p2_key, intel, scraped_ctx,
+                                       p1_tools, p2_tools)
             logger.info("  Content generated.")
 
+            # 5. Validate — using gemma2-9b-it (different model = independent review)
+            if VALIDATION_MODE != "lenient":
+                time.sleep(3)   # brief pause between Groq calls
+            val_result = validate_resume(content, job, github_notes, VALIDATION_MODE)
+            ats_score  = val_result.get("ats_score", "N/A")
+            missing_kw = val_result.get("missing_keywords", "")
+            improvs    = val_result.get("improvements", "")
+            gh_insight = val_result.get("github_insight", "")
+
+            val_note = (
+                f"[{VALIDATION_MODE.upper()}] ATS:{ats_score}"
+                + (f" | Missing:{missing_kw}" if missing_kw else "")
+                + (f" | Fix:{improvs}" if improvs else "")
+                + (f" | GitHub:{gh_insight}" if gh_insight else "")
+            )
+            logger.info("  %s", val_note)
+
+            # 6. Fill template
             docx_bytes = fill_template(content)
             logger.info("  Template filled (%d bytes).", len(docx_bytes))
 
+            # 7. Generate PDF
             logger.info("  Generating PDF via LibreOffice...")
-            pdf_bytes  = generate_pdf(docx_bytes)
+            pdf_bytes = generate_pdf(docx_bytes)
             logger.info("  PDF generated (%d bytes).", len(pdf_bytes))
 
-            doc_url, pdf_url = upload_to_github(docx_bytes, pdf_bytes, job)
+            # 8. Upload to GitHub
+            doc_url_raw, pdf_url_raw = upload_to_github(docx_bytes, pdf_bytes, job)
 
+            # 9. Shorten URLs for clean sheet display
+            logger.info("  Shortening URLs...")
+            doc_url = shorten_url(doc_url_raw)
+            pdf_url = shorten_url(pdf_url_raw)
+            logger.info("  Doc: %s", doc_url)
+            logger.info("  PDF: %s", pdf_url)
+
+            # 10. Write all to sheet
             ws.update_cell(job["row_num"], doc_col, doc_url)
             ws.update_cell(job["row_num"], pdf_col, pdf_url)
-            logger.info("  ✓ Done — Doc: %s", doc_url)
+            ws.update_cell(job["row_num"], val_col, val_note)
+            logger.info("  ✓ Sheet updated.")
 
             success += 1
             time.sleep(4)
