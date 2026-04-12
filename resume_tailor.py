@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 SHEET_NAME        = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
 GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
 GROQ_GEN_MODEL    = "llama-3.1-8b-instant"       # resume generation — fast free model
-GROQ_VAL_MODEL    = "llama-3.3-70b-versatile"   # validation — larger model = better ATS judgement
+GROQ_VAL_MODEL    = "llama-3.1-8b-instant"   # same model, separate call = still independent
 # gemma2-9b-it removed: returns 400 on Groq free tier (context limit issues).
 # llama-3.3-70b-versatile is on Groq free tier and gives better quality validation.
 GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
@@ -88,43 +88,44 @@ SCOPES = [
 #   (Big4 consulting, BFSI compliance, IT audit freshers)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Each profile is a dict of 10 keys: SK_L1..SK_L5 (bold labels) + SK_V1..SK_V5 (plain values).
+# Template now uses [[SK_L1]]: [[SK_V1]] etc. so labels are dynamic too.
 SKILL_PROFILES = {
-    # ── PROFILE A: SOC / Security / Threat / VAPT / AppSec / Forensics ────────
+    # ── A: SOC / Security / Threat / VAPT / AppSec / Forensics ───────────────
     "soc_security": {
-        "SK_SOC":  "Alert triage, incident investigation, log analysis, threat detection, escalation, false positive analysis",
-        "SK_SIEM": "Splunk (SPL), Elastic SIEM (basic), Windows Event Logs, Sysmon, Wireshark",
-        "SK_TI":   "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, Cyber Kill Chain",
-        "SK_SYS":  "Windows internals, Linux fundamentals, TCP/IP, DNS, HTTP/S, firewall and IDS/IPS concepts",
-        "SK_AUTO": "Python, Bash (basic), regular expressions",
+        "SK_L1": "SOC Operations",     "SK_V1": "Alert triage, incident investigation, log analysis, threat detection, escalation, false positive analysis",
+        "SK_L2": "SIEM & Monitoring",  "SK_V2": "Splunk (SPL), Elastic SIEM (basic), Windows Event Logs, Sysmon, Wireshark",
+        "SK_L3": "Threat Intelligence","SK_V3": "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, Cyber Kill Chain",
+        "SK_L4": "Systems & Networking","SK_V4": "Windows internals, Linux fundamentals, TCP/IP, DNS, HTTP/S, firewall and IDS/IPS concepts",
+        "SK_L5": "Automation",         "SK_V5": "Python, Bash (basic), regular expressions",
     },
-    # ── PROFILE B: CloudSec / IAM — same as A + AWS row ──────────────────────
+    # ── B: CloudSec / IAM — SOC profile + AWS in systems row ─────────────────
     "soc_security_cloud": {
-        "SK_SOC":  "Alert triage, incident investigation, log analysis, threat detection, escalation, false positive analysis",
-        "SK_SIEM": "Splunk (SPL), Elastic SIEM (basic), Windows Event Logs, Sysmon, Wireshark",
-        "SK_TI":   "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, Cyber Kill Chain",
-        "SK_SYS":  "Windows internals, Linux fundamentals, TCP/IP, DNS, HTTP/S, IDS/IPS, AWS (IAM, CloudTrail, GuardDuty basics)",
-        "SK_AUTO": "Python, Bash (basic), boto3, regular expressions",
+        "SK_L1": "SOC Operations",     "SK_V1": "Alert triage, incident investigation, log analysis, threat detection, escalation, false positive analysis",
+        "SK_L2": "SIEM & Monitoring",  "SK_V2": "Splunk (SPL), Elastic SIEM (basic), Windows Event Logs, Sysmon, Wireshark",
+        "SK_L3": "Threat Intelligence","SK_V3": "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, Cyber Kill Chain",
+        "SK_L4": "Systems & Networking","SK_V4": "Windows internals, Linux fundamentals, TCP/IP, DNS, HTTP/S, IDS/IPS, AWS (IAM, CloudTrail, GuardDuty basics)",
+        "SK_L5": "Automation",         "SK_V5": "Python, Bash (basic), boto3, regular expressions",
     },
-    # ── PROFILE C: Networking / Entry-level / Systems-forward ─────────────────
-    # Repurposes the 5 skill slots with networking-first ordering.
-    # Values only — template labels (SOC Operations, SIEM & Monitoring etc.) stay fixed.
+    # ── C: Networking / Entry-level / Systems-forward ─────────────────────────
+    # Labels and values both shift to networking-first ordering
     "networking_entry": {
-        "SK_SOC":  "TCP/IP, OSI model, DNS, HTTP/S, firewall concepts, IDS/IPS concepts",
-        "SK_SIEM": "Linux (log analysis, grep, netstat), Windows internals, Active Directory (basics), PowerShell, Python, Bash",
-        "SK_TI":   "Splunk (SPL), Wireshark, PCAP analysis, Windows Event Logs, Nmap",
-        "SK_SYS":  "Alert triage, log analysis, security monitoring, threat detection, incident escalation, endpoint security",
-        "SK_AUTO": "MITRE ATT&CK, Incident Response (PICERL), OWASP Top 10",
+        "SK_L1": "Networking",         "SK_V1": "TCP/IP, OSI model, DNS, HTTP/S, firewall concepts, IDS/IPS concepts",
+        "SK_L2": "OS & Scripting",     "SK_V2": "Linux (grep, netstat, log analysis), Windows internals, Active Directory (basics), PowerShell, Python, Bash",
+        "SK_L3": "SIEM & Tools",       "SK_V3": "Splunk (SPL), Wireshark, PCAP analysis, Windows Event Logs, Nmap",
+        "SK_L4": "Security Operations","SK_V4": "Alert triage, log analysis, security monitoring, threat detection, incident escalation, endpoint security",
+        "SK_L5": "Frameworks",         "SK_V5": "MITRE ATT&CK, Incident Response (PICERL), OWASP Top 10",
     },
-    # ── PROFILE D: GRC / Risk / Compliance / Audit / Fraud / AML ─────────────
-    # VALUES only — fills the same 5 template slots with GRC-relevant content.
-    # Drawn from: Big4 JDs (Deloitte/KPMG/EY/PwC), LinkedIn GRC fresher posts,
-    # Reddit r/cybersecurity GRC advice, BFSI compliance JDs.
+    # ── D: GRC / Risk / Compliance / Audit / Fraud / AML ─────────────────────
+    # Labels and values both use GRC terminology.
+    # Drawn from: Big4 JDs, LinkedIn GRC fresher posts, Reddit r/cybersecurity,
+    # BFSI compliance JDs, CISA-track graduate resumes on GitHub.
     "grc_risk_fraud": {
-        "SK_SOC":  "GRC compliance monitoring, control testing, audit documentation, risk assessment, RCSA basics, vendor risk",
-        "SK_SIEM": "ISO 27001 (concepts), NIST CSF, PCI-DSS, GDPR/PDPB, SOX/ITGC basics, compliance gap analysis",
-        "SK_TI":   "Transaction monitoring, AML typologies, KYC/CDD, sanctions screening, financial crime indicators",
-        "SK_SYS":  "Windows internals, Linux fundamentals, Python, Excel (pivot, VLOOKUP), SQL (basic), TCP/IP basics",
-        "SK_AUTO": "MITRE ATT&CK, OWASP Top 10, Incident Response (PICERL), audit trail documentation",
+        "SK_L1": "GRC & Compliance",   "SK_V1": "NIST CSF, ISO 27001, PCI-DSS, GDPR/PDPB, SOX/ITGC, compliance monitoring",
+        "SK_L2": "Risk & Audit",       "SK_V2": "Risk assessment, control testing, audit documentation, vendor risk, RCSA basics",
+        "SK_L3": "Fraud & AML",        "SK_V3": "Transaction monitoring, AML typologies, KYC/CDD, sanctions screening",
+        "SK_L4": "Systems & Tools",    "SK_V4": "Windows internals, Linux fundamentals, Python, Excel, SQL (basic), TCP/IP basics",
+        "SK_L5": "Frameworks",         "SK_V5": "MITRE ATT&CK, OWASP Top 10, Incident Response (PICERL), audit trail documentation",
     },
 }
 
@@ -145,9 +146,10 @@ DOMAIN_SKILL_PROFILE = {
 
 
 def compute_skills(domain: str) -> dict:
-    """Return the 5 skill VALUES for this domain. Pure Python, never touches LLM."""
+    """Return 10 skill keys (SK_L1..SK_L5 + SK_V1..SK_V5) for this domain.
+    Both labels and values are dynamic — no hardcoded labels in template."""
     profile_key = DOMAIN_SKILL_PROFILE.get(domain, "soc_security")
-    return dict(SKILL_PROFILES[profile_key])  # copy, no filtering needed
+    return dict(SKILL_PROFILES[profile_key])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
