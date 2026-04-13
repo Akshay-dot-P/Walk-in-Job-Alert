@@ -12,10 +12,12 @@ D. Feature 3: track_keyword_usage() — 2-3x coverage tracking
 E. Feature 4: dynamic_skills_augment() — JD keywords filtered via whitelist
 F. Feature 5: compute_metrics() → keyword_coverage, keyword_density, skills_count
 G. Feature 6: recruiter_simulate() → credibility, stuffing_suspicion, hireability
-H. Single-page: enforce_single_page() — 4-tier relevancy-aware trimming
-   Tier 1: shorten long bullets (>220 chars) via LLM
+H. Single-page: enforce_single_page() — 5-tier STRICT single-page enforcement
+   Tier 0: reduce paragraph spacing (non-destructive formatting)
+   Tier 1: shorten long bullets (>200 chars) via LLM
+   Tier 1.5: aggressive shortening (>150 chars)
    Tier 2: remove least-relevant project bullet by JD keyword score
-   Tier 3: trim excess skills (SK_V5 → SK_V4)
+   Tier 3: trim excess skills (SK_V5 → SK_V4 → SK_V1)
    Tier 4: shorten longest Amazon bullet (never remove)
 
 CONFLICT NOTES (Feature 2 only — all others conflict-free)
@@ -850,14 +852,15 @@ def generate_pdf(docx_bytes: bytes) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE H: Single-page enforcement — 4-tier relevancy-aware trimming
+# FEATURE H: Single-page enforcement — 5-tier relevancy-aware trimming
 #
-# Tier 1: Shorten long bullets (>220 chars) via LLM — non-destructive
+# Tier 0: Reduce paragraph spacing in DOCX (non-destructive formatting)
+# Tier 1: Shorten long bullets (>200 chars) via LLM — non-destructive
 # Tier 2: Remove least-relevant project bullet by JD keyword score
-# Tier 3: Trim excess skills (SK_V5 → SK_V4)
-# Tier 4: Shorten longest Amazon bullet as last resort (never remove)
+# Tier 3: Trim excess skills (SK_V5 → SK_V4 → SK_V1)
+# Tier 4: Shorten longest Amazon bullet (never remove)
 #
-# Page 2 containing ONLY certifications is acceptable (certs are real content).
+# STRICT: Always enforces single page. No exceptions for certs on page 2.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _count_pdf_pages(pdf_bytes: bytes) -> int:
@@ -867,33 +870,6 @@ def _count_pdf_pages(pdf_bytes: bytes) -> int:
     except Exception as e:
         logger.warning("Page count failed: %s", e)
         return 999   # force trimming instead of skipping
-
-
-def _get_page2_text(pdf_bytes: bytes) -> str:
-    try:
-        from pdfminer.pdfpage import PDFPage
-        from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
-        from pdfminer.converter import TextConverter
-        from pdfminer.layout import LAParams
-        rsrcmgr = PDFResourceManager()
-        retstr  = io.StringIO()
-        device  = TextConverter(rsrcmgr, retstr, codec="utf-8", laparams=LAParams())
-        interp  = PDFPageInterpreter(rsrcmgr, device)
-        pages   = list(PDFPage.get_pages(io.BytesIO(pdf_bytes)))
-        if len(pages) < 2: return ""
-        interp.process_page(pages[1])
-        text = retstr.getvalue(); device.close(); retstr.close()
-        return text.strip()
-    except Exception:
-        return ""
-
-
-def _page2_certs_only(text: str) -> bool:
-    if not text: return True
-    lower = text.lower()
-    return (any(m in lower for m in ["comptia","cisco networking","certification","in progress"])
-            and not any(m in lower for m in ["projects","work experience","soc operations",
-                                             "siem","technical skills","automation"]))
 
 
 def _score_bullet_relevancy(bullet_text: str, ranked_keywords: list) -> int:
@@ -953,9 +929,43 @@ def _trim_skills_line(skills_value: str, max_items: int = 4) -> str:
     return trimmed
 
 
-def _generate_and_check(working: dict) -> tuple[bytes, bytes, int]:
+def _reduce_paragraph_spacing(docx_bytes: bytes) -> bytes:
+    """
+    Reduce paragraph before/after spacing in the DOCX to squeeze content.
+    This is non-destructive — no content is removed, only formatting changes.
+    Targets: section headings get 2pt before/0pt after, bullet paras get 0pt/0pt.
+    """
+    doc = Document(io.BytesIO(docx_bytes))
+    from docx.shared import Pt
+    for para in doc.paragraphs:
+        pf = para.paragraph_format
+        text = para.text.strip()
+        if not text:
+            # Remove empty paragraphs' spacing entirely
+            pf.space_before = Pt(0)
+            pf.space_after  = Pt(0)
+            continue
+        # Section headings (bold, short text) — minimal spacing
+        if para.style and para.style.name and 'Heading' in para.style.name:
+            pf.space_before = Pt(2)
+            pf.space_after  = Pt(0)
+        else:
+            # All other paragraphs — reduce spacing
+            if pf.space_before is None or pf.space_before > Pt(2):
+                pf.space_before = Pt(1)
+            if pf.space_after is None or pf.space_after > Pt(2):
+                pf.space_after = Pt(0)
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _generate_and_check(working: dict, reduce_spacing: bool = False) -> tuple[bytes, bytes, int]:
     """Fill template, generate PDF, count pages. Returns (docx, pdf, pages)."""
     docx_bytes = fill_template(working)
+    if reduce_spacing:
+        docx_bytes = _reduce_paragraph_spacing(docx_bytes)
     pdf_bytes  = generate_pdf(docx_bytes)
     pages      = _count_pdf_pages(pdf_bytes)
     return docx_bytes, pdf_bytes, pages
@@ -964,31 +974,38 @@ def _generate_and_check(working: dict) -> tuple[bytes, bytes, int]:
 def enforce_single_page(content: dict, job: dict,
                         jd_keywords: dict | None = None) -> tuple[bytes, bytes, str]:
     """
-    Generate DOCX+PDF. If page 2 contains non-cert content, apply 4-tier
-    relevancy-aware trimming to guarantee single-page output:
+    Generate DOCX+PDF and STRICTLY enforce single-page output.
+    Applies up to 5 tiers of trimming:
 
-    Tier 1: Shorten bullets > 220 chars via LLM (non-destructive)
+    Tier 0: Reduce paragraph spacing (non-destructive formatting)
+    Tier 1: Shorten bullets > 200 chars via LLM (non-destructive)
     Tier 2: Remove least-relevant project bullet (scored by JD keyword overlap)
-    Tier 3: Trim excess skills (SK_V5 → SK_V4)
+    Tier 3: Trim excess skills (SK_V5 → SK_V4 → SK_V1)
     Tier 4: Shorten longest Amazon bullet (never fully remove)
     """
     ranked = (jd_keywords or {}).get("ranked", [])
     trim_log = []
     working  = dict(content)
 
-    # ── Initial check ────────────────────────────────────────────────────
+    # ── Initial check (no spacing reduction yet) ─────────────────────────
     docx_bytes, pdf_bytes, pages = _generate_and_check(working)
 
     if pages <= 1:
         return docx_bytes, pdf_bytes, ""
 
-    p2_text = _get_page2_text(pdf_bytes)
-    if _page2_certs_only(p2_text):
-        logger.info("  2 pages — page 2 is certifications only, acceptable")
-        return docx_bytes, pdf_bytes, "certs-p2-ok"
+    logger.info("  %d pages detected — enforcing single page", pages)
 
-    # ── Tier 1: Shorten long bullets (>220 chars) ────────────────────────
-    LONG_THRESHOLD = 220
+    # ── Tier 0: Reduce paragraph spacing ─────────────────────────────────
+    logger.info("  Tier 0: reducing paragraph spacing")
+    docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
+    trim_log.append("reduced-spacing")
+
+    if pages <= 1:
+        logger.info("  Single page achieved via Tier 0 (spacing). %s", trim_log)
+        return docx_bytes, pdf_bytes, "; ".join(trim_log)
+
+    # ── Tier 1: Shorten long bullets (>200 chars) ────────────────────────
+    LONG_THRESHOLD = 200
     all_bullet_keys = ["AMZ_B1","AMZ_B2","AMZ_B3",
                        "P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
     long_bullets = [(k, len(working.get(k,""))) for k in all_bullet_keys
@@ -999,12 +1016,30 @@ def enforce_single_page(content: dict, job: dict,
     if long_bullets:
         logger.info("  Tier 1: %d bullets > %d chars — shortening", len(long_bullets), LONG_THRESHOLD)
         for key, length in long_bullets:
-            working[key] = _shorten_bullet_llm(working[key])
+            working[key] = _shorten_bullet_llm(working[key], target_chars=150)
             trim_log.append(f"shortened {key} ({length}→{len(working[key])})")
 
-        docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+        docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
         if pages <= 1:
             logger.info("  Single page achieved via Tier 1 (shortening). %s", trim_log)
+            return docx_bytes, pdf_bytes, "; ".join(trim_log)
+
+    # ── Tier 1.5: Shorten ALL bullets > 150 chars (more aggressive) ──────
+    AGGRESSIVE_THRESHOLD = 150
+    still_long = [(k, len(working.get(k,""))) for k in all_bullet_keys
+                  if len(working.get(k,"")) > AGGRESSIVE_THRESHOLD]
+    still_long.sort(key=lambda x: x[1], reverse=True)
+
+    if still_long:
+        logger.info("  Tier 1.5: %d bullets > %d chars — aggressive shortening",
+                    len(still_long), AGGRESSIVE_THRESHOLD)
+        for key, length in still_long:
+            working[key] = _shorten_bullet_llm(working[key], target_chars=130)
+            trim_log.append(f"aggressively shortened {key} ({length}→{len(working[key])})")
+
+        docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
+        if pages <= 1:
+            logger.info("  Single page achieved via Tier 1.5. %s", trim_log)
             return docx_bytes, pdf_bytes, "; ".join(trim_log)
 
     # ── Tier 2: Remove least-relevant project bullets ────────────────────
@@ -1023,21 +1058,21 @@ def enforce_single_page(content: dict, job: dict,
             trim_log.append(f"removed {key} (score={score})")
             logger.info("  Tier 2: removed %s (relevancy score=%d)", key, score)
 
-            docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+            docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
             if pages <= 1:
                 logger.info("  Single page achieved via Tier 2. %s", trim_log)
                 return docx_bytes, pdf_bytes, "; ".join(trim_log)
 
     # ── Tier 3: Trim excess skills ───────────────────────────────────────
-    SKILL_TRIM_ORDER = ["SK_V5", "SK_V4", "SK_V1"]  # Automation → Systems → SOC Ops
+    SKILL_TRIM_ORDER = ["SK_V5", "SK_V4", "SK_V3", "SK_V2", "SK_V1"]
     logger.info("  Tier 3: trimming skills")
     for sk_key in SKILL_TRIM_ORDER:
         original = working.get(sk_key, "")
-        if original and len(original.split(",")) > 4:
-            working[sk_key] = _trim_skills_line(original, max_items=4)
+        if original and len(original.split(",")) > 3:
+            working[sk_key] = _trim_skills_line(original, max_items=3)
             trim_log.append(f"trimmed {sk_key}")
 
-            docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+            docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
             if pages <= 1:
                 logger.info("  Single page achieved via Tier 3 (skills). %s", trim_log)
                 return docx_bytes, pdf_bytes, "; ".join(trim_log)
@@ -1051,18 +1086,18 @@ def enforce_single_page(content: dict, job: dict,
     if amz_bullets:
         logger.info("  Tier 4: shortening Amazon bullets (last resort)")
         for key, length in amz_bullets:
-            if length > 120:  # only shorten if meaningfully long
-                working[key] = _shorten_bullet_llm(working[key], target_chars=120)
+            if length > 80:  # only shorten if meaningfully long
+                working[key] = _shorten_bullet_llm(working[key], target_chars=100)
                 trim_log.append(f"shortened {key} ({length}→{len(working[key])})")
 
-                docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+                docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
                 if pages <= 1:
                     logger.info("  Single page achieved via Tier 4 (AMZ shorten). %s", trim_log)
                     return docx_bytes, pdf_bytes, "; ".join(trim_log)
 
     # ── Fallback: all tiers exhausted ────────────────────────────────────
-    logger.warning("  All 4 tiers exhausted — could not achieve single page")
-    docx_bytes, pdf_bytes, _ = _generate_and_check(working)
+    logger.warning("  All tiers exhausted — could not achieve single page")
+    docx_bytes, pdf_bytes, _ = _generate_and_check(working, reduce_spacing=True)
     return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; overflow-unresolved"
 
 
