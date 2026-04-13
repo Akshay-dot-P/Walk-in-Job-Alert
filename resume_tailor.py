@@ -722,42 +722,66 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | keep differe
 # ─────────────────────────────────────────────────────────────────────────────
 # Validation
 # ─────────────────────────────────────────────────────────────────────────────
+def _normalize_validation_output(data: dict) -> dict:
+    return {
+        "ats_score": str(data.get("ats_score", "N/A")),
+        "missing_keywords": str(data.get("missing_keywords", "")),
+        "improvements": str(data.get("improvements", "")),
+        "github_insight": str(data.get("github_insight", "")),
+    }
+
+
 def validate_resume(content: dict, job: dict, github_notes: str, mode: str) -> dict:
     EMPTY = {"ats_score":"skipped","missing_keywords":"","improvements":"","github_insight":""}
+
     if mode == "lenient":
         logger.info("  Validation: lenient — skipped")
         return EMPTY
+
     bullets = " | ".join(filter(None,[
         content.get("AMZ_B1",""),content.get("AMZ_B2",""),content.get("AMZ_B3",""),
         content.get("P1_B1",""),content.get("P1_B2",""),
         content.get("P2_B1",""),content.get("P2_B2",""),
     ]))
+
     if mode == "normal":
         prompt = (f"Job: {job.get('job_title','')} | JD keywords: {job.get('skills','')[:200]}\n"
                   f"Bullets: {bullets[:500]}\nATS review for 0-2yr cybersecurity candidate.\n"
                   "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 6>\"}")
         try:
-            raw  = _call_groq("Return only valid JSON, no markdown.",prompt,GROQ_VAL_MODEL,max_tokens=150)
+            raw  = _call_groq("Return only valid JSON, no markdown.", prompt, GROQ_VAL_MODEL, max_tokens=150)
             data = json.loads(_repair_json(raw))
-            data["ats_score"] = str(data.get("ats_score", "N/A"))
-            data["missing_keywords"] = str(data.get("missing_keywords", ""))
-            data["improvements"] = str(data.get("improvements", ""))
-            data["github_insight"] = str(data.get("github_insight", ""))
-            logger.info("  ATS=%s missing=%s", data.get("ats_score"), data.get("missing_keywords","")[:50])
+            data = _normalize_validation_output(data)
+
+            logger.info(
+                "  ATS=%s missing=%s",
+                data.get("ats_score"),
+                str(data.get("missing_keywords",""))[:50]
+            )
             return data
+
         except Exception as exc:
-            logger.warning("  Validation failed: %s", exc); return EMPTY
+            logger.warning("  Validation failed: %s | raw=%s", exc, raw[:200] if 'raw' in locals() else "")
+            return EMPTY
+
     gh_sec = (f"\nSimilar GitHub projects:\n{github_notes[:500]}\n" if github_notes else "")
+
     prompt = (f"Job: {job.get('job_title','')} | Domain: {job.get('domain','')}\n"
               f"JD: {job.get('skills','')[:250]}\nBullets: {bullets[:600]}\n{gh_sec}"
               "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 8>\","
               "\"improvements\":\"<2 fixes>\",\"github_insight\":\"<1 thing>\"}")
+
     try:
-        raw  = _call_groq("Strict ATS reviewer. Return only valid JSON.",prompt,GROQ_VAL_MODEL,max_tokens=300)
+        raw  = _call_groq("Strict ATS reviewer. Return only valid JSON.", prompt, GROQ_VAL_MODEL, max_tokens=300)
         data = json.loads(_repair_json(raw))
-        logger.info("  ATS=%s", data.get("ats_score")); return data
+        data = _normalize_validation_output(data)
+
+        logger.info("  ATS=%s", data.get("ats_score"))
+        return data
+
     except Exception as exc:
-        logger.warning("  Validation failed: %s", exc); return EMPTY
+        logger.warning("  Validation failed: %s | raw=%s", exc, raw[:200] if 'raw' in locals() else "")
+        return EMPTY
 
 
 # ─────────────────────────────────────────────────────────────────────────────
