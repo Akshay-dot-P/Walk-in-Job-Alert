@@ -490,6 +490,152 @@ DOMAIN_TO_PROJECTS = {
     "General":    ("soc_auto",       "vuln_scanner"),
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LAYER 2: CONCEPT SWAPPABLE — deterministic domain phrases for LLM prompt
+#
+# Each phrase describes something the project ACTUALLY does, framed for
+# a specific domain. Regex patterns match JD text; matched phrases go
+# straight into the Groq prompt as "weave 1-2 of these naturally."
+# Zero fabrication — only reframing of real capabilities.
+# ─────────────────────────────────────────────────────────────────────────────
+CONCEPT_SWAPPABLE = {
+    "soc_auto": {
+        r"grc|compliance|audit|iso\s*27001|nist|sox|itgc": [
+            "SIEM-based compliance monitoring and security audit log retention",
+            "automated security control validation via SPL correlation searches",
+        ],
+        r"fraud|aml|kyc|transaction.?monitor|financial.?crime": [
+            "transaction anomaly detection via log correlation and pattern matching",
+            "automated suspicious activity alerting with severity-based escalation",
+        ],
+        r"cloud|aws|azure|gcp|iam|saas": [
+            "cloud security event monitoring and IAM access anomaly detection",
+            "cross-account activity correlation for cloud-native threat detection",
+        ],
+        r"forensic|dfir|incident.?response|evidence|chain.?of.?custody": [
+            "forensic-grade event timeline reconstruction from SIEM log artifacts",
+            "automated evidence packaging with chain-of-custody documentation",
+        ],
+        r"network|ids|ips|firewall|packet|intrusion": [
+            "network intrusion detection via deep packet analysis and IDS alert correlation",
+            "protocol-level anomaly detection for network security monitoring",
+        ],
+    },
+    "vuln_scanner": {
+        r"grc|compliance|audit|iso\s*27001|nist|pci|sox": [
+            "vulnerability risk scoring mapped to compliance framework controls (PCI-DSS, NIST)",
+            "audit-ready remediation tracking with SLA compliance evidence",
+        ],
+        r"devsecops|appsec|ci/?cd|sdlc|secure.?cod|sast|dast": [
+            "application security testing integrated with development release cycles",
+            "vulnerability-to-remediation workflow for secure development lifecycle",
+        ],
+        r"cloud|aws|azure|container|docker|kubernetes": [
+            "cloud infrastructure vulnerability assessment and misconfiguration detection",
+            "continuous security scanning for cloud-deployed services and endpoints",
+        ],
+        r"fraud|aml|risk|financial": [
+            "risk-quantified vulnerability prioritization using exploit probability metrics",
+            "remediation deadline enforcement aligned with regulatory compliance windows",
+        ],
+    },
+    "phishing_osint": {
+        r"grc|compliance|audit|vendor.?risk|third.?party|due.?diligence": [
+            "domain reputation scoring for third-party vendor risk assessment",
+            "quantitative risk evidence generation from multi-source OSINT intelligence",
+        ],
+        r"fraud|aml|kyc|transaction|financial.?crime|sanctions": [
+            "KYC domain-verification workflow: WHOIS age, registrar, DNS, and SSL cross-check",
+            "suspicious transaction indicator enrichment mapping domains to known fraud typologies",
+        ],
+        r"cti|threat.?intel|ioc|indicator|feed|hunt": [
+            "IOC lifecycle management and multi-source threat intelligence correlation",
+            "proactive infrastructure-based threat hunting via domain attribution analysis",
+        ],
+        r"risk|assessment|scoring": [
+            "automated risk indicator enrichment for entity due diligence workflows",
+            "domain and IP reputation scoring for risk quantification documentation",
+        ],
+    },
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LAYER 3: BULLET VARIANTS — pre-framed alternate bullet sets per domain
+#
+# Each variant rewrites the project's 3 bullets for a specific domain.
+# The LLM receives already-framed bullets instead of guessing from JD context.
+# ALL content is grounded — same project work, different framing.
+# ─────────────────────────────────────────────────────────────────────────────
+BULLET_VARIANTS = {
+    "soc_auto": {
+        "cloud_iam": [
+            "Deployed Splunk SIEM with SPL correlation searches to monitor IAM anomalies including unauthorized privilege escalation (T1078) and suspicious cross-account access patterns; mapped cloud-relevant TTPs to MITRE ATT&CK and wrote PICERL incident report.",
+            "Built automated cloud security detection pipeline: Python script ingests Splunk alerts for IAM policy violations, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification — enabling rapid response to identity-based threats.",
+            "Developed Sigma-compatible detection rules for cloud-specific TTPs including credential abuse and lateral movement; performed network analysis in Wireshark to identify anomalous authentication and DNS traffic patterns in cloud environments.",
+        ],
+        "dfir_forensics": [
+            "Deployed Splunk SIEM with SPL correlation searches for forensic event timeline reconstruction — tracked brute-force attempts (T1110), credential misuse (T1078), and script-based execution (T1059) across host and network logs with full MITRE ATT&CK TTP mapping.",
+            "Built automated evidence collection pipeline: Python script ingests Splunk alerts, performs IOC enrichment via VirusTotal API, and generates severity-classified incident packages with chain-of-custody documentation for forensic investigation handoff.",
+            "Converted detection logic to Sigma rules for cross-SIEM forensic portability; performed deep packet inspection in Wireshark to reconstruct attack sequences including SYN scans, DNS tunnelling, and credential exposure — documenting artifacts per PICERL framework.",
+        ],
+        "network_ids": [
+            "Deployed Splunk SIEM with SPL correlation searches for network intrusion detection — brute-force detection (index=* failed | stats count by src_ip), lateral movement, and privilege escalation alerts mapped to MITRE ATT&CK (T1110, T1078, T1059) with PICERL reporting.",
+            "Built automated network alert triage pipeline: Python script ingests Splunk IDS alerts, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification — reducing mean time to detect network-based threats.",
+            "Wrote Sigma rules (vendor-neutral IDS detection format) for enterprise network security; performed TCP/IP deep packet analysis in Wireshark to detect SYN scans, DNS tunnelling, port sweeps, and plaintext credential exposure across network segments.",
+        ],
+    },
+    "vuln_scanner": {
+        "devsecops_appsec": [
+            "Built automated application security testing pipeline integrating Nessus and OpenVAS APIs in Python; generates vulnerability reports classified by CVSS severity with EPSS exploit probability scoring from FIRST.org API for risk-based prioritization in development workflows.",
+            "Developed OWASP Top 10 automated application security checker detecting injection, broken authentication, SSRF, and XSS vulnerabilities; documented SQL injection exploit-to-remediation workflow with parameterised query fixes for secure development guidance.",
+            "Automated security scan scheduling via Bash and cron integrated with development cycles; built delta-scan logic to flag newly introduced CVEs per release and enforce remediation SLA deadlines (Critical=24hrs, High=7 days) for secure development lifecycle compliance.",
+        ],
+        "cloud_security": [
+            "Built automated cloud infrastructure vulnerability assessment pipeline using Nessus and OpenVAS APIs in Python; generates CVE reports classified by CVSS severity with EPSS scoring from FIRST.org API to prioritize cloud misconfiguration risks by exploit probability.",
+            "Developed automated security checker for cloud-hosted applications testing OWASP Top 10 vulnerabilities including injection, broken authentication, and SSRF; documented remediation workflows for cloud service misconfigurations and exposed endpoints.",
+            "Automated vulnerability scan scheduling via Bash and cron for continuous cloud security monitoring; built delta-scan logic to detect newly exposed CVEs and calculate remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) for cloud compliance.",
+        ],
+        "compliance_audit": [
+            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS APIs in Python; generates audit-ready CVE reports classified by CVSS severity with EPSS scoring from FIRST.org API — providing quantitative risk evidence for compliance documentation.",
+            "Developed OWASP Top 10 automated compliance checker validating web application security controls against regulatory requirements; documented vulnerability-to-remediation audit trails including SQL injection evidence and parameterised query fixes.",
+            "Automated compliance scan scheduling via Bash and cron; built delta-scan logic to track remediation progress against SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) — generating audit evidence for patch compliance and control effectiveness reporting.",
+        ],
+    },
+    "phishing_osint": {
+        "grc_risk_audit": [
+            "Built multi-source risk assessment pipeline: submits vendor domains and IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL certificate details to produce quantitative risk scores for third-party due diligence.",
+            "Implemented domain reputation assessment tool generating typosquatting variants of monitored domains and checking live DNS resolution — provides early warning for brand-impersonation risks in vendor and partner ecosystems.",
+            "Deployed automated risk assessment interface via Telegram bot enabling analysts to submit domains for enrichment; supports bulk CSV input/output for vendor risk assessment workflows and includes OSINT enrichment via theHarvester for comprehensive domain profiling.",
+        ],
+        "fraud_aml": [
+            "Built multi-API fraud intelligence pipeline: submits suspicious domains and IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL details as part of KYC domain-verification workflow to produce fraud probability scores.",
+            "Implemented typosquatting domain detector generating character-substitution variants of legitimate business domains and checking live DNS resolution — identifies brand-impersonation infrastructure used in financial fraud schemes before reaching threat feeds.",
+            "Deployed Telegram bot interface for live suspicious entity enrichment supporting bulk CSV input/output for investigation workflows; includes OSINT enrichment via theHarvester for domain profiling to support suspicious transaction report (STR) documentation.",
+        ],
+        "cti_threat_intel": [
+            "Built multi-API cyber threat intelligence pipeline: submits IOCs to VirusTotal, AbuseIPDB, and URLScan.io simultaneously; cross-references WHOIS registration data, DNS records, and SSL certificate details to produce unified threat confidence scores for intelligence products.",
+            "Implemented typosquatting domain detector generating character-substitution variants of tracked infrastructure and checking live DNS resolution — provides proactive threat detection capability for infrastructure-based threat hunting.",
+            "Deployed Telegram bot interface for real-time IOC enrichment enabling analysts to process indicators at scale; supports bulk CSV input/output for threat intelligence workflows and includes OSINT enrichment via theHarvester for comprehensive domain attribution.",
+        ],
+    },
+}
+
+# Maps domain → {project_key: variant_name}
+# Missing project_key or None = use default bullets
+DOMAIN_BULLET_VARIANT = {
+    "SOC":       {},
+    "VAPT":      {},
+    "AppSec":    {"vuln_scanner": "devsecops_appsec"},
+    "GRC":       {"vuln_scanner": "compliance_audit", "phishing_osint": "grc_risk_audit"},
+    "Risk":      {"vuln_scanner": "compliance_audit", "phishing_osint": "grc_risk_audit"},
+    "Fraud-AML": {"phishing_osint": "fraud_aml", "vuln_scanner": "compliance_audit"},
+    "CloudSec":  {"soc_auto": "cloud_iam", "vuln_scanner": "cloud_security"},
+    "IAM":       {"soc_auto": "cloud_iam", "phishing_osint": "cti_threat_intel"},
+    "Forensics": {"soc_auto": "dfir_forensics", "phishing_osint": "cti_threat_intel"},
+    "Network":   {"soc_auto": "network_ids"},
+    "General":   {},
+}
+
 AMAZON_BASE = [
     "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, mirroring the structured alert triage and escalation workflow used in SOC Tier 1 analyst roles.",
     "Performed root cause analysis on seller claims to identify policy violations and anomalous patterns; escalated findings to senior reviewers, demonstrating investigative instincts central to SOC and fraud analyst operations.",
@@ -544,7 +690,36 @@ def select_tools(project_key: str, jd_text: str, max_tools: int = 5) -> list[str
     return (base + extra)[:max_tools]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+def select_concepts(project_key: str, jd_text: str, max_concepts: int = 3) -> list[str]:
+    """
+    Scan JD text for domain patterns and return grounded concept phrases.
+    These go into the LLM prompt as domain-specific framing signals.
+    Every phrase describes something the project actually does — only the
+    framing changes. Uses CONCEPT_SWAPPABLE (regex → phrases).
+    """
+    concept_map = CONCEPT_SWAPPABLE.get(project_key, {})
+    jd_lower = jd_text.lower()
+    concepts = []
+    for pattern, phrases in concept_map.items():
+        if re.search(pattern, jd_lower):
+            for phrase in phrases:
+                if phrase not in concepts:
+                    concepts.append(phrase)
+    return concepts[:max_concepts]
+
+
+def get_project_bullets(project_key: str, domain: str) -> list[str]:
+    """
+    Get domain-specific variant bullets for a project, or fall back to defaults.
+    Uses DOMAIN_BULLET_VARIANT mapping + BULLET_VARIANTS data.
+    """
+    variant_name = DOMAIN_BULLET_VARIANT.get(domain, {}).get(project_key)
+    if variant_name:
+        variants = BULLET_VARIANTS.get(project_key, {})
+        if variant_name in variants:
+            logger.debug("  Bullet variant: %s → %s", project_key, variant_name)
+            return variants[variant_name]
+    return PROJECTS[project_key]["bullets"]
 # Company scraping / GitHub research
 # ─────────────────────────────────────────────────────────────────────────────
 _HDRS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36"}
