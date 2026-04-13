@@ -739,7 +739,10 @@ def validate_resume(content: dict, job: dict, github_notes: str, mode: str) -> d
         try:
             raw  = _call_groq("Return only valid JSON, no markdown.",prompt,GROQ_VAL_MODEL,max_tokens=150)
             data = json.loads(_repair_json(raw))
-            data.setdefault("improvements",""); data.setdefault("github_insight","")
+            data["ats_score"] = str(data.get("ats_score", "N/A"))
+            data["missing_keywords"] = str(data.get("missing_keywords", ""))
+            data["improvements"] = str(data.get("improvements", ""))
+            data["github_insight"] = str(data.get("github_insight", ""))
             logger.info("  ATS=%s missing=%s", data.get("ats_score"), data.get("missing_keywords","")[:50])
             return data
         except Exception as exc:
