@@ -292,32 +292,51 @@ def dynamic_skills_augment(profile_skills: dict, jd_keywords: dict) -> dict:
 # FEATURE 5: METRICS COLLECTION
 # ─────────────────────────────────────────────────────────────────────────────
 def compute_metrics(content: dict, jd_keywords: dict, ats_score) -> dict:
-    ranked  = jd_keywords.get("ranked", [])
-    bullets = [content.get(k,"") for k in
-               ["AMZ_B1","AMZ_B2","AMZ_B3","P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]]
+    ranked = jd_keywords.get("ranked", [])
+
+    bullets = [
+        content.get(k, "") for k in [
+            "AMZ_B1","AMZ_B2","AMZ_B3",
+            "P1_B1","P1_B2","P1_B3",
+            "P2_B1","P2_B2","P2_B3"
+        ]
+    ]
+
     all_text = " ".join(bullets).lower()
 
+    # ───────── COVERAGE ─────────
+    hits = 0
     coverage = 0
+
     if ranked:
         hits = sum(
-           1 for kw in ranked[:10]
-           if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", all_text, re.IGNORECASE)
-        )        
-    coverage = round(hits / min(len(ranked),10) * 100)
+            1 for kw in ranked[:10]
+            if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", all_text, re.IGNORECASE)
+        )
+        coverage = round(hits / min(len(ranked), 10) * 100)
 
+    # ───────── DENSITY ─────────
     nonempty = [b for b in bullets if b.strip()]
-    density  = 0.0
+    density = 0.0
+
     if nonempty and ranked:
-        total = sum(sum(1 for kw in ranked[:10] if kw.lower() in b.lower()) for b in nonempty)
+        total = sum(
+            sum(1 for kw in ranked[:10] if kw.lower() in b.lower())
+            for b in nonempty
+        )
         density = round(total / len(nonempty), 2)
 
-    skill_vals   = [content.get(f"SK_V{i}","") for i in range(1,6)]
-    skills_count = sum(len([x for x in v.split(",") if x.strip()]) for v in skill_vals)
+    # ───────── SKILLS COUNT ─────────
+    skill_vals = [content.get(f"SK_V{i}", "") for i in range(1, 6)]
+    skills_count = sum(
+        len([x for x in v.split(",") if x.strip()])
+        for v in skill_vals
+    )
 
     return {
-        "ats_score":          ats_score,
-        "keyword_coverage":   f"{coverage}%",
-        "keyword_density":    str(density),
+        "ats_score": ats_score,
+        "keyword_coverage": f"{coverage}%",
+        "keyword_density": str(density),
         "total_skills_count": str(skills_count),
     }
 
@@ -732,57 +751,121 @@ def _normalize_validation_output(data: dict) -> dict:
 
 
 def validate_resume(content: dict, job: dict, github_notes: str, mode: str) -> dict:
-    EMPTY = {"ats_score":"skipped","missing_keywords":"","improvements":"","github_insight":""}
+    EMPTY = {
+        "ats_score": "skipped",
+        "missing_keywords": "",
+        "improvements": "",
+        "github_insight": ""
+    }
+
+    def safe_str(val):
+        if val is None:
+            return ""
+        if isinstance(val, str):
+            return val
+        return str(val)
 
     if mode == "lenient":
         logger.info("  Validation: lenient — skipped")
         return EMPTY
 
-    bullets = " | ".join(filter(None,[
-        content.get("AMZ_B1",""),content.get("AMZ_B2",""),content.get("AMZ_B3",""),
-        content.get("P1_B1",""),content.get("P1_B2",""),
-        content.get("P2_B1",""),content.get("P2_B2",""),
+    bullets = " | ".join(filter(None, [
+        content.get("AMZ_B1",""), content.get("AMZ_B2",""), content.get("AMZ_B3",""),
+        content.get("P1_B1",""), content.get("P1_B2",""),
+        content.get("P2_B1",""), content.get("P2_B2",""),
     ]))
 
+    # ───────────────────────── NORMAL MODE ─────────────────────────
     if mode == "normal":
-        prompt = (f"Job: {job.get('job_title','')} | JD keywords: {job.get('skills','')[:200]}\n"
-                  f"Bullets: {bullets[:500]}\nATS review for 0-2yr cybersecurity candidate.\n"
-                  "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 6>\"}")
+        prompt = (
+            f"Job: {job.get('job_title','')} | JD keywords: {job.get('skills','')[:200]}\n"
+            f"Bullets: {bullets[:500]}\n"
+            "ATS review for 0-2yr cybersecurity candidate.\n"
+            "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 6>\"}"
+        )
+
         try:
-            raw  = _call_groq("Return only valid JSON, no markdown.", prompt, GROQ_VAL_MODEL, max_tokens=150)
-            data = json.loads(_repair_json(raw))
-            data = _normalize_validation_output(data)
+            raw = _call_groq(
+                "Return only valid JSON, no markdown.",
+                prompt,
+                GROQ_VAL_MODEL,
+                max_tokens=150
+            )
+
+            repaired = _repair_json(raw)
+            data = json.loads(repaired)
+
+            result = {
+                "ats_score": safe_str(data.get("ats_score", "N/A")),
+                "missing_keywords": safe_str(data.get("missing_keywords", "")),
+                "improvements": safe_str(data.get("improvements", "")),
+                "github_insight": safe_str(data.get("github_insight", ""))
+            }
 
             logger.info(
                 "  ATS=%s missing=%s",
-                data.get("ats_score"),
-                str(data.get("missing_keywords",""))[:50]
+                result["ats_score"],
+                result["missing_keywords"][:50]
             )
-            return data
+
+            return result
 
         except Exception as exc:
-            logger.warning("  Validation failed: %s | raw=%s", exc, raw[:200] if 'raw' in locals() else "")
-            return EMPTY
+            logger.warning(
+                "  Validation failed: %s | raw=%s",
+                exc,
+                raw[:200] if 'raw' in locals() else ""
+            )
+            return {
+                **EMPTY,
+                "improvements": f"validation_error:{str(exc)[:100]}"
+            }
 
-    gh_sec = (f"\nSimilar GitHub projects:\n{github_notes[:500]}\n" if github_notes else "")
+    # ───────────────────────── STRICT MODE ─────────────────────────
+    gh_sec = (
+        f"\nSimilar GitHub projects:\n{github_notes[:500]}\n"
+        if github_notes else ""
+    )
 
-    prompt = (f"Job: {job.get('job_title','')} | Domain: {job.get('domain','')}\n"
-              f"JD: {job.get('skills','')[:250]}\nBullets: {bullets[:600]}\n{gh_sec}"
-              "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 8>\","
-              "\"improvements\":\"<2 fixes>\",\"github_insight\":\"<1 thing>\"}")
+    prompt = (
+        f"Job: {job.get('job_title','')} | Domain: {job.get('domain','')}\n"
+        f"JD: {job.get('skills','')[:250]}\n"
+        f"Bullets: {bullets[:600]}\n{gh_sec}"
+        "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 8>\","
+        "\"improvements\":\"<2 fixes>\",\"github_insight\":\"<1 thing>\"}"
+    )
 
     try:
-        raw  = _call_groq("Strict ATS reviewer. Return only valid JSON.", prompt, GROQ_VAL_MODEL, max_tokens=300)
-        data = json.loads(_repair_json(raw))
-        data = _normalize_validation_output(data)
+        raw = _call_groq(
+            "Strict ATS reviewer. Return only valid JSON.",
+            prompt,
+            GROQ_VAL_MODEL,
+            max_tokens=300
+        )
 
-        logger.info("  ATS=%s", data.get("ats_score"))
-        return data
+        repaired = _repair_json(raw)
+        data = json.loads(repaired)
+
+        result = {
+            "ats_score": safe_str(data.get("ats_score", "N/A")),
+            "missing_keywords": safe_str(data.get("missing_keywords", "")),
+            "improvements": safe_str(data.get("improvements", "")),
+            "github_insight": safe_str(data.get("github_insight", ""))
+        }
+
+        logger.info("  ATS=%s", result["ats_score"])
+        return result
 
     except Exception as exc:
-        logger.warning("  Validation failed: %s | raw=%s", exc, raw[:200] if 'raw' in locals() else "")
-        return EMPTY
-
+        logger.warning(
+            "  Validation failed: %s | raw=%s",
+            exc,
+            raw[:200] if 'raw' in locals() else ""
+        )
+        return {
+            **EMPTY,
+            "improvements": f"validation_error:{str(exc)[:100]}"
+        }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DOCX fill
