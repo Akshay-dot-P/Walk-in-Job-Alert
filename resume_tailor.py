@@ -141,7 +141,7 @@ def apply_synonyms(text: str) -> str:
             continue
 
         # Regex with word boundaries (safe matching)
-        pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+        pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
 
         def replacer(match):
             nonlocal applied
@@ -299,8 +299,11 @@ def compute_metrics(content: dict, jd_keywords: dict, ats_score) -> dict:
 
     coverage = 0
     if ranked:
-        hits     = sum(1 for kw in ranked[:10] if kw.lower() in all_text)
-        coverage = round(hits / min(len(ranked),10) * 100)
+        hits = sum(
+           1 for kw in ranked[:10]
+           if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", all_text, re.IGNORECASE)
+        )        
+    coverage = round(hits / min(len(ranked),10) * 100)
 
     nonempty = [b for b in bullets if b.strip()]
     density  = 0.0
