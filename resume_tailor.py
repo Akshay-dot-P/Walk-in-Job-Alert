@@ -226,6 +226,18 @@ def track_keyword_usage(content: dict, ranked_keywords: list) -> dict:
 
 
 def classify_keywords(jd_keywords: dict) -> dict:
+    """
+    Structure extracted keywords into meaningful buckets
+    for controlled placement inside resume bullets.
+
+    Output:
+    {
+        "tools": [...],
+        "concepts": [...],
+        "actions": [...],
+        "priority": [...]
+    }
+    """
     if not jd_keywords:
         return {"tools": [], "concepts": [], "actions": [], "priority": []}
 
@@ -237,20 +249,25 @@ def classify_keywords(jd_keywords: dict) -> dict:
     }
 
 
+
 def place_keywords_intelligently(content: dict, kw: dict) -> dict:
     import re
 
-    def inject(text: str, keywords: list) -> str:
+    def inject(text: str, keywords: list, max_insert: int = 2) -> str:
         if not text:
             return text
 
+        inserted = 0
+
         for k in keywords:
+            if inserted >= max_insert:
+                break
+
             if re.search(rf"\b{re.escape(k)}\b", text, re.IGNORECASE):
                 continue
 
-            # ✅ Only 1 keyword per bullet
             text = text.rstrip(".") + f" using {k}."
-            break
+            inserted += 1
 
         return text
 
@@ -263,6 +280,7 @@ def place_keywords_intelligently(content: dict, kw: dict) -> dict:
     content["P2_B3"] = inject(content.get("P2_B3",""), kw.get("concepts",[]))
 
     return content
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FEATURE 4: DYNAMIC SKILLS AUGMENTATION
@@ -763,20 +781,16 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | keep differe
     base_skills = compute_skills(job["domain"])
     content.update(dynamic_skills_augment(base_skills, jd_keywords))
 
-    # FEATURE 2: Apply synonym expansion
-    synonym_counter = {"count": 0}
-
+    # FEATURE 2: Apply synonym expansion to project bullets
     for k in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
         if content.get(k):
-            content[k] = apply_synonyms(content[k], synonym_counter)
-
-    # FEATURE 3: Intelligent keyword placement
+            content[k] = apply_synonyms(content[k])
+    # ✅ NEW: Intelligent keyword placement
     kw_struct = classify_keywords(jd_keywords)
     content = place_keywords_intelligently(content, kw_struct)
 
-    return content
-      
 
+    return content
 
 
 # ─────────────────────────────────────────────────────────────────────────────
