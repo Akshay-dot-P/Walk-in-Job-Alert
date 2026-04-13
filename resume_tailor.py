@@ -963,32 +963,6 @@ def _reduce_paragraph_spacing(docx_bytes: bytes) -> bytes:
     return buf.read()
 
 
-def _measure_content_bottom(pdf_bytes: bytes) -> float:
-    """
-    Use pdfminer to find the lowest Y-coordinate of any content on page 1.
-    Returns the distance (in points) from the bottom of the page to the
-    lowest content element. A large value = lots of white space at the bottom.
-    Returns 0.0 on failure.
-    """
-    try:
-        from pdfminer.high_level import extract_pages
-        from pdfminer.layout import LTTextBox, LTTextLine, LTChar, LTAnno, LTLine, LTRect
-        min_y = None  # lowest content y (smallest y = closest to bottom)
-        for page_layout in extract_pages(io.BytesIO(pdf_bytes), page_numbers=[0]):
-            for element in page_layout:
-                if hasattr(element, 'bbox'):
-                    # bbox = (x0, y0, x1, y1) — y0 is bottom of element
-                    y0 = element.bbox[1]
-                    if min_y is None or y0 < min_y:
-                        min_y = y0
-            if min_y is not None:
-                return min_y  # distance from page bottom to lowest content
-        return 0.0
-    except Exception as exc:
-        logger.debug("Content bottom measurement failed: %s", exc)
-        return 0.0
-
-
 # Section titles in the template to identify section-header paragraphs
 _SECTION_TITLES = {"education", "work experience", "projects", "technical skills", "certifications"}
 
@@ -999,65 +973,90 @@ def _is_section_header(para) -> bool:
     return text in _SECTION_TITLES
 
 
+def _is_skill_row(para) -> bool:
+    """Check if a paragraph is a filled-in skill row (e.g. 'SOC Operations: ...')."""
+    text = para.text.strip()
+    if not text or len(text) < 5:
+        return False
+    # Skill rows are "Label: value1, value2, ..." — short label with colon
+    if ":" in text:
+        label = text.split(":")[0].strip()
+        if 3 <= len(label) <= 30:
+            return True
+    return False
+
+
 def _expand_spacing_to_fill_page(docx_bytes: bytes, extra_pts: float) -> bytes:
     """
-    Distribute extra vertical space across section headers and skill/bullet rows
-    to fill the page. Adds spacing proportionally:
-    - 45% to section headers (space_before) — there are ~5 headers
-    - 30% to skill rows (space_before + space_after)
-    - 25% to bullet list paragraphs (space_after)
+    Distribute extra vertical space across section headers, skill rows,
+    bullet paragraphs, and empty separator paragraphs to fill the page.
+
+    Distribution ratios:
+    - 40% to section headers (space_before) — ~5 headers, biggest visual impact
+    - 20% to skill rows (space_before + space_after)
+    - 20% to bullet list paragraphs (space_after)
+    - 20% to empty separator paragraphs (space_before + space_after)
     """
     from docx.shared import Pt, Emu
     doc = Document(io.BytesIO(docx_bytes))
 
-    # Count targets for distribution
     section_headers = []
     skill_rows = []
     bullet_rows = []
+    separator_rows = []
 
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
+            separator_rows.append(para)
             continue
         if _is_section_header(para):
             section_headers.append(para)
-        elif text.startswith("[[SK_") or any(text.startswith(lbl) for lbl in
-             ["SOC ", "SIEM", "Threat", "Systems", "Automation", "Networking",
-              "OS ", "Security Op", "Frameworks", "GRC", "Risk", "Fraud"]):
+        elif _is_skill_row(para):
             skill_rows.append(para)
         elif para.style and para.style.name == 'List Paragraph':
             bullet_rows.append(para)
 
-    # Calculate per-target additions
-    n_headers = max(len(section_headers), 1)
-    n_skills  = max(len(skill_rows), 1)
-    n_bullets = max(len(bullet_rows), 1)
+    n_headers    = max(len(section_headers), 1)
+    n_skills     = max(len(skill_rows), 1)
+    n_bullets    = max(len(bullet_rows), 1)
+    n_separators = max(len(separator_rows), 1)
 
-    header_share = extra_pts * 0.45 / n_headers
-    skill_share  = extra_pts * 0.30 / n_skills
-    bullet_share = extra_pts * 0.25 / n_bullets
+    header_share    = extra_pts * 0.40 / n_headers
+    skill_share     = extra_pts * 0.20 / n_skills
+    bullet_share    = extra_pts * 0.20 / n_bullets
+    separator_share = extra_pts * 0.20 / n_separators
+
+    def _get_pts(val):
+        """Convert a spacing value to float points."""
+        if val is None or val == 0:
+            return 0.0
+        # val is in EMU; 1pt = 12700 EMU
+        return val / 12700.0
 
     for para in section_headers:
         pf = para.paragraph_format
-        current = pf.space_before or Pt(0)
-        # Convert to points for arithmetic
-        current_pts = current / Emu(12700) if current else 0
+        current_pts = _get_pts(pf.space_before)
         pf.space_before = Pt(current_pts + header_share)
 
     for para in skill_rows:
         pf = para.paragraph_format
-        current_b = pf.space_before or Pt(0)
-        current_a = pf.space_after or Pt(0)
-        cb = current_b / Emu(12700) if current_b else 0
-        ca = current_a / Emu(12700) if current_a else 0
+        cb = _get_pts(pf.space_before)
+        ca = _get_pts(pf.space_after)
         pf.space_before = Pt(cb + skill_share * 0.5)
         pf.space_after  = Pt(ca + skill_share * 0.5)
 
     for para in bullet_rows:
         pf = para.paragraph_format
-        current_a = pf.space_after or Pt(0)
-        ca = current_a / Emu(12700) if current_a else 0
+        ca = _get_pts(pf.space_after)
         pf.space_after = Pt(ca + bullet_share)
+
+    for para in separator_rows:
+        pf = para.paragraph_format
+        cb = _get_pts(pf.space_before)
+        ca = _get_pts(pf.space_after)
+        pf.space_before = Pt(cb + separator_share * 0.5)
+        pf.space_after  = Pt(ca + separator_share * 0.5)
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -1068,38 +1067,42 @@ def _expand_spacing_to_fill_page(docx_bytes: bytes, extra_pts: float) -> bytes:
 def _fill_page(docx_bytes: bytes) -> tuple[bytes, bytes]:
     """
     Expand spacing to fill the single page fully.
-    Uses binary search to find the maximum spacing increase that still fits
-    on a single page. The bottom margin target is ~18-36pt (0.25-0.5 inch)
-    from the page bottom.
+    Does NOT try to measure PDF content position (unreliable with lines/rules).
+    Instead, binary searches extra spacing (0–200pt) and checks page count
+    each iteration. Finds the maximum spacing that still fits on one page.
 
     Returns (final_docx_bytes, final_pdf_bytes).
     """
-    # Measure current bottom gap
     pdf_bytes = generate_pdf(docx_bytes)
     pages = _count_pdf_pages(pdf_bytes)
     if pages != 1:
         return docx_bytes, pdf_bytes  # safety — don't fill if not single page
 
-    bottom_gap = _measure_content_bottom(pdf_bytes)
-    # bottom_gap is distance from page bottom to lowest content (in points)
-    # Page bottom margin is ~0.38 inches = ~27pt
-    # We want content to fill down to ~27pt from bottom (the margin)
-    # So distributable space = bottom_gap - target_gap
-    TARGET_BOTTOM_GAP = 36  # 0.5 inch from page bottom — safe margin
-    distributable = bottom_gap - TARGET_BOTTOM_GAP
-
-    if distributable < 10:  # less than 10pt to distribute — not worth it
-        logger.info("  Page fill: only %.1fpt gap — no expansion needed", bottom_gap)
+    # Quick check: can we add ANY spacing? Try 5pt first.
+    trial_docx = _expand_spacing_to_fill_page(docx_bytes, 5.0)
+    trial_pdf  = generate_pdf(trial_docx)
+    if _count_pdf_pages(trial_pdf) > 1:
+        # Even 5pt overflows — page is already very full, no room to expand
+        logger.info("  Page fill: page already near-full, no expansion possible")
         return docx_bytes, pdf_bytes
 
-    logger.info("  Page fill: %.1fpt bottom gap, distributing %.1fpt",
-                bottom_gap, distributable)
-
-    # Binary search: find max extra_pts that still fits on 1 page
-    lo, hi = 0.0, distributable
+    # Binary search: find max extra_pts in [0, 200] that still fits 1 page
+    # 200pt ≈ 2.78 inches — more than enough for any realistic gap
+    lo, hi = 0.0, 200.0
     best_docx, best_pdf = docx_bytes, pdf_bytes
 
-    for _ in range(8):  # 8 iterations gives ~0.5pt precision
+    # First, find an upper bound that actually overflows
+    # (start at 200, if it fits, use it directly)
+    trial_docx = _expand_spacing_to_fill_page(docx_bytes, hi)
+    trial_pdf  = generate_pdf(trial_docx)
+    if _count_pdf_pages(trial_pdf) <= 1:
+        # Even 200pt fits — use it (this means the page was very empty)
+        logger.info("  Page fill: distributed 200.0pt (maximum), still fits")
+        return trial_docx, trial_pdf
+
+    logger.info("  Page fill: binary searching optimal spacing (0-200pt)...")
+
+    for iteration in range(10):  # 10 iterations → ~0.2pt precision
         mid = (lo + hi) / 2
         trial_docx = _expand_spacing_to_fill_page(docx_bytes, mid)
         trial_pdf  = generate_pdf(trial_docx)
@@ -1112,8 +1115,7 @@ def _fill_page(docx_bytes: bytes) -> tuple[bytes, bytes]:
         else:
             hi = mid
 
-    final_gap = _measure_content_bottom(best_pdf)
-    logger.info("  Page fill complete: distributed %.1fpt, final gap %.1fpt", lo, final_gap)
+    logger.info("  Page fill complete: distributed %.1fpt of spacing", lo)
     return best_docx, best_pdf
 
 
