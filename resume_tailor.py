@@ -229,6 +229,63 @@ def track_keyword_usage(content: dict, ranked_keywords: list) -> dict:
     return usage
 
 
+def classify_keywords(jd_keywords: dict) -> dict:
+    """
+    Structure extracted keywords into meaningful buckets
+    for controlled placement inside resume bullets.
+
+    Output:
+    {
+        "tools": [...],
+        "concepts": [...],
+        "actions": [...],
+        "priority": [...]
+    }
+    """
+    if not jd_keywords:
+        return {"tools": [], "concepts": [], "actions": [], "priority": []}
+
+    return {
+        "tools": jd_keywords.get("tools", [])[:5],
+        "concepts": jd_keywords.get("concepts", [])[:5],
+        "actions": jd_keywords.get("actions", [])[:5],
+        "priority": jd_keywords.get("ranked", [])[:8],
+    }
+
+
+
+def place_keywords_intelligently(content: dict, kw: dict) -> dict:
+    import re
+
+    def inject(text: str, keywords: list, max_insert: int = 2) -> str:
+        if not text:
+            return text
+
+        inserted = 0
+
+        for k in keywords:
+            if inserted >= max_insert:
+                break
+
+            if re.search(rf"\b{re.escape(k)}\b", text, re.IGNORECASE):
+                continue
+
+            text = text.rstrip(".") + f" using {k}."
+            inserted += 1
+
+        return text
+
+    content["P1_B1"] = inject(content.get("P1_B1",""), kw.get("tools",[]))
+    content["P1_B2"] = inject(content.get("P1_B2",""), kw.get("actions",[]))
+    content["P1_B3"] = inject(content.get("P1_B3",""), kw.get("concepts",[]))
+
+    content["P2_B1"] = inject(content.get("P2_B1",""), kw.get("tools",[]))
+    content["P2_B2"] = inject(content.get("P2_B2",""), kw.get("actions",[]))
+    content["P2_B3"] = inject(content.get("P2_B3",""), kw.get("concepts",[]))
+
+    return content
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FEATURE 4: DYNAMIC SKILLS AUGMENTATION
 # Candidate groundable whitelist — only these terms can be added from JD
@@ -732,6 +789,10 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | keep differe
     for k in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
         if content.get(k):
             content[k] = apply_synonyms(content[k])
+    # ✅ NEW: Intelligent keyword placement
+    kw_struct = classify_keywords(jd_keywords)
+    content = place_keywords_intelligently(content, kw_struct)
+      
 
     return content
 
