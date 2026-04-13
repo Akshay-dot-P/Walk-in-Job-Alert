@@ -763,16 +763,20 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | keep differe
     base_skills = compute_skills(job["domain"])
     content.update(dynamic_skills_augment(base_skills, jd_keywords))
 
-    # FEATURE 2: Apply synonym expansion to project bullets
+    # FEATURE 2: Apply synonym expansion
+    synonym_counter = {"count": 0}
+
     for k in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
         if content.get(k):
-            content[k] = apply_synonyms(content[k])
-    # ✅ NEW: Intelligent keyword placement
+            content[k] = apply_synonyms(content[k], synonym_counter)
+
+    # FEATURE 3: Intelligent keyword placement
     kw_struct = classify_keywords(jd_keywords)
     content = place_keywords_intelligently(content, kw_struct)
-      
 
     return content
+      
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
