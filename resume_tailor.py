@@ -665,6 +665,33 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
     )
 
     # BUG FIX C: soft char limit — keep differentiators
+    # Build project-specific differentiator preservation list
+    # Only include TTPs/syntax that belong to the actually selected projects
+    _PROJ_DIFFERENTIATORS = {
+        "soc_auto":       ["SPL query syntax (index=* failed | stats)",
+                           "MITRE TTP numbers (T1110/T1078/T1059)",
+                           "SOAR pipeline detail"],
+        "vuln_scanner":   ["EPSS scoring", "FIRST.org API mention",
+                           "CVSS severity classification",
+                           "remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days)"],
+        "phishing_osint": ["typosquatting detection detail",
+                           "multi-API cross-referencing (VirusTotal, AbuseIPDB, URLScan.io)",
+                           "WHOIS/DNS/SSL analysis detail"],
+    }
+    active_diffs = []
+    for pk in set([p1_key, p2_key]):
+        active_diffs.extend(_PROJ_DIFFERENTIATORS.get(pk, []))
+
+    if active_diffs:
+        diff_instruction = (
+            f"NEVER drop from project bullets: {', '.join(active_diffs)}.\n"
+            "These differentiators are what make a fresher resume stand out — keep them even if longer.\n"
+            "IMPORTANT: Only include technical details that belong to each specific project. "
+            "Do NOT add MITRE TTP numbers, SPL queries, or SOAR details to projects that don't have them.\n"
+        )
+    else:
+        diff_instruction = ""
+
     user = f"""JOB:
   Title:   {job['job_title']}
   Company: {job['company']}
@@ -673,27 +700,24 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
   Skills:  {job['skills']}
 {co_ctx}{kw_hint}
 SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
-NEVER drop: EPSS scoring, SPL query syntax (index=* failed | stats), MITRE TTP numbers
-(T1110/T1078/T1059), SOAR pipeline detail, or FIRST.org API mention.
-These differentiators are what make a fresher resume stand out — keep them even if longer.
-
+{diff_instruction}
 Return JSON with EXACTLY 13 keys:
 {{
-  "AMZ_B1": "Rewrite with 1-2 domain keywords using 'and' not '&' (factual, action verb): {AMAZON_BASE[0]}",
-  "AMZ_B2": "Rewrite with 1-2 domain keywords using 'and' not '&' (factual, action verb): {AMAZON_BASE[1]}",
-  "AMZ_B3": "Rewrite with 1-2 domain keywords using 'and' not '&' (factual, action verb): {AMAZON_BASE[2]}",
+  "AMZ_B1": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT say 'mirroring SOC' or 'similar to SOC' — let the skills speak for themselves: {AMAZON_BASE[0]}",
+  "AMZ_B2": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[1]}",
+  "AMZ_B3": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[2]}",
   "P1_TITLE": "{p1['title']}",
   "P1_TECH":  "{', '.join(p1_tools)}",
-  "P1_B1": "Rewrite using P1_TECH tools, preserve technical detail, use 'and' not '&': {p1['bullets'][0]}",
-  "P1_B2": "Rewrite using P1_TECH tools, preserve technical detail, use 'and' not '&': {p1['bullets'][1]}",
-  "P1_B3": "Rewrite using P1_TECH tools, preserve technical detail, use 'and' not '&': {p1['bullets'][2]}",
+  "P1_B1": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][0]}",
+  "P1_B2": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][1]}",
+  "P1_B3": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][2]}",
   "P2_TITLE": "{p2['title']}",
   "P2_TECH":  "{', '.join(p2_tools)}",
-  "P2_B1": "Rewrite using P2_TECH tools, preserve technical detail, use 'and' not '&': {p2['bullets'][0]}",
-  "P2_B2": "Rewrite using P2_TECH tools, preserve technical detail, use 'and' not '&': {p2['bullets'][1]}",
-  "P2_B3": "Rewrite using P2_TECH tools, preserve technical detail, use 'and' not '&': {p2['bullets'][2]}"
+  "P2_B1": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][0]}",
+  "P2_B2": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][1]}",
+  "P2_B3": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][2]}"
 }}
-Rules: action verb start | 'and' not '&' | escape internal quotes | keep differentiators"""
+Rules: action verb start | 'and' not '&' | escape internal quotes | each project uses ONLY its own technical details"""
 
     raw = _call_groq(system, user, GROQ_GEN_MODEL)
     raw = _repair_json(raw)
