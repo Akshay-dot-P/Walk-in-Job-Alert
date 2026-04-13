@@ -784,7 +784,7 @@ def generate_pdf(docx_bytes: bytes) -> bytes:
         docx_path = os.path.join(tmpdir, "resume.docx")
         with open(docx_path,"wb") as f: f.write(docx_bytes)
         result = subprocess.run(
-            ["libreoffice","--headless","--convert-to","pdf","--outdir",tmpdir,docx_path],
+            ["libreoffice", "--headless", "--convert-to", "pdf:writer_pdf_Export", "--outdir", tmpdir, docx_path],
             capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             raise RuntimeError(f"LibreOffice: {result.stderr[:200]}")
