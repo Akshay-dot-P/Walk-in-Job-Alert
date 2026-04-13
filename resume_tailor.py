@@ -13,6 +13,8 @@ E. Feature 4: dynamic_skills_augment() — JD keywords filtered via whitelist
 F. Feature 5: compute_metrics() → keyword_coverage, keyword_density, skills_count
 G. Feature 6: recruiter_simulate() → credibility, stuffing_suspicion, hireability
 H. Single-page: enforce_single_page() — 5-tier STRICT single-page enforcement
+   + page-fill: measures bottom gap via pdfminer, distributes spacing to
+     fully utilise the page (binary search on section/skill/bullet spacing)
    Tier 0: reduce paragraph spacing (non-destructive formatting)
    Tier 1: shorten long bullets (>200 chars) via LLM
    Tier 1.5: aggressive shortening (>150 chars)
@@ -961,13 +963,171 @@ def _reduce_paragraph_spacing(docx_bytes: bytes) -> bytes:
     return buf.read()
 
 
-def _generate_and_check(working: dict, reduce_spacing: bool = False) -> tuple[bytes, bytes, int]:
+def _measure_content_bottom(pdf_bytes: bytes) -> float:
+    """
+    Use pdfminer to find the lowest Y-coordinate of any content on page 1.
+    Returns the distance (in points) from the bottom of the page to the
+    lowest content element. A large value = lots of white space at the bottom.
+    Returns 0.0 on failure.
+    """
+    try:
+        from pdfminer.high_level import extract_pages
+        from pdfminer.layout import LTTextBox, LTTextLine, LTChar, LTAnno, LTLine, LTRect
+        min_y = None  # lowest content y (smallest y = closest to bottom)
+        for page_layout in extract_pages(io.BytesIO(pdf_bytes), page_numbers=[0]):
+            for element in page_layout:
+                if hasattr(element, 'bbox'):
+                    # bbox = (x0, y0, x1, y1) — y0 is bottom of element
+                    y0 = element.bbox[1]
+                    if min_y is None or y0 < min_y:
+                        min_y = y0
+            if min_y is not None:
+                return min_y  # distance from page bottom to lowest content
+        return 0.0
+    except Exception as exc:
+        logger.debug("Content bottom measurement failed: %s", exc)
+        return 0.0
+
+
+# Section titles in the template to identify section-header paragraphs
+_SECTION_TITLES = {"education", "work experience", "projects", "technical skills", "certifications"}
+
+
+def _is_section_header(para) -> bool:
+    """Check if a paragraph is a section header (Education, Projects, etc.)."""
+    text = para.text.strip().lower()
+    return text in _SECTION_TITLES
+
+
+def _expand_spacing_to_fill_page(docx_bytes: bytes, extra_pts: float) -> bytes:
+    """
+    Distribute extra vertical space across section headers and skill/bullet rows
+    to fill the page. Adds spacing proportionally:
+    - 45% to section headers (space_before) — there are ~5 headers
+    - 30% to skill rows (space_before + space_after)
+    - 25% to bullet list paragraphs (space_after)
+    """
+    from docx.shared import Pt, Emu
+    doc = Document(io.BytesIO(docx_bytes))
+
+    # Count targets for distribution
+    section_headers = []
+    skill_rows = []
+    bullet_rows = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            continue
+        if _is_section_header(para):
+            section_headers.append(para)
+        elif text.startswith("[[SK_") or any(text.startswith(lbl) for lbl in
+             ["SOC ", "SIEM", "Threat", "Systems", "Automation", "Networking",
+              "OS ", "Security Op", "Frameworks", "GRC", "Risk", "Fraud"]):
+            skill_rows.append(para)
+        elif para.style and para.style.name == 'List Paragraph':
+            bullet_rows.append(para)
+
+    # Calculate per-target additions
+    n_headers = max(len(section_headers), 1)
+    n_skills  = max(len(skill_rows), 1)
+    n_bullets = max(len(bullet_rows), 1)
+
+    header_share = extra_pts * 0.45 / n_headers
+    skill_share  = extra_pts * 0.30 / n_skills
+    bullet_share = extra_pts * 0.25 / n_bullets
+
+    for para in section_headers:
+        pf = para.paragraph_format
+        current = pf.space_before or Pt(0)
+        # Convert to points for arithmetic
+        current_pts = current / Emu(12700) if current else 0
+        pf.space_before = Pt(current_pts + header_share)
+
+    for para in skill_rows:
+        pf = para.paragraph_format
+        current_b = pf.space_before or Pt(0)
+        current_a = pf.space_after or Pt(0)
+        cb = current_b / Emu(12700) if current_b else 0
+        ca = current_a / Emu(12700) if current_a else 0
+        pf.space_before = Pt(cb + skill_share * 0.5)
+        pf.space_after  = Pt(ca + skill_share * 0.5)
+
+    for para in bullet_rows:
+        pf = para.paragraph_format
+        current_a = pf.space_after or Pt(0)
+        ca = current_a / Emu(12700) if current_a else 0
+        pf.space_after = Pt(ca + bullet_share)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _fill_page(docx_bytes: bytes) -> tuple[bytes, bytes]:
+    """
+    Expand spacing to fill the single page fully.
+    Uses binary search to find the maximum spacing increase that still fits
+    on a single page. The bottom margin target is ~18-36pt (0.25-0.5 inch)
+    from the page bottom.
+
+    Returns (final_docx_bytes, final_pdf_bytes).
+    """
+    # Measure current bottom gap
+    pdf_bytes = generate_pdf(docx_bytes)
+    pages = _count_pdf_pages(pdf_bytes)
+    if pages != 1:
+        return docx_bytes, pdf_bytes  # safety — don't fill if not single page
+
+    bottom_gap = _measure_content_bottom(pdf_bytes)
+    # bottom_gap is distance from page bottom to lowest content (in points)
+    # Page bottom margin is ~0.38 inches = ~27pt
+    # We want content to fill down to ~27pt from bottom (the margin)
+    # So distributable space = bottom_gap - target_gap
+    TARGET_BOTTOM_GAP = 36  # 0.5 inch from page bottom — safe margin
+    distributable = bottom_gap - TARGET_BOTTOM_GAP
+
+    if distributable < 10:  # less than 10pt to distribute — not worth it
+        logger.info("  Page fill: only %.1fpt gap — no expansion needed", bottom_gap)
+        return docx_bytes, pdf_bytes
+
+    logger.info("  Page fill: %.1fpt bottom gap, distributing %.1fpt",
+                bottom_gap, distributable)
+
+    # Binary search: find max extra_pts that still fits on 1 page
+    lo, hi = 0.0, distributable
+    best_docx, best_pdf = docx_bytes, pdf_bytes
+
+    for _ in range(8):  # 8 iterations gives ~0.5pt precision
+        mid = (lo + hi) / 2
+        trial_docx = _expand_spacing_to_fill_page(docx_bytes, mid)
+        trial_pdf  = generate_pdf(trial_docx)
+        trial_pages = _count_pdf_pages(trial_pdf)
+
+        if trial_pages <= 1:
+            lo = mid
+            best_docx = trial_docx
+            best_pdf  = trial_pdf
+        else:
+            hi = mid
+
+    final_gap = _measure_content_bottom(best_pdf)
+    logger.info("  Page fill complete: distributed %.1fpt, final gap %.1fpt", lo, final_gap)
+    return best_docx, best_pdf
+
+
+def _generate_and_check(working: dict, reduce_spacing: bool = False,
+                        fill_page: bool = False) -> tuple[bytes, bytes, int]:
     """Fill template, generate PDF, count pages. Returns (docx, pdf, pages)."""
     docx_bytes = fill_template(working)
     if reduce_spacing:
         docx_bytes = _reduce_paragraph_spacing(docx_bytes)
     pdf_bytes  = generate_pdf(docx_bytes)
     pages      = _count_pdf_pages(pdf_bytes)
+    if fill_page and pages == 1:
+        docx_bytes, pdf_bytes = _fill_page(docx_bytes)
+        pages = _count_pdf_pages(pdf_bytes)
     return docx_bytes, pdf_bytes, pages
 
 
@@ -975,13 +1135,17 @@ def enforce_single_page(content: dict, job: dict,
                         jd_keywords: dict | None = None) -> tuple[bytes, bytes, str]:
     """
     Generate DOCX+PDF and STRICTLY enforce single-page output.
-    Applies up to 5 tiers of trimming:
+    Applies up to 5 tiers of trimming, then fills remaining space:
 
     Tier 0: Reduce paragraph spacing (non-destructive formatting)
     Tier 1: Shorten bullets > 200 chars via LLM (non-destructive)
     Tier 2: Remove least-relevant project bullet (scored by JD keyword overlap)
     Tier 3: Trim excess skills (SK_V5 → SK_V4 → SK_V1)
     Tier 4: Shorten longest Amazon bullet (never fully remove)
+
+    Page Fill: After achieving single page, measures bottom white space using
+    pdfminer and distributes extra spacing across section headers, skill rows,
+    and bullet paragraphs via binary search to fully utilize the page.
     """
     ranked = (jd_keywords or {}).get("ranked", [])
     trim_log = []
@@ -991,7 +1155,10 @@ def enforce_single_page(content: dict, job: dict,
     docx_bytes, pdf_bytes, pages = _generate_and_check(working)
 
     if pages <= 1:
-        return docx_bytes, pdf_bytes, ""
+        # Page fits — now fill it to avoid white space at bottom
+        logger.info("  Single page OK — filling page to reduce white space")
+        docx_bytes, pdf_bytes = _fill_page(docx_bytes)
+        return docx_bytes, pdf_bytes, "page-filled"
 
     logger.info("  %d pages detected — enforcing single page", pages)
 
@@ -1002,7 +1169,8 @@ def enforce_single_page(content: dict, job: dict,
 
     if pages <= 1:
         logger.info("  Single page achieved via Tier 0 (spacing). %s", trim_log)
-        return docx_bytes, pdf_bytes, "; ".join(trim_log)
+        docx_bytes, pdf_bytes = _fill_page(docx_bytes)
+        return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
     # ── Tier 1: Shorten long bullets (>200 chars) ────────────────────────
     LONG_THRESHOLD = 200
@@ -1022,7 +1190,8 @@ def enforce_single_page(content: dict, job: dict,
         docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
         if pages <= 1:
             logger.info("  Single page achieved via Tier 1 (shortening). %s", trim_log)
-            return docx_bytes, pdf_bytes, "; ".join(trim_log)
+            docx_bytes, pdf_bytes = _fill_page(docx_bytes)
+            return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
     # ── Tier 1.5: Shorten ALL bullets > 150 chars (more aggressive) ──────
     AGGRESSIVE_THRESHOLD = 150
@@ -1040,7 +1209,8 @@ def enforce_single_page(content: dict, job: dict,
         docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
         if pages <= 1:
             logger.info("  Single page achieved via Tier 1.5. %s", trim_log)
-            return docx_bytes, pdf_bytes, "; ".join(trim_log)
+            docx_bytes, pdf_bytes = _fill_page(docx_bytes)
+            return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
     # ── Tier 2: Remove least-relevant project bullets ────────────────────
     PROJECT_BULLET_KEYS = ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
@@ -1061,7 +1231,8 @@ def enforce_single_page(content: dict, job: dict,
             docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
             if pages <= 1:
                 logger.info("  Single page achieved via Tier 2. %s", trim_log)
-                return docx_bytes, pdf_bytes, "; ".join(trim_log)
+                docx_bytes, pdf_bytes = _fill_page(docx_bytes)
+                return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
     # ── Tier 3: Trim excess skills ───────────────────────────────────────
     SKILL_TRIM_ORDER = ["SK_V5", "SK_V4", "SK_V3", "SK_V2", "SK_V1"]
@@ -1075,7 +1246,8 @@ def enforce_single_page(content: dict, job: dict,
             docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
             if pages <= 1:
                 logger.info("  Single page achieved via Tier 3 (skills). %s", trim_log)
-                return docx_bytes, pdf_bytes, "; ".join(trim_log)
+                docx_bytes, pdf_bytes = _fill_page(docx_bytes)
+                return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
     # ── Tier 4: Shorten Amazon bullets (last resort, never remove) ───────
     AMZ_KEYS = ["AMZ_B1", "AMZ_B2", "AMZ_B3"]
@@ -1093,7 +1265,8 @@ def enforce_single_page(content: dict, job: dict,
                 docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
                 if pages <= 1:
                     logger.info("  Single page achieved via Tier 4 (AMZ shorten). %s", trim_log)
-                    return docx_bytes, pdf_bytes, "; ".join(trim_log)
+                    docx_bytes, pdf_bytes = _fill_page(docx_bytes)
+                    return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
     # ── Fallback: all tiers exhausted ────────────────────────────────────
     logger.warning("  All tiers exhausted — could not achieve single page")
