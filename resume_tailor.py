@@ -226,18 +226,6 @@ def track_keyword_usage(content: dict, ranked_keywords: list) -> dict:
 
 
 def classify_keywords(jd_keywords: dict) -> dict:
-    """
-    Structure extracted keywords into meaningful buckets
-    for controlled placement inside resume bullets.
-
-    Output:
-    {
-        "tools": [...],
-        "concepts": [...],
-        "actions": [...],
-        "priority": [...]
-    }
-    """
     if not jd_keywords:
         return {"tools": [], "concepts": [], "actions": [], "priority": []}
 
@@ -247,7 +235,6 @@ def classify_keywords(jd_keywords: dict) -> dict:
         "actions": jd_keywords.get("actions", [])[:5],
         "priority": jd_keywords.get("ranked", [])[:8],
     }
-
 
 
 def place_keywords_intelligently(content: dict, kw: dict) -> dict:
