@@ -865,7 +865,7 @@ def enforce_single_page(content: dict, job: dict) -> tuple[bytes, bytes, str]:
             return docx_bytes, pdf_bytes, "overflow-unresolved"
 
         key = TRIM_ORDER[attempt]
-        working[key] = ""   # blank the placeholder so template shows nothing
+        working[key] = " "   # blank the placeholder so template shows nothing
         trim_log.append(f"removed {key}")
         logger.info("  Page overflow — removed %s", key)
 
