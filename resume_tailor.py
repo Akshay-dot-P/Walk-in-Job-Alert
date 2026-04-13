@@ -240,21 +240,17 @@ def classify_keywords(jd_keywords: dict) -> dict:
 def place_keywords_intelligently(content: dict, kw: dict) -> dict:
     import re
 
-    def inject(text: str, keywords: list, max_insert: int = 2) -> str:
+    def inject(text: str, keywords: list) -> str:
         if not text:
             return text
 
-        inserted = 0
-
         for k in keywords:
-            if inserted >= max_insert:
-                break
-
             if re.search(rf"\b{re.escape(k)}\b", text, re.IGNORECASE):
                 continue
 
+            # ✅ Only 1 keyword per bullet
             text = text.rstrip(".") + f" using {k}."
-            inserted += 1
+            break
 
         return text
 
@@ -267,7 +263,6 @@ def place_keywords_intelligently(content: dict, kw: dict) -> dict:
     content["P2_B3"] = inject(content.get("P2_B3",""), kw.get("concepts",[]))
 
     return content
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FEATURE 4: DYNAMIC SKILLS AUGMENTATION
