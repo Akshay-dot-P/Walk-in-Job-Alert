@@ -799,12 +799,14 @@ def generate_pdf(docx_bytes: bytes) -> bytes:
 # Page 2 containing ONLY certifications is acceptable (certs are real content).
 # Page 2 containing skills/bullets/projects = trim iteratively.
 # ─────────────────────────────────────────────────────────────────────────────
+
 def _count_pdf_pages(pdf_bytes: bytes) -> int:
     try:
         import pikepdf
         return len(pikepdf.open(io.BytesIO(pdf_bytes)).pages)
-    except Exception:
-        return 1
+    except Exception as e:
+        logger.warning("Page count failed: %s", e)
+        return 999   # force trimming instead of skipping
 
 
 def _get_page2_text(pdf_bytes: bytes) -> str:
