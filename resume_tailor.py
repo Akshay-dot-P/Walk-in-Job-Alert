@@ -196,17 +196,38 @@ def extract_keywords(jd_text: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 def track_keyword_usage(content: dict, ranked_keywords: list) -> dict:
     """
-    Count keyword appearances across all bullets. Returns usage dict.
-    Logs under-represented (<1) and over-represented (>3) keywords.
+    Count keyword appearances across all bullets using SAFE matching.
+    - Uses word boundaries to avoid partial matches
+    - Case-insensitive matching
+    - Logs under (<1) and over (>3) usage
     """
-    bullet_keys = ["AMZ_B1","AMZ_B2","AMZ_B3","P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
-    all_text = " ".join(content.get(k,"") for k in bullet_keys).lower()
-    usage = {kw: len(re.findall(re.escape(kw.lower()), all_text)) for kw in ranked_keywords[:10]}
-    under = [k for k,c in usage.items() if c == 0]
-    over  = [k for k,c in usage.items() if c > 3]
+    bullet_keys = [
+        "AMZ_B1","AMZ_B2","AMZ_B3",
+        "P1_B1","P1_B2","P1_B3",
+        "P2_B1","P2_B2","P2_B3"
+    ]
+
+    # Combine all bullet text
+    all_text = " ".join(content.get(k, "") for k in bullet_keys)
+
+    usage = {}
+
+    for kw in ranked_keywords[:10]:
+        # SAFE regex with word boundaries
+        pattern = re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE)
+        matches = pattern.findall(all_text)
+        usage[kw] = len(matches)
+
+    # Analysis
+    under = [k for k, c in usage.items() if c == 0]
+    over  = [k for k, c in usage.items() if c > 3]
     present = sum(1 for c in usage.values() if c > 0)
-    logger.info("  Keyword coverage: %d/%d present | under=%s over=%s",
-                present, len(usage), under[:3], over[:2])
+
+    logger.info(
+        "  Keyword coverage: %d/%d present | under=%s over=%s",
+        present, len(usage), under[:3], over[:2]
+    )
+
     return usage
 
 
