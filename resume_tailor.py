@@ -118,44 +118,40 @@ SYNONYM_MAP = {
 }
 
 
-def apply_synonyms(text: str) -> str:
+import re
+
+MAX_SYNONYMS_PER_RESUME = 4
+
+def apply_synonyms(text: str, counter: dict) -> str:
     """
-    Append one alias per matched term (max 2 per text).
-    - Uses word boundaries to avoid partial matches
-    - Preserves original casing
-    - Prevents duplicate alias insertion
+    Append MAX 1 synonym per bullet and max 4 per resume.
+    Prevents recruiter suspicion.
     """
-    if not text:
+    if not text or counter["count"] >= MAX_SYNONYMS_PER_RESUME:
         return text
 
-    applied = 0
-
     for term, aliases in SYNONYM_MAP.items():
-        if applied >= 2:
+        if counter["count"] >= MAX_SYNONYMS_PER_RESUME:
             break
 
         alias = aliases[0]
 
-        # Skip if alias already present anywhere
         if alias.lower() in text.lower():
             continue
 
-        # Regex with word boundaries (safe matching)
         pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
 
         def replacer(match):
-            nonlocal applied
-            if applied >= 2:
+            if counter["count"] >= MAX_SYNONYMS_PER_RESUME:
                 return match.group(0)
 
-            applied += 1
+            counter["count"] += 1
             return f"{match.group(0)} ({alias})"
 
-        # Replace only first occurrence
         text, count = pattern.subn(replacer, text, count=1)
 
         if count > 0:
-            continue
+            break   # ✅ only 1 synonym per bullet
 
     return text
 
