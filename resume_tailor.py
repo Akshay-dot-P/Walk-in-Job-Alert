@@ -120,20 +120,43 @@ SYNONYM_MAP = {
 
 def apply_synonyms(text: str) -> str:
     """
-    Append one alias per matched term, max 2 expansions per bullet.
-    Keeps originals intact — only adds context aliases.
+    Append one alias per matched term (max 2 per text).
+    - Uses word boundaries to avoid partial matches
+    - Preserves original casing
+    - Prevents duplicate alias insertion
     """
+    if not text:
+        return text
+
     applied = 0
+
     for term, aliases in SYNONYM_MAP.items():
         if applied >= 2:
             break
-        if re.search(re.escape(term), text, re.IGNORECASE):
-            alias = aliases[0]
-            if alias.lower() not in text.lower():
-                text = re.sub(
-                    re.escape(term), f"{term} ({alias})", text, count=1, flags=re.IGNORECASE
-                )
-                applied += 1
+
+        alias = aliases[0]
+
+        # Skip if alias already present anywhere
+        if alias.lower() in text.lower():
+            continue
+
+        # Regex with word boundaries (safe matching)
+        pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+
+        def replacer(match):
+            nonlocal applied
+            if applied >= 2:
+                return match.group(0)
+
+            applied += 1
+            return f"{match.group(0)} ({alias})"
+
+        # Replace only first occurrence
+        text, count = pattern.subn(replacer, text, count=1)
+
+        if count > 0:
+            continue
+
     return text
 
 
