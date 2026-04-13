@@ -12,7 +12,11 @@ D. Feature 3: track_keyword_usage() — 2-3x coverage tracking
 E. Feature 4: dynamic_skills_augment() — JD keywords filtered via whitelist
 F. Feature 5: compute_metrics() → keyword_coverage, keyword_density, skills_count
 G. Feature 6: recruiter_simulate() → credibility, stuffing_suspicion, hireability
-H. Single-page: enforce_single_page() — trims least-relevant bullet if p2 overflows
+H. Single-page: enforce_single_page() — 4-tier relevancy-aware trimming
+   Tier 1: shorten long bullets (>220 chars) via LLM
+   Tier 2: remove least-relevant project bullet by JD keyword score
+   Tier 3: trim excess skills (SK_V5 → SK_V4)
+   Tier 4: shorten longest Amazon bullet (never remove)
 
 CONFLICT NOTES (Feature 2 only — all others conflict-free)
 Feature 2 had a partial conflict with "never fabricate" rule.
@@ -846,9 +850,14 @@ def generate_pdf(docx_bytes: bytes) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE H: Single-page enforcement
+# FEATURE H: Single-page enforcement — 4-tier relevancy-aware trimming
+#
+# Tier 1: Shorten long bullets (>220 chars) via LLM — non-destructive
+# Tier 2: Remove least-relevant project bullet by JD keyword score
+# Tier 3: Trim excess skills (SK_V5 → SK_V4)
+# Tier 4: Shorten longest Amazon bullet as last resort (never remove)
+#
 # Page 2 containing ONLY certifications is acceptable (certs are real content).
-# Page 2 containing skills/bullets/projects = trim iteratively.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _count_pdf_pages(pdf_bytes: bytes) -> int:
@@ -887,40 +896,174 @@ def _page2_certs_only(text: str) -> bool:
                                              "siem","technical skills","automation"]))
 
 
-def enforce_single_page(content: dict, job: dict) -> tuple[bytes, bytes, str]:
+def _score_bullet_relevancy(bullet_text: str, ranked_keywords: list) -> int:
     """
-    Generate DOCX+PDF. Trim least-relevant bullets iteratively if p2
-    has non-cert content. Trim order: P2_B3 → P1_B3 → P2_B2 → P1_B2.
+    Score a bullet's relevancy to the JD based on keyword overlap.
+    Returns count of ranked JD keywords found in the bullet (0–10).
+    Uses word-boundary regex — no LLM call.
     """
-    TRIM_ORDER = ["P2_B3","P1_B3","P2_B2","P1_B2"]
-    trim_log   = []
-    working    = dict(content)
+    if not bullet_text or not ranked_keywords:
+        return 0
+    score = 0
+    lower = bullet_text.lower()
+    for kw in ranked_keywords[:10]:
+        if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", lower, re.IGNORECASE):
+            score += 1
+    return score
 
-    for attempt in range(len(TRIM_ORDER)+1):
-        docx_bytes = fill_template(working)
-        pdf_bytes  = generate_pdf(docx_bytes)
-        pages      = _count_pdf_pages(pdf_bytes)
 
+def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
+    """
+    Use Groq to compress a bullet to ~target_chars while preserving
+    differentiators (EPSS, SPL syntax, MITRE TTPs, FIRST.org, SOAR).
+    Falls back to original text on failure.
+    """
+    if not bullet_text or len(bullet_text) <= target_chars:
+        return bullet_text
+    system = (
+        "You are a resume bullet editor. Shorten the bullet to under "
+        f"{target_chars} characters. PRESERVE: EPSS scoring, SPL query syntax, "
+        "MITRE TTP numbers (T1110/T1078/T1059), SOAR detail, FIRST.org mention. "
+        "Use 'and' not '&'. Return ONLY the shortened bullet, no quotes, no explanation."
+    )
+    user = f"Shorten this resume bullet to ~{target_chars} chars:\n{bullet_text}"
+    try:
+        result = _call_groq(system, user, GROQ_GEN_MODEL, max_tokens=250)
+        result = result.strip().strip('"')
+        if len(result) > 20:  # sanity check
+            logger.info("    Shortened %d→%d chars", len(bullet_text), len(result))
+            return result
+    except Exception as exc:
+        logger.warning("    Bullet shortening failed: %s", exc)
+    return bullet_text
+
+
+def _trim_skills_line(skills_value: str, max_items: int = 4) -> str:
+    """
+    Trim a comma-separated skills value to at most max_items.
+    Keeps the first max_items entries (most important ones listed first).
+    """
+    if not skills_value:
+        return skills_value
+    items = [x.strip() for x in skills_value.split(",") if x.strip()]
+    if len(items) <= max_items:
+        return skills_value
+    trimmed = ", ".join(items[:max_items])
+    logger.info("    Skills trimmed: %d→%d items", len(items), max_items)
+    return trimmed
+
+
+def _generate_and_check(working: dict) -> tuple[bytes, bytes, int]:
+    """Fill template, generate PDF, count pages. Returns (docx, pdf, pages)."""
+    docx_bytes = fill_template(working)
+    pdf_bytes  = generate_pdf(docx_bytes)
+    pages      = _count_pdf_pages(pdf_bytes)
+    return docx_bytes, pdf_bytes, pages
+
+
+def enforce_single_page(content: dict, job: dict,
+                        jd_keywords: dict | None = None) -> tuple[bytes, bytes, str]:
+    """
+    Generate DOCX+PDF. If page 2 contains non-cert content, apply 4-tier
+    relevancy-aware trimming to guarantee single-page output:
+
+    Tier 1: Shorten bullets > 220 chars via LLM (non-destructive)
+    Tier 2: Remove least-relevant project bullet (scored by JD keyword overlap)
+    Tier 3: Trim excess skills (SK_V5 → SK_V4)
+    Tier 4: Shorten longest Amazon bullet (never fully remove)
+    """
+    ranked = (jd_keywords or {}).get("ranked", [])
+    trim_log = []
+    working  = dict(content)
+
+    # ── Initial check ────────────────────────────────────────────────────
+    docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+
+    if pages <= 1:
+        return docx_bytes, pdf_bytes, ""
+
+    p2_text = _get_page2_text(pdf_bytes)
+    if _page2_certs_only(p2_text):
+        logger.info("  2 pages — page 2 is certifications only, acceptable")
+        return docx_bytes, pdf_bytes, "certs-p2-ok"
+
+    # ── Tier 1: Shorten long bullets (>220 chars) ────────────────────────
+    LONG_THRESHOLD = 220
+    all_bullet_keys = ["AMZ_B1","AMZ_B2","AMZ_B3",
+                       "P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
+    long_bullets = [(k, len(working.get(k,""))) for k in all_bullet_keys
+                    if len(working.get(k,"")) > LONG_THRESHOLD]
+    # Sort by length descending — shorten longest first
+    long_bullets.sort(key=lambda x: x[1], reverse=True)
+
+    if long_bullets:
+        logger.info("  Tier 1: %d bullets > %d chars — shortening", len(long_bullets), LONG_THRESHOLD)
+        for key, length in long_bullets:
+            working[key] = _shorten_bullet_llm(working[key])
+            trim_log.append(f"shortened {key} ({length}→{len(working[key])})")
+
+        docx_bytes, pdf_bytes, pages = _generate_and_check(working)
         if pages <= 1:
-            if trim_log: logger.info("  Single page achieved. Trimmed: %s", trim_log)
-            return docx_bytes, pdf_bytes, "; ".join(trim_log) if trim_log else ""
+            logger.info("  Single page achieved via Tier 1 (shortening). %s", trim_log)
+            return docx_bytes, pdf_bytes, "; ".join(trim_log)
 
-        p2_text = _get_page2_text(pdf_bytes)
+    # ── Tier 2: Remove least-relevant project bullets ────────────────────
+    PROJECT_BULLET_KEYS = ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
+    removable = [k for k in PROJECT_BULLET_KEYS
+                 if working.get(k,"").strip() and working[k].strip() != " "]
 
-        if _page2_certs_only(p2_text):
-            logger.info("  2 pages — page 2 is certifications only, acceptable")
-            return docx_bytes, pdf_bytes, "certs-p2-ok"
+    if removable:
+        logger.info("  Tier 2: scoring %d project bullets by JD relevancy", len(removable))
+        # Score each bullet; remove lowest-scoring first
+        scored = [(k, _score_bullet_relevancy(working[k], ranked)) for k in removable]
+        scored.sort(key=lambda x: x[1])  # ascending — least relevant first
 
-        if attempt >= len(TRIM_ORDER):
-            logger.warning("  Could not achieve single page — keeping as-is")
-            return docx_bytes, pdf_bytes, "overflow-unresolved"
+        for key, score in scored:
+            working[key] = " "
+            trim_log.append(f"removed {key} (score={score})")
+            logger.info("  Tier 2: removed %s (relevancy score=%d)", key, score)
 
-        key = TRIM_ORDER[attempt]
-        working[key] = " "   # blank the placeholder so template shows nothing
-        trim_log.append(f"removed {key}")
-        logger.info("  Page overflow — removed %s", key)
+            docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+            if pages <= 1:
+                logger.info("  Single page achieved via Tier 2. %s", trim_log)
+                return docx_bytes, pdf_bytes, "; ".join(trim_log)
 
-    return fill_template(working), generate_pdf(fill_template(working)), "; ".join(trim_log)
+    # ── Tier 3: Trim excess skills ───────────────────────────────────────
+    SKILL_TRIM_ORDER = ["SK_V5", "SK_V4", "SK_V1"]  # Automation → Systems → SOC Ops
+    logger.info("  Tier 3: trimming skills")
+    for sk_key in SKILL_TRIM_ORDER:
+        original = working.get(sk_key, "")
+        if original and len(original.split(",")) > 4:
+            working[sk_key] = _trim_skills_line(original, max_items=4)
+            trim_log.append(f"trimmed {sk_key}")
+
+            docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+            if pages <= 1:
+                logger.info("  Single page achieved via Tier 3 (skills). %s", trim_log)
+                return docx_bytes, pdf_bytes, "; ".join(trim_log)
+
+    # ── Tier 4: Shorten Amazon bullets (last resort, never remove) ───────
+    AMZ_KEYS = ["AMZ_B1", "AMZ_B2", "AMZ_B3"]
+    amz_bullets = [(k, len(working.get(k,""))) for k in AMZ_KEYS
+                   if working.get(k,"").strip() and working[k].strip() != " "]
+    amz_bullets.sort(key=lambda x: x[1], reverse=True)  # longest first
+
+    if amz_bullets:
+        logger.info("  Tier 4: shortening Amazon bullets (last resort)")
+        for key, length in amz_bullets:
+            if length > 120:  # only shorten if meaningfully long
+                working[key] = _shorten_bullet_llm(working[key], target_chars=120)
+                trim_log.append(f"shortened {key} ({length}→{len(working[key])})")
+
+                docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+                if pages <= 1:
+                    logger.info("  Single page achieved via Tier 4 (AMZ shorten). %s", trim_log)
+                    return docx_bytes, pdf_bytes, "; ".join(trim_log)
+
+    # ── Fallback: all tiers exhausted ────────────────────────────────────
+    logger.warning("  All 4 tiers exhausted — could not achieve single page")
+    docx_bytes, pdf_bytes, _ = _generate_and_check(working)
+    return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; overflow-unresolved"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1096,7 +1239,7 @@ def main():
 
             # FEATURE H: Single-page enforcement + PDF generation
             logger.info("  Generating DOCX+PDF (single-page enforcement)...")
-            docx_bytes, pdf_bytes, trim_log = enforce_single_page(content, job)
+            docx_bytes, pdf_bytes, trim_log = enforce_single_page(content, job, jd_keywords)
             if trim_log and trim_log not in ("certs-p2-ok",""):
                 val_note += f" | Trimmed:{trim_log}"
             logger.info("  DOCX: %d bytes  PDF: %d bytes", len(docx_bytes), len(pdf_bytes))
