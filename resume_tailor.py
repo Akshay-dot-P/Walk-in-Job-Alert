@@ -22,27 +22,6 @@ H. Single-page: enforce_single_page() — 5-tier STRICT single-page enforcement
    Tier 3: trim excess skills (SK_V5 → SK_V4 → SK_V1)
    Tier 4: shorten longest Amazon bullet (never remove)
 
-NEW ADDITIONS (incorporated below — each marked with # CHANGE: <label>)
-  I.  CANDIDATE_CORE + classify_role_similarity()
-      → classifies each JD as "similar" / "adjacent" / "different"
-         relative to the candidate's actual background
-  II. AMAZON_VARIANTS + DOMAIN_AMAZON_VARIANT
-      → domain-specific pre-framing of Amazon work experience bullets
-         (soc / vapt / grc / fraud_aml / default)
-  III.research_external_references()
-      → GitHub readme search + Reddit advice scrape, runs only for
-         "different" roles to give the LLM real-world calibration examples
-  IV. _validate_against_references()
-      → overclaim checker: compares generated bullets against external
-         references, flags high-risk claims before PDF is produced
-  V.  generate_content() extended
-      → accepts role_similarity, external_refs, agent_feedback params;
-         picks correct AMAZON_VARIANTS bullet set; injects tone instruction
-  VI. main() agent loop
-      → generate → validate → if ATS < 7, feed failure back and retry
-         (max 3 attempts); external refs fetched for "different" roles;
-         overclaim check run as a post-loop gate
-
 CONFLICT NOTES (Feature 2 only — all others conflict-free)
 Feature 2 had a partial conflict with "never fabricate" rule.
 Resolution: SYNONYM_MAP is hardcoded and manually verified against Akshay's
@@ -103,9 +82,13 @@ SCOPES = [
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FEATURE 2: SYNONYM / SEMANTIC EXPANSION MAP
-# (unchanged from original)
+#
+# SAFE: every entry is grounded in Akshay's actual project work.
+# apply_synonyms() appends aliases in parentheses — never replaces originals.
+# This is a static lookup — no LLM involved. Zero fabrication risk.
 # ─────────────────────────────────────────────────────────────────────────────
 SYNONYM_MAP = {
+    # SOC / Detection — grounded in soc_auto project
     "ioc enrichment":          ["threat intelligence"],
     "log analysis":            ["SIEM monitoring"],
     "alert triage":            ["incident triage"],
@@ -116,17 +99,25 @@ SYNONYM_MAP = {
     "soar":                    ["security orchestration and automation"],
     "sigma rules":             ["detection-as-code"],
     "mitre att&ck":            ["TTP mapping"],
+
+    # VAPT — grounded in vuln_scanner project
     "cvss severity":           ["vulnerability prioritisation"],
     "epss scoring":            ["exploit probability scoring"],
     "patch compliance":        ["remediation tracking"],
     "owasp top 10":            ["web application security"],
+
+    # Cloud/AWS — grounded in cloud project with boto3
     "iam":                     ["identity and access management"],
     "cloudtrail":              ["cloud audit logging"],
     "guardduty":               ["cloud threat detection"],
     "cloud misconfiguration":  ["cloud security posture management"],
+
+    # OSINT / Phishing — grounded in phishing_osint project
     "virustotal api":          ["threat intelligence feeds"],
     "osint enrichment":        ["open-source intelligence"],
     "typosquatting":           ["brand impersonation detection"],
+
+    # GRC / Audit — grounded in Amazon work experience
     "audit documentation":     ["audit trail"],
     "root cause analysis":     ["investigative analysis"],
     "compliance monitoring":   ["regulatory compliance"],
@@ -136,34 +127,58 @@ SYNONYM_MAP = {
 
 
 def apply_synonyms(text: str) -> str:
+    """
+    Append one alias per matched term (max 2 per text).
+    - Uses word boundaries to avoid partial matches
+    - Preserves original casing
+    - Prevents duplicate alias insertion
+    """
     if not text:
         return text
+
     applied = 0
+
     for term, aliases in SYNONYM_MAP.items():
         if applied >= 2:
             break
+
         alias = aliases[0]
+
+        # Skip if alias already present anywhere
         if alias.lower() in text.lower():
             continue
+
+        # Regex with word boundaries (safe matching)
         pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
+
         def replacer(match):
             nonlocal applied
             if applied >= 2:
                 return match.group(0)
+
             applied += 1
             return f"{match.group(0)} ({alias})"
+
+        # Replace only first occurrence
         text, count = pattern.subn(replacer, text, count=1)
+
         if count > 0:
             continue
+
     return text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE 1: KEYWORD EXTRACTION (unchanged)
+# FEATURE 1: KEYWORD EXTRACTION
 # ─────────────────────────────────────────────────────────────────────────────
 def extract_keywords(jd_text: str) -> dict:
+    """
+    Extract top 10-15 JD keywords structured by type.
+    Returns: {"tools": [...], "concepts": [...], "actions": [...], "ranked": [...]}
+    """
     if not jd_text or len(jd_text.strip()) < 30:
         return {"tools": [], "concepts": [], "actions": [], "ranked": []}
+
     system = "You are an ATS keyword analyst. Return ONLY valid JSON. No markdown."
     user = (
         f"Extract the top 10-15 most important keywords from this job description.\n"
@@ -185,116 +200,73 @@ def extract_keywords(jd_text: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHANGE I: ROLE SIMILARITY CLASSIFIER
-# New addition — classifies how closely the JD matches the candidate's
-# actual background. Drives tone, Amazon variant selection, and whether
-# external reference research is triggered.
-# Returns: "similar" | "adjacent" | "different"
-# ─────────────────────────────────────────────────────────────────────────────
-CANDIDATE_CORE = {
-    "similar": {
-        # Directly matches soc_auto + Amazon ops
-        "soc", "siem", "splunk", "alert triage", "log analysis",
-        "incident response", "mitre att&ck", "threat detection",
-        "ioc", "virustotal", "wireshark", "nmap", "sigma",
-        # Directly matches vuln_scanner
-        "vulnerability", "cvss", "epss", "nessus", "openvas",
-        "patch", "remediation", "owasp",
-        # Directly matches phishing_osint
-        "phishing", "osint", "domain analysis", "whois", "dns",
-        "threat intelligence", "typosquat",
-        # Amazon ops
-        "triage", "escalation", "root cause", "audit", "documentation",
-        "investigation", "case management",
-    },
-    "adjacent": {
-        # Can be reasonably extrapolated from existing work
-        "grc", "compliance", "risk", "iso 27001", "nist", "itgc",
-        "vendor risk", "control testing", "kyc", "aml",
-        "transaction monitoring", "fraud", "cloud security",
-        "aws", "iam", "cloudtrail", "guardduty", "devsecops",
-        "appsec", "network security", "firewall", "ids", "ips",
-    }
-}
-
-
-def classify_role_similarity(job: dict, jd_keywords: dict) -> str:
-    """
-    CHANGE I: New function.
-    Classifies JD against CANDIDATE_CORE to return similarity tier.
-    Used in generate_content() (tone), main() (external refs + agent loop).
-    """
-    jd_text = (
-        f"{job.get('job_title','')} {job.get('skills','')} "
-        f"{job.get('summary','')}".lower()
-    )
-    ranked = [k.lower() for k in jd_keywords.get("ranked", [])]
-    tools  = [k.lower() for k in jd_keywords.get("tools", [])]
-    all_jd_terms = set(ranked + tools + jd_text.split())
-
-    similar_hits  = sum(1 for term in CANDIDATE_CORE["similar"]
-                        if any(term in jd_term for jd_term in all_jd_terms))
-    adjacent_hits = sum(1 for term in CANDIDATE_CORE["adjacent"]
-                        if any(term in jd_term for jd_term in all_jd_terms))
-
-    logger.info(
-        "  Role similarity: similar_hits=%d adjacent_hits=%d",
-        similar_hits, adjacent_hits
-    )
-
-    if similar_hits >= 4:
-        return "similar"
-    elif similar_hits >= 2 or adjacent_hits >= 3:
-        return "adjacent"
-    else:
-        return "different"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FEATURE 3: KEYWORD INJECTION CONTROL (unchanged)
+# FEATURE 3: KEYWORD INJECTION CONTROL
 # ─────────────────────────────────────────────────────────────────────────────
 def track_keyword_usage(content: dict, ranked_keywords: list) -> dict:
+    """
+    Count keyword appearances across all bullets using SAFE matching.
+    - Uses word boundaries to avoid partial matches
+    - Case-insensitive matching
+    - Logs under (<1) and over (>3) usage
+    """
     bullet_keys = [
         "AMZ_B1","AMZ_B2","AMZ_B3",
         "P1_B1","P1_B2","P1_B3",
         "P2_B1","P2_B2","P2_B3"
     ]
+
+    # Combine all bullet text
     all_text = " ".join(content.get(k, "") for k in bullet_keys)
+
     usage = {}
+
     for kw in ranked_keywords[:10]:
+        # SAFE regex with word boundaries
         pattern = re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE)
         matches = pattern.findall(all_text)
         usage[kw] = len(matches)
-    under   = [k for k, c in usage.items() if c == 0]
-    over    = [k for k, c in usage.items() if c > 3]
+
+    # Analysis
+    under = [k for k, c in usage.items() if c == 0]
+    over  = [k for k, c in usage.items() if c > 3]
     present = sum(1 for c in usage.values() if c > 0)
+
     logger.info(
         "  Keyword coverage: %d/%d present | under=%s over=%s",
         present, len(usage), under[:3], over[:2]
     )
+
     return usage
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE 4: DYNAMIC SKILLS AUGMENTATION (unchanged)
+# FEATURE 4: DYNAMIC SKILLS AUGMENTATION
+# Candidate groundable whitelist — only these terms can be added from JD
 # ─────────────────────────────────────────────────────────────────────────────
 CANDIDATE_GROUNDABLE = {
+    # soc_auto project
     "splunk","spl","siem","sigma rules","soar","wireshark","nmap",
     "mitre att&ck","ttp","picerl","incident response","brute force detection",
     "lateral movement","privilege escalation","ioc","virustotal","telegram bot",
     "log analysis","alert triage","threat detection",
+    # vuln_scanner project
     "nessus","openvas","cve","cvss","epss","nvd","owasp","sqli",
     "patch management","remediation","bash scripting","cron","api",
+    # phishing_osint project
     "phishing","osint","abuseipdb","urlscan","whois","dns","typosquatting",
     "threat intelligence","ioc enrichment","domain analysis",
+    # cloud project (boto3 + AWS free tier)
     "iam","cloudtrail","guardduty","boto3","aws","s3","cloud security",
     "cloud misconfiguration","least privilege","cspm",
     "cloud security posture","cloud access controls","zero trust",
+    # Amazon work experience
     "root cause analysis","audit documentation","escalation","triage",
     "policy enforcement","investigation","chain of custody",
+    # GRC concepts (studied)
     "nist csf","iso 27001","pci-dss","gdpr","sox","itgc",
     "compliance monitoring","risk assessment","vendor risk",
     "transaction monitoring","aml","kyc","sanctions screening",
+    # Foundational
     "tcp/ip","dns","http","firewall","ids","ips","endpoint security",
     "windows internals","linux","active directory","python","powershell",
     "cyber kill chain","osint enrichment","pcap",
@@ -302,6 +274,10 @@ CANDIDATE_GROUNDABLE = {
 
 
 def dynamic_skills_augment(profile_skills: dict, jd_keywords: dict) -> dict:
+    """
+    Append safe JD keywords to the Automation skill slot (SK_V5).
+    Only adds terms present in CANDIDATE_GROUNDABLE and not already in skills.
+    """
     ranked = jd_keywords.get("ranked", []) + jd_keywords.get("tools", [])
     if not ranked:
         return profile_skills
@@ -313,7 +289,7 @@ def dynamic_skills_augment(profile_skills: dict, jd_keywords: dict) -> dict:
             if not any(kl in v.lower() for v in skills.values()):
                 safe.append(kw)
     if safe:
-        existing  = skills.get("SK_V5","")
+        existing = skills.get("SK_V5","")
         additions = ", ".join(safe[:3])
         skills["SK_V5"] = f"{existing}, {additions}" if existing else additions
         logger.info("  Dynamic skills +%s", additions)
@@ -321,27 +297,31 @@ def dynamic_skills_augment(profile_skills: dict, jd_keywords: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE 5: METRICS COLLECTION (unchanged)
+# FEATURE 5: METRICS COLLECTION
 # ─────────────────────────────────────────────────────────────────────────────
 def compute_metrics(content: dict, jd_keywords: dict, ats_score) -> dict:
-    ranked   = jd_keywords.get("ranked", [])
-    bullets  = [content.get(k,"") for k in
-                ["AMZ_B1","AMZ_B2","AMZ_B3","P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]]
+    ranked  = jd_keywords.get("ranked", [])
+    bullets = [content.get(k,"") for k in
+               ["AMZ_B1","AMZ_B2","AMZ_B3","P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]]
     all_text = " ".join(bullets).lower()
+
     coverage = 0
     if ranked:
         hits = sum(
-            1 for kw in ranked[:10]
-            if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", all_text, re.IGNORECASE)
-        )
-        coverage = round(hits / min(len(ranked), 10) * 100)
+           1 for kw in ranked[:10]
+           if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", all_text, re.IGNORECASE)
+        )        
+    coverage = round(hits / min(len(ranked),10) * 100)
+
     nonempty = [b for b in bullets if b.strip()]
     density  = 0.0
     if nonempty and ranked:
-        total   = sum(sum(1 for kw in ranked[:10] if kw.lower() in b.lower()) for b in nonempty)
+        total = sum(sum(1 for kw in ranked[:10] if kw.lower() in b.lower()) for b in nonempty)
         density = round(total / len(nonempty), 2)
+
     skill_vals   = [content.get(f"SK_V{i}","") for i in range(1,6)]
     skills_count = sum(len([x for x in v.split(",") if x.strip()]) for v in skill_vals)
+
     return {
         "ats_score":          ats_score,
         "keyword_coverage":   f"{coverage}%",
@@ -351,7 +331,7 @@ def compute_metrics(content: dict, jd_keywords: dict, ats_score) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE 6: RECRUITER SIMULATION (unchanged)
+# FEATURE 6: RECRUITER SIMULATION
 # ─────────────────────────────────────────────────────────────────────────────
 def recruiter_simulate(content: dict, job: dict) -> dict:
     bullets = "\n".join(f"• {content.get(k,'')}" for k in
@@ -379,7 +359,7 @@ def recruiter_simulate(content: dict, job: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SKILL PROFILES (unchanged)
+# SKILL PROFILES — dynamic labels AND values (10 keys: SK_L1-5 + SK_V1-5)
 # ─────────────────────────────────────────────────────────────────────────────
 SKILL_PROFILES = {
     "soc_security": {
@@ -427,7 +407,8 @@ def compute_skills(domain: str) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3 PROJECTS (unchanged)
+# 3 PROJECTS — Bug fix A: Fraud-AML → vuln_scanner not soc_auto
+# Bug fix C: full canonical bullets, soft char limit
 # ─────────────────────────────────────────────────────────────────────────────
 PROJECTS = {
     "soc_auto": {
@@ -494,13 +475,14 @@ PROJECTS = {
     },
 }
 
+# BUG FIX A: Fraud-AML → (phishing_osint, vuln_scanner) not soc_auto
 DOMAIN_TO_PROJECTS = {
     "SOC":        ("soc_auto",       "phishing_osint"),
     "VAPT":       ("vuln_scanner",   "soc_auto"),
     "AppSec":     ("vuln_scanner",   "soc_auto"),
     "GRC":        ("phishing_osint", "vuln_scanner"),
     "Risk":       ("phishing_osint", "vuln_scanner"),
-    "Fraud-AML":  ("phishing_osint", "vuln_scanner"),
+    "Fraud-AML":  ("phishing_osint", "vuln_scanner"),   # FIXED
     "CloudSec":   ("soc_auto",       "vuln_scanner"),
     "IAM":        ("soc_auto",       "phishing_osint"),
     "Forensics":  ("soc_auto",       "phishing_osint"),
@@ -509,7 +491,12 @@ DOMAIN_TO_PROJECTS = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LAYER 2: CONCEPT SWAPPABLE (unchanged)
+# LAYER 2: CONCEPT SWAPPABLE — deterministic domain phrases for LLM prompt
+#
+# Each phrase describes something the project ACTUALLY does, framed for
+# a specific domain. Regex patterns match JD text; matched phrases go
+# straight into the Groq prompt as "weave 1-2 of these naturally."
+# Zero fabrication — only reframing of real capabilities.
 # ─────────────────────────────────────────────────────────────────────────────
 CONCEPT_SWAPPABLE = {
     "soc_auto": {
@@ -573,7 +560,11 @@ CONCEPT_SWAPPABLE = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LAYER 3: BULLET VARIANTS (unchanged)
+# LAYER 3: BULLET VARIANTS — pre-framed alternate bullet sets per domain
+#
+# Each variant rewrites the project's 3 bullets for a specific domain.
+# The LLM receives already-framed bullets instead of guessing from JD context.
+# ALL content is grounded — same project work, different framing.
 # ─────────────────────────────────────────────────────────────────────────────
 BULLET_VARIANTS = {
     "soc_auto": {
@@ -629,6 +620,8 @@ BULLET_VARIANTS = {
     },
 }
 
+# Maps domain → {project_key: variant_name}
+# Missing project_key or None = use default bullets
 DOMAIN_BULLET_VARIANT = {
     "SOC":       {},
     "VAPT":      {},
@@ -643,9 +636,6 @@ DOMAIN_BULLET_VARIANT = {
     "General":   {},
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# AMAZON BASE (kept as fallback)
-# ─────────────────────────────────────────────────────────────────────────────
 AMAZON_BASE = [
     "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, mirroring the structured alert triage and escalation workflow used in SOC Tier 1 analyst roles.",
     "Performed root cause analysis on seller claims to identify policy violations and anomalous patterns; escalated findings to senior reviewers, demonstrating investigative instincts central to SOC and fraud analyst operations.",
@@ -653,87 +643,7 @@ AMAZON_BASE = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHANGE II: AMAZON BULLET VARIANTS
-# New addition — replaces the single AMAZON_BASE list with domain-specific
-# pre-framings. The LLM receives bullets already pointed in the right
-# direction before it rewrites them, instead of starting from generic text.
-#
-# Mapping: DOMAIN_AMAZON_VARIANT selects which variant to use per domain.
-# All content is grounded — same Amazon ops role, different vocabulary.
-# ─────────────────────────────────────────────────────────────────────────────
-AMAZON_VARIANTS = {
-    "default": AMAZON_BASE,   # fallback — unchanged original bullets
-
-    "soc": [
-        "Triaged 50+ weekly seller investigation cases using severity-based "
-        "classification — applying structured alert triage logic to distinguish "
-        "policy violations from legitimate claims and escalate high-risk cases "
-        "to senior reviewers.",
-        "Performed structured root cause analysis on anomalous seller claim patterns; "
-        "documented investigation findings with supporting evidence and escalated "
-        "systemic issues — directly replicating L1 SOC incident investigation "
-        "and log analysis workflows.",
-        "Maintained audit-ready case records capturing investigation steps, policy "
-        "decisions, and corrective actions — establishing the evidence chain-of-custody "
-        "and documentation discipline central to security incident reporting.",
-    ],
-
-    "vapt": [
-        "Triaged 50+ weekly seller cases by risk severity and policy exploitability "
-        "— applying risk-based prioritisation logic analogous to CVSS-driven "
-        "vulnerability triage and patch management workflows.",
-        "Performed structured root cause analysis on recurring policy violations; "
-        "identified systemic weaknesses and documented remediation steps — "
-        "replicating vulnerability write-up and remediation-tracking discipline "
-        "used in VAPT reporting.",
-        "Maintained audit-ready case documentation with evidence, control decisions, "
-        "and corrective actions — establishing the SLA-adherence and remediation "
-        "follow-through habits central to vulnerability management operations.",
-    ],
-
-    "grc": [
-        "Triaged 50+ weekly reimbursement cases against policy eligibility criteria "
-        "— applying structured control-testing methodology to identify non-compliant "
-        "claims and document findings for senior review.",
-        "Performed root cause analysis on seller policy violations; escalated systemic "
-        "control gaps to process owners with documented evidence — replicating audit "
-        "finding, exception reporting, and remediation workflows central to IT GRC "
-        "and ITGC operations.",
-        "Maintained audit-ready case records with investigation rationale, control "
-        "decisions, and corrective outcomes — establishing the evidence trail discipline "
-        "required for compliance monitoring and regulatory reporting.",
-    ],
-
-    "fraud_aml": [
-        "Triaged 50+ weekly seller reimbursement cases by risk profile and policy "
-        "eligibility — applying transaction-pattern analysis to distinguish legitimate "
-        "claims from anomalous activity warranting escalation.",
-        "Performed root cause analysis on suspicious seller claim patterns; documented "
-        "red-flag indicators and escalated high-risk cases — directly replicating STR "
-        "documentation and AML investigation escalation workflows.",
-        "Maintained case audit records with investigation rationale, risk decisions, "
-        "and outcomes — establishing the KYC/CDD evidence-chain discipline required "
-        "for financial crime compliance and SAR reporting.",
-    ],
-}
-
-# CHANGE II (continued): domain → variant key lookup
-DOMAIN_AMAZON_VARIANT = {
-    "SOC":       "soc",
-    "VAPT":      "vapt",
-    "AppSec":    "vapt",
-    "Forensics": "soc",
-    "CloudSec":  "soc",
-    "IAM":       "soc",
-    "Network":   "soc",
-    "GRC":       "grc",
-    "Risk":      "grc",
-    "Fraud-AML": "fraud_aml",
-    "General":   "default",
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Company intelligence (unchanged)
+# Company intelligence
 # ─────────────────────────────────────────────────────────────────────────────
 COMPANY_INTEL = {
     "wipro":         {"framing":"24x7 SOC shifts, SLA discipline, shift documentation.",                       "keywords":["24x7 SOC","SLA adherence","shift documentation"]},
@@ -781,9 +691,15 @@ def select_tools(project_key: str, jd_text: str, max_tools: int = 5) -> list[str
 
 
 def select_concepts(project_key: str, jd_text: str, max_concepts: int = 3) -> list[str]:
+    """
+    Scan JD text for domain patterns and return grounded concept phrases.
+    These go into the LLM prompt as domain-specific framing signals.
+    Every phrase describes something the project actually does — only the
+    framing changes. Uses CONCEPT_SWAPPABLE (regex → phrases).
+    """
     concept_map = CONCEPT_SWAPPABLE.get(project_key, {})
-    jd_lower    = jd_text.lower()
-    concepts    = []
+    jd_lower = jd_text.lower()
+    concepts = []
     for pattern, phrases in concept_map.items():
         if re.search(pattern, jd_lower):
             for phrase in phrases:
@@ -793,6 +709,10 @@ def select_concepts(project_key: str, jd_text: str, max_concepts: int = 3) -> li
 
 
 def get_project_bullets(project_key: str, domain: str) -> list[str]:
+    """
+    Get domain-specific variant bullets for a project, or fall back to defaults.
+    Uses DOMAIN_BULLET_VARIANT mapping + BULLET_VARIANTS data.
+    """
     variant_name = DOMAIN_BULLET_VARIANT.get(domain, {}).get(project_key)
     if variant_name:
         variants = BULLET_VARIANTS.get(project_key, {})
@@ -800,10 +720,7 @@ def get_project_bullets(project_key: str, domain: str) -> list[str]:
             logger.debug("  Bullet variant: %s → %s", project_key, variant_name)
             return variants[variant_name]
     return PROJECTS[project_key]["bullets"]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Company scraping / GitHub research (unchanged)
+# Company scraping / GitHub research
 # ─────────────────────────────────────────────────────────────────────────────
 _HDRS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36"}
 
@@ -859,126 +776,7 @@ def research_github_projects(domain: str, job_title: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHANGE III: EXTERNAL REFERENCE RESEARCH
-# New addition — only called when role_similarity == "different".
-# Searches GitHub for real entry-level resumes and Reddit for pivot advice.
-# Results injected into generate_content() prompt as calibration context.
-# Prevents the LLM from overclaiming by showing what real candidates wrote.
-# ─────────────────────────────────────────────────────────────────────────────
-def research_external_references(job: dict, domain: str) -> dict:
-    """
-    CHANGE III: New function.
-    Fetches real resume examples (GitHub) and community pivot advice (Reddit).
-    Called in main() only when classify_role_similarity() returns "different".
-    Returns dict with keys: github_resumes, reddit_advice, combined.
-    """
-    results = {"github_resumes": "", "reddit_advice": "", "combined": ""}
-
-    # ── GitHub resume search ──────────────────────────────────────────────
-    title_slug = job.get("job_title", domain).replace(" ", "+")
-    gh_queries = [
-        f"resume {title_slug} entry+level fresher in:readme",
-        f"cybersecurity resume pivot {domain} 0-2 years in:readme",
-    ]
-    gh_results = []
-    headers = {"Accept": "application/vnd.github+json"}
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
-
-    for query in gh_queries[:2]:
-        try:
-            encoded = requests.utils.quote(query)
-            url = (f"https://api.github.com/search/repositories"
-                   f"?q={encoded}&sort=updated&per_page=4")
-            resp = requests.get(url, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                continue
-            items = resp.json().get("items", [])
-            for item in items[:3]:
-                readme_url = (
-                    f"https://raw.githubusercontent.com/"
-                    f"{item['full_name']}/{item.get('default_branch','main')}/README.md"
-                )
-                try:
-                    r = requests.get(readme_url, headers=_HDRS, timeout=8)
-                    if r.status_code == 200 and len(r.text) > 100:
-                        lines = [
-                            ln.strip() for ln in r.text.splitlines()
-                            if ln.strip().startswith(("-", "*", "•"))
-                               and len(ln.strip()) > 30
-                        ]
-                        if lines:
-                            excerpt = "\n".join(lines[:5])
-                            gh_results.append(f"[{item['full_name']}]\n{excerpt}")
-                except Exception:
-                    continue
-        except Exception as exc:
-            logger.debug("GitHub resume search failed: %s", exc)
-
-    results["github_resumes"] = "\n\n".join(gh_results[:3])
-
-    # ── Reddit advice search ──────────────────────────────────────────────
-    reddit_queries = [
-        f'site:reddit.com/r/cybersecurity "{job.get("job_title","")}" resume fresher',
-        f'site:reddit.com/r/cscareerquestions cybersecurity "{domain}" pivot resume',
-    ]
-    reddit_results = []
-    for query in reddit_queries[:2]:
-        try:
-            encoded = requests.utils.quote(query)
-            resp = requests.get(
-                f"https://html.duckduckgo.com/html/?q={encoded}",
-                headers=_HDRS, timeout=8
-            )
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for a in soup.select("a.result__a")[:3]:
-                href = a.get("href", "")
-                if "reddit.com" not in href:
-                    continue
-                try:
-                    pg = requests.get(href, headers=_HDRS, timeout=8)
-                    s2 = BeautifulSoup(pg.text, "html.parser")
-                    title_tag = s2.find("h1")
-                    title_txt = title_tag.get_text(" ", strip=True) if title_tag else ""
-                    comments  = s2.find_all("div", class_=re.compile(r"comment|usertext"))
-                    comment_text = " ".join(
-                        c.get_text(" ", strip=True)[:200] for c in comments[:4]
-                    )
-                    combined = f"{title_txt}\n{comment_text}".strip()
-                    if len(combined) > 80:
-                        reddit_results.append(combined[:500])
-                        break
-                except Exception:
-                    continue
-        except Exception as exc:
-            logger.debug("Reddit search failed: %s", exc)
-
-    results["reddit_advice"] = "\n\n---\n\n".join(reddit_results[:2])
-
-    # ── Merge for prompt injection ────────────────────────────────────────
-    parts = []
-    if results["github_resumes"]:
-        parts.append(
-            "REAL RESUME EXAMPLES (entry-level candidates in this role):\n"
-            + results["github_resumes"]
-        )
-    if results["reddit_advice"]:
-        parts.append(
-            "COMMUNITY ADVICE (what worked for people pivoting into this role):\n"
-            + results["reddit_advice"]
-        )
-    results["combined"] = "\n\n".join(parts)
-
-    logger.info(
-        "  External refs: github=%d chars reddit=%d chars",
-        len(results["github_resumes"]),
-        len(results["reddit_advice"])
-    )
-    return results
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# JSON repair + Groq (unchanged)
+# JSON repair + Groq
 # ─────────────────────────────────────────────────────────────────────────────
 def _repair_json(raw: str) -> str:
     raw = re.sub(r"^```(?:json)?\s*","", raw.strip())
@@ -1010,29 +808,14 @@ def _call_groq(system: str, user: str, model: str, max_tokens: int = 2500, retri
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHANGE V: RESUME CONTENT GENERATION — extended signature
-# Added params: role_similarity, external_refs, agent_feedback
-#   role_similarity → selects AMAZON_VARIANTS bullet set + sets tone instruction
-#   external_refs   → injected into prompt for "different" roles only
-#   agent_feedback  → injected when retrying after a low ATS score
-# All other logic (co_ctx, kw_hint, diff_instruction, synonyms) unchanged.
+# Resume content generation
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_content(job: dict, p1_key: str, p2_key: str,
                      intel: dict | None, scraped_ctx: str,
                      p1_tools: list, p2_tools: list,
-                     jd_keywords: dict,
-                     role_similarity: str = "similar",   # CHANGE V: new param
-                     external_refs: str = "",             # CHANGE V: new param
-                     agent_feedback: dict | None = None   # CHANGE V: new param
-                     ) -> dict:
+                     jd_keywords: dict) -> dict:
     p1 = PROJECTS[p1_key]
     p2 = PROJECTS[p2_key]
-
-    # CHANGE V: Pick domain-specific Amazon bullets based on role domain
-    # Previously hardcoded to AMAZON_BASE for all domains.
-    variant_key    = DOMAIN_AMAZON_VARIANT.get(job["domain"], "default")
-    amazon_bullets = AMAZON_VARIANTS[variant_key]
-    logger.info("  Amazon variant: %s", variant_key)
 
     co_ctx = ""
     if intel:
@@ -1040,62 +823,14 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
     elif scraped_ctx:
         co_ctx = f"\nCOMPANY CONTEXT: {scraped_ctx[:400]}\n"
 
+    # FEATURE 3: keyword injection hint
     ranked  = jd_keywords.get("ranked", [])
     kw_hint = ""
     if ranked:
         kw_hint = (f"\nKEYWORD INJECTION: Weave these top JD keywords naturally across bullets "
                    f"(target 2-3x total, max 2 per bullet): {', '.join(ranked[:8])}\n")
 
-    # CHANGE V: Tone instruction — 3 levels based on role similarity
-    # "similar"  → confident, technically precise, reuse and reword
-    # "adjacent" → reframe for transferable skills, don't overclaim
-    # "different" → basic tone, transferable process skills only, no fabrication
-    if role_similarity == "similar":
-        tone_instruction = (
-            "TONE: The candidate's background directly matches this role. "
-            "Reuse relevant bullets with targeted keyword modifications. "
-            "Language can be confident and technically precise."
-        )
-    elif role_similarity == "adjacent":
-        tone_instruction = (
-            "TONE: The candidate's background partially matches this role. "
-            "Reframe existing bullets to emphasise transferable skills. "
-            "Keep technical claims grounded — don't overclaim depth in areas "
-            "only studied, not practiced."
-        )
-    else:  # "different"
-        tone_instruction = (
-            "TONE: This role is different from the candidate's direct experience. "
-            "Keep language professional but slightly basic for skills not strongly "
-            "represented. Avoid highly technical claims unless directly supported "
-            "by the projects listed. Focus on transferable process skills "
-            "(triage, documentation, escalation, analysis). "
-            "Do NOT fabricate tools or experience not in the project list."
-        )
-
-    # CHANGE V: External reference context — only injected for "different" roles
-    ext_ref_section = ""
-    if external_refs and role_similarity == "different":
-        ext_ref_section = (
-            f"\nEXTERNAL REFERENCE (real entry-level resumes and community advice "
-            f"for this role — use as calibration only, do not copy):\n"
-            f"{external_refs[:600]}\n"
-            "Use these references to calibrate complexity and claims. "
-            "Only include elements that are genuinely supported by this "
-            "candidate's projects and Amazon experience.\n"
-        )
-
-    # CHANGE V: Agent feedback — injected when retrying after ATS score < 7
-    feedback_hint = ""
-    if agent_feedback:
-        feedback_hint = (
-            f"\nPREVIOUS ATTEMPT FEEDBACK (attempt {agent_feedback['attempt']}/3):\n"
-            f"  ATS score was: {agent_feedback['ats_score']}/10\n"
-            f"  Missing keywords: {agent_feedback['missing_keywords']}\n"
-            f"  Specific fix needed: {agent_feedback['improvements']}\n"
-            "Correct these issues in this attempt. Focus on missing keywords first.\n"
-        )
-
+    # BUG FIX B: 'and' not '&'
     system = (
         "You are a senior cybersecurity resume writer for the Indian job market. "
         "Bullets must be factual — never fabricate tools or experience. "
@@ -1104,6 +839,9 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
         "No markdown fences. No comments. No trailing commas."
     )
 
+    # BUG FIX C: soft char limit — keep differentiators
+    # Build project-specific differentiator preservation list
+    # Only include TTPs/syntax that belong to the actually selected projects
     _PROJ_DIFFERENTIATORS = {
         "soc_auto":       ["SPL query syntax (index=* failed | stats)",
                            "MITRE TTP numbers (T1110/T1078/T1059)",
@@ -1129,24 +867,20 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
     else:
         diff_instruction = ""
 
-    # CHANGE V: amazon_bullets now comes from AMAZON_VARIANTS[variant_key]
-    # instead of hardcoded AMAZON_BASE. tone_instruction, ext_ref_section,
-    # and feedback_hint are new injections in the user prompt.
     user = f"""JOB:
   Title:   {job['job_title']}
   Company: {job['company']}
   Domain:  {job['domain']}
   Summary: {job['summary']}
   Skills:  {job['skills']}
-{co_ctx}{kw_hint}{ext_ref_section}{feedback_hint}
-{tone_instruction}
+{co_ctx}{kw_hint}
 SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
 {diff_instruction}
 Return JSON with EXACTLY 13 keys:
 {{
-  "AMZ_B1": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT say 'mirroring SOC' or 'similar to SOC' — let the skills speak for themselves: {amazon_bullets[0]}",
-  "AMZ_B2": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {amazon_bullets[1]}",
-  "AMZ_B3": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {amazon_bullets[2]}",
+  "AMZ_B1": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT say 'mirroring SOC' or 'similar to SOC' — let the skills speak for themselves: {AMAZON_BASE[0]}",
+  "AMZ_B2": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[1]}",
+  "AMZ_B3": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[2]}",
   "P1_TITLE": "{p1['title']}",
   "P1_TECH":  "{', '.join(p1_tools)}",
   "P1_B1": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][0]}",
@@ -1180,9 +914,11 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | each project
     if missing:
         raise ValueError(f"LLM missing keys: {missing}")
 
+    # Merge skill profile + dynamic augmentation (FEATURE 4)
     base_skills = compute_skills(job["domain"])
     content.update(dynamic_skills_augment(base_skills, jd_keywords))
 
+    # FEATURE 2: Apply synonym expansion to project bullets
     for k in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
         if content.get(k):
             content[k] = apply_synonyms(content[k])
@@ -1191,14 +927,14 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | each project
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Validation (unchanged)
+# Validation
 # ─────────────────────────────────────────────────────────────────────────────
 def _normalize_validation_output(data: dict) -> dict:
     return {
-        "ats_score":        str(data.get("ats_score", "N/A")),
+        "ats_score": str(data.get("ats_score", "N/A")),
         "missing_keywords": str(data.get("missing_keywords", "")),
-        "improvements":     str(data.get("improvements", "")),
-        "github_insight":   str(data.get("github_insight", "")),
+        "improvements": str(data.get("improvements", "")),
+        "github_insight": str(data.get("github_insight", "")),
     }
 
 
@@ -1223,80 +959,40 @@ def validate_resume(content: dict, job: dict, github_notes: str, mode: str) -> d
             raw  = _call_groq("Return only valid JSON, no markdown.", prompt, GROQ_VAL_MODEL, max_tokens=150)
             data = json.loads(_repair_json(raw))
             data = _normalize_validation_output(data)
-            logger.info("  ATS=%s missing=%s",
-                        data.get("ats_score"), str(data.get("missing_keywords",""))[:50])
+
+            logger.info(
+                "  ATS=%s missing=%s",
+                data.get("ats_score"),
+                str(data.get("missing_keywords",""))[:50]
+            )
             return data
+
         except Exception as exc:
             logger.warning("  Validation failed: %s | raw=%s", exc, raw[:200] if 'raw' in locals() else "")
             return EMPTY
 
     gh_sec = (f"\nSimilar GitHub projects:\n{github_notes[:500]}\n" if github_notes else "")
+
     prompt = (f"Job: {job.get('job_title','')} | Domain: {job.get('domain','')}\n"
               f"JD: {job.get('skills','')[:250]}\nBullets: {bullets[:600]}\n{gh_sec}"
               "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 8>\","
               "\"improvements\":\"<2 fixes>\",\"github_insight\":\"<1 thing>\"}")
+
     try:
         raw  = _call_groq("Strict ATS reviewer. Return only valid JSON.", prompt, GROQ_VAL_MODEL, max_tokens=300)
         data = json.loads(_repair_json(raw))
         data = _normalize_validation_output(data)
+
         logger.info("  ATS=%s", data.get("ats_score"))
         return data
+
     except Exception as exc:
         logger.warning("  Validation failed: %s | raw=%s", exc, raw[:200] if 'raw' in locals() else "")
         return EMPTY
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHANGE IV: OVERCLAIM VALIDATOR
-# New addition — runs only for "different" roles after the agent loop.
-# Compares generated bullets against external reference examples and flags
-# claims that look overclaimed for a 0-2yr non-security candidate.
-# Result appended to val_note in the sheet so it's visible.
-# ─────────────────────────────────────────────────────────────────────────────
-def _validate_against_references(content: dict, external_refs: str, job: dict) -> dict:
-    """
-    CHANGE IV: New function.
-    Cross-checks generated bullets against real external reference examples.
-    Called in main() only when role_similarity == "different" and
-    VALIDATION_MODE != "lenient". Adds 1 Groq call for "different" roles only.
-    Returns: {"overclaim_risk": "low"|"medium"|"high", "flagged_claims": str}
-    """
-    bullets = "\n".join(
-        f"• {content.get(k,'')}"
-        for k in ["AMZ_B1","AMZ_B2","AMZ_B3",
-                  "P1_B1","P1_B2","P1_B3",
-                  "P2_B1","P2_B2","P2_B3"]
-        if content.get(k,"").strip()
-    )
-    system = (
-        "You are a cynical India cybersecurity hiring manager reviewing a resume "
-        "from a candidate with 1.5 years Amazon operations experience and no "
-        "professional security experience. Return ONLY valid JSON."
-    )
-    user = (
-        f"Role: {job.get('job_title','')} — this is a DIFFERENT domain from the "
-        f"candidate's background.\n\n"
-        f"Generated resume bullets:\n{bullets[:700]}\n\n"
-        f"Reference examples from real entry-level candidates:\n"
-        f"{external_refs[:400]}\n\n"
-        "Compare generated bullets against reference examples. Flag any bullets "
-        "that seem overclaimed for a 0-2yr candidate with no professional "
-        "security experience.\n"
-        '{"overclaim_risk":"low|medium|high",'
-        '"flagged_claims":"<specific claims that seem overclaimed, max 150 chars>"}'
-    )
-    try:
-        raw  = _call_groq(system, user, GROQ_VAL_MODEL, max_tokens=150)
-        data = json.loads(_repair_json(raw))
-        logger.info("  Overclaim check: risk=%s", data.get("overclaim_risk","unknown"))
-        return data
-    except Exception as exc:
-        logger.warning("  Overclaim check failed: %s", exc)
-        return {"overclaim_risk": "low", "flagged_claims": ""}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DOCX fill (unchanged)
+# DOCX fill
 # ─────────────────────────────────────────────────────────────────────────────
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -1339,14 +1035,14 @@ def fill_template(content: dict) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PDF generation (unchanged)
+# PDF generation
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_pdf(docx_bytes: bytes) -> bytes:
     with tempfile.TemporaryDirectory() as tmpdir:
         docx_path = os.path.join(tmpdir, "resume.docx")
         with open(docx_path,"wb") as f: f.write(docx_bytes)
         result = subprocess.run(
-            ["libreoffice","--headless","--convert-to","pdf:writer_pdf_Export","--outdir",tmpdir,docx_path],
+            ["libreoffice", "--headless", "--convert-to", "pdf:writer_pdf_Export", "--outdir", tmpdir, docx_path],
             capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             raise RuntimeError(f"LibreOffice: {result.stderr[:200]}")
@@ -1357,18 +1053,32 @@ def generate_pdf(docx_bytes: bytes) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE H: Single-page enforcement (unchanged)
+# FEATURE H: Single-page enforcement — 5-tier relevancy-aware trimming
+#
+# Tier 0: Reduce paragraph spacing in DOCX (non-destructive formatting)
+# Tier 1: Shorten long bullets (>200 chars) via LLM — non-destructive
+# Tier 2: Remove least-relevant project bullet by JD keyword score
+# Tier 3: Trim excess skills (SK_V5 → SK_V4 → SK_V1)
+# Tier 4: Shorten longest Amazon bullet (never remove)
+#
+# STRICT: Always enforces single page. No exceptions for certs on page 2.
 # ─────────────────────────────────────────────────────────────────────────────
+
 def _count_pdf_pages(pdf_bytes: bytes) -> int:
     try:
         import pikepdf
         return len(pikepdf.open(io.BytesIO(pdf_bytes)).pages)
     except Exception as e:
         logger.warning("Page count failed: %s", e)
-        return 999
+        return 999   # force trimming instead of skipping
 
 
 def _score_bullet_relevancy(bullet_text: str, ranked_keywords: list) -> int:
+    """
+    Score a bullet's relevancy to the JD based on keyword overlap.
+    Returns count of ranked JD keywords found in the bullet (0–10).
+    Uses word-boundary regex — no LLM call.
+    """
     if not bullet_text or not ranked_keywords:
         return 0
     score = 0
@@ -1380,6 +1090,11 @@ def _score_bullet_relevancy(bullet_text: str, ranked_keywords: list) -> int:
 
 
 def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
+    """
+    Use Groq to compress a bullet to ~target_chars while preserving
+    differentiators (EPSS, SPL syntax, MITRE TTPs, FIRST.org, SOAR).
+    Falls back to original text on failure.
+    """
     if not bullet_text or len(bullet_text) <= target_chars:
         return bullet_text
     system = (
@@ -1392,7 +1107,7 @@ def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
     try:
         result = _call_groq(system, user, GROQ_GEN_MODEL, max_tokens=250)
         result = result.strip().strip('"')
-        if len(result) > 20:
+        if len(result) > 20:  # sanity check
             logger.info("    Shortened %d→%d chars", len(bullet_text), len(result))
             return result
     except Exception as exc:
@@ -1401,6 +1116,10 @@ def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
 
 
 def _trim_skills_line(skills_value: str, max_items: int = 4) -> str:
+    """
+    Trim a comma-separated skills value to at most max_items.
+    Keeps the first max_items entries (most important ones listed first).
+    """
     if not skills_value:
         return skills_value
     items = [x.strip() for x in skills_value.split(",") if x.strip()]
@@ -1412,19 +1131,27 @@ def _trim_skills_line(skills_value: str, max_items: int = 4) -> str:
 
 
 def _reduce_paragraph_spacing(docx_bytes: bytes) -> bytes:
+    """
+    Reduce paragraph before/after spacing in the DOCX to squeeze content.
+    This is non-destructive — no content is removed, only formatting changes.
+    Targets: section headings get 2pt before/0pt after, bullet paras get 0pt/0pt.
+    """
     doc = Document(io.BytesIO(docx_bytes))
     from docx.shared import Pt
     for para in doc.paragraphs:
-        pf   = para.paragraph_format
+        pf = para.paragraph_format
         text = para.text.strip()
         if not text:
+            # Remove empty paragraphs' spacing entirely
             pf.space_before = Pt(0)
             pf.space_after  = Pt(0)
             continue
+        # Section headings (bold, short text) — minimal spacing
         if para.style and para.style.name and 'Heading' in para.style.name:
             pf.space_before = Pt(2)
             pf.space_after  = Pt(0)
         else:
+            # All other paragraphs — reduce spacing
             if pf.space_before is None or pf.space_before > Pt(2):
                 pf.space_before = Pt(1)
             if pf.space_after is None or pf.space_after > Pt(2):
@@ -1435,17 +1162,22 @@ def _reduce_paragraph_spacing(docx_bytes: bytes) -> bytes:
     return buf.read()
 
 
+# Section titles in the template to identify section-header paragraphs
 _SECTION_TITLES = {"education", "work experience", "projects", "technical skills", "certifications"}
 
 
 def _is_section_header(para) -> bool:
-    return para.text.strip().lower() in _SECTION_TITLES
+    """Check if a paragraph is a section header (Education, Projects, etc.)."""
+    text = para.text.strip().lower()
+    return text in _SECTION_TITLES
 
 
 def _is_skill_row(para) -> bool:
+    """Check if a paragraph is a filled-in skill row (e.g. 'SOC Operations: ...')."""
     text = para.text.strip()
     if not text or len(text) < 5:
         return False
+    # Skill rows are "Label: value1, value2, ..." — short label with colon
     if ":" in text:
         label = text.split(":")[0].strip()
         if 3 <= len(label) <= 30:
@@ -1454,47 +1186,77 @@ def _is_skill_row(para) -> bool:
 
 
 def _expand_spacing_to_fill_page(docx_bytes: bytes, extra_pts: float) -> bytes:
+    """
+    Distribute extra vertical space across section headers, skill rows,
+    bullet paragraphs, and empty separator paragraphs to fill the page.
+
+    Distribution ratios:
+    - 40% to section headers (space_before) — ~5 headers, biggest visual impact
+    - 20% to skill rows (space_before + space_after)
+    - 20% to bullet list paragraphs (space_after)
+    - 20% to empty separator paragraphs (space_before + space_after)
+    """
     from docx.shared import Pt, Emu
     doc = Document(io.BytesIO(docx_bytes))
+
     section_headers = []
-    skill_rows      = []
-    bullet_rows     = []
-    separator_rows  = []
+    skill_rows = []
+    bullet_rows = []
+    separator_rows = []
+
     for para in doc.paragraphs:
         text = para.text.strip()
         if not text:
-            separator_rows.append(para); continue
+            separator_rows.append(para)
+            continue
         if _is_section_header(para):
             section_headers.append(para)
         elif _is_skill_row(para):
             skill_rows.append(para)
         elif para.style and para.style.name == 'List Paragraph':
             bullet_rows.append(para)
+
     n_headers    = max(len(section_headers), 1)
     n_skills     = max(len(skill_rows), 1)
     n_bullets    = max(len(bullet_rows), 1)
     n_separators = max(len(separator_rows), 1)
+
     header_share    = extra_pts * 0.40 / n_headers
     skill_share     = extra_pts * 0.20 / n_skills
     bullet_share    = extra_pts * 0.20 / n_bullets
     separator_share = extra_pts * 0.20 / n_separators
+
     def _get_pts(val):
-        if val is None or val == 0: return 0.0
+        """Convert a spacing value to float points."""
+        if val is None or val == 0:
+            return 0.0
+        # val is in EMU; 1pt = 12700 EMU
         return val / 12700.0
+
     for para in section_headers:
         pf = para.paragraph_format
-        pf.space_before = Pt(_get_pts(pf.space_before) + header_share)
+        current_pts = _get_pts(pf.space_before)
+        pf.space_before = Pt(current_pts + header_share)
+
     for para in skill_rows:
         pf = para.paragraph_format
-        pf.space_before = Pt(_get_pts(pf.space_before) + skill_share * 0.5)
-        pf.space_after  = Pt(_get_pts(pf.space_after)  + skill_share * 0.5)
+        cb = _get_pts(pf.space_before)
+        ca = _get_pts(pf.space_after)
+        pf.space_before = Pt(cb + skill_share * 0.5)
+        pf.space_after  = Pt(ca + skill_share * 0.5)
+
     for para in bullet_rows:
         pf = para.paragraph_format
-        pf.space_after = Pt(_get_pts(pf.space_after) + bullet_share)
+        ca = _get_pts(pf.space_after)
+        pf.space_after = Pt(ca + bullet_share)
+
     for para in separator_rows:
         pf = para.paragraph_format
-        pf.space_before = Pt(_get_pts(pf.space_before) + separator_share * 0.5)
-        pf.space_after  = Pt(_get_pts(pf.space_after)  + separator_share * 0.5)
+        cb = _get_pts(pf.space_before)
+        ca = _get_pts(pf.space_after)
+        pf.space_before = Pt(cb + separator_share * 0.5)
+        pf.space_after  = Pt(ca + separator_share * 0.5)
+
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
@@ -1502,42 +1264,68 @@ def _expand_spacing_to_fill_page(docx_bytes: bytes, extra_pts: float) -> bytes:
 
 
 def _fill_page(docx_bytes: bytes) -> tuple[bytes, bytes]:
+    """
+    Expand spacing to fill the single page fully.
+    Does NOT try to measure PDF content position (unreliable with lines/rules).
+    Instead, binary searches extra spacing (0–200pt) and checks page count
+    each iteration. Finds the maximum spacing that still fits on one page.
+
+    Returns (final_docx_bytes, final_pdf_bytes).
+    """
     pdf_bytes = generate_pdf(docx_bytes)
-    pages     = _count_pdf_pages(pdf_bytes)
+    pages = _count_pdf_pages(pdf_bytes)
     if pages != 1:
-        return docx_bytes, pdf_bytes
+        return docx_bytes, pdf_bytes  # safety — don't fill if not single page
+
+    # Quick check: can we add ANY spacing? Try 5pt first.
     trial_docx = _expand_spacing_to_fill_page(docx_bytes, 5.0)
     trial_pdf  = generate_pdf(trial_docx)
     if _count_pdf_pages(trial_pdf) > 1:
+        # Even 5pt overflows — page is already very full, no room to expand
         logger.info("  Page fill: page already near-full, no expansion possible")
         return docx_bytes, pdf_bytes
+
+    # Binary search: find max extra_pts in [0, 200] that still fits 1 page
+    # 200pt ≈ 2.78 inches — more than enough for any realistic gap
     lo, hi = 0.0, 200.0
     best_docx, best_pdf = docx_bytes, pdf_bytes
+
+    # First, find an upper bound that actually overflows
+    # (start at 200, if it fits, use it directly)
     trial_docx = _expand_spacing_to_fill_page(docx_bytes, hi)
     trial_pdf  = generate_pdf(trial_docx)
     if _count_pdf_pages(trial_pdf) <= 1:
+        # Even 200pt fits — use it (this means the page was very empty)
         logger.info("  Page fill: distributed 200.0pt (maximum), still fits")
         return trial_docx, trial_pdf
+
     logger.info("  Page fill: binary searching optimal spacing (0-200pt)...")
-    for iteration in range(10):
-        mid        = (lo + hi) / 2
+
+    for iteration in range(10):  # 10 iterations → ~0.2pt precision
+        mid = (lo + hi) / 2
         trial_docx = _expand_spacing_to_fill_page(docx_bytes, mid)
         trial_pdf  = generate_pdf(trial_docx)
-        if _count_pdf_pages(trial_pdf) <= 1:
-            lo = mid; best_docx = trial_docx; best_pdf = trial_pdf
+        trial_pages = _count_pdf_pages(trial_pdf)
+
+        if trial_pages <= 1:
+            lo = mid
+            best_docx = trial_docx
+            best_pdf  = trial_pdf
         else:
             hi = mid
+
     logger.info("  Page fill complete: distributed %.1fpt of spacing", lo)
     return best_docx, best_pdf
 
 
 def _generate_and_check(working: dict, reduce_spacing: bool = False,
                         fill_page: bool = False) -> tuple[bytes, bytes, int]:
+    """Fill template, generate PDF, count pages. Returns (docx, pdf, pages)."""
     docx_bytes = fill_template(working)
     if reduce_spacing:
         docx_bytes = _reduce_paragraph_spacing(docx_bytes)
-    pdf_bytes = generate_pdf(docx_bytes)
-    pages     = _count_pdf_pages(pdf_bytes)
+    pdf_bytes  = generate_pdf(docx_bytes)
+    pages      = _count_pdf_pages(pdf_bytes)
     if fill_page and pages == 1:
         docx_bytes, pdf_bytes = _fill_page(docx_bytes)
         pages = _count_pdf_pages(pdf_bytes)
@@ -1546,106 +1334,149 @@ def _generate_and_check(working: dict, reduce_spacing: bool = False,
 
 def enforce_single_page(content: dict, job: dict,
                         jd_keywords: dict | None = None) -> tuple[bytes, bytes, str]:
-    ranked   = (jd_keywords or {}).get("ranked", [])
+    """
+    Generate DOCX+PDF and STRICTLY enforce single-page output.
+    Applies up to 5 tiers of trimming, then fills remaining space:
+
+    Tier 0: Reduce paragraph spacing (non-destructive formatting)
+    Tier 1: Shorten bullets > 200 chars via LLM (non-destructive)
+    Tier 2: Remove least-relevant project bullet (scored by JD keyword overlap)
+    Tier 3: Trim excess skills (SK_V5 → SK_V4 → SK_V1)
+    Tier 4: Shorten longest Amazon bullet (never fully remove)
+
+    Page Fill: After achieving single page, measures bottom white space using
+    pdfminer and distributes extra spacing across section headers, skill rows,
+    and bullet paragraphs via binary search to fully utilize the page.
+    """
+    ranked = (jd_keywords or {}).get("ranked", [])
     trim_log = []
     working  = dict(content)
 
+    # ── Initial check (no spacing reduction yet) ─────────────────────────
     docx_bytes, pdf_bytes, pages = _generate_and_check(working)
+
     if pages <= 1:
+        # Page fits — now fill it to avoid white space at bottom
         logger.info("  Single page OK — filling page to reduce white space")
         docx_bytes, pdf_bytes = _fill_page(docx_bytes)
         return docx_bytes, pdf_bytes, "page-filled"
 
     logger.info("  %d pages detected — enforcing single page", pages)
 
+    # ── Tier 0: Reduce paragraph spacing ─────────────────────────────────
     logger.info("  Tier 0: reducing paragraph spacing")
     docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
     trim_log.append("reduced-spacing")
+
     if pages <= 1:
+        logger.info("  Single page achieved via Tier 0 (spacing). %s", trim_log)
         docx_bytes, pdf_bytes = _fill_page(docx_bytes)
         return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
+    # ── Tier 1: Shorten long bullets (>200 chars) ────────────────────────
     LONG_THRESHOLD = 200
     all_bullet_keys = ["AMZ_B1","AMZ_B2","AMZ_B3",
                        "P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
     long_bullets = [(k, len(working.get(k,""))) for k in all_bullet_keys
                     if len(working.get(k,"")) > LONG_THRESHOLD]
+    # Sort by length descending — shorten longest first
     long_bullets.sort(key=lambda x: x[1], reverse=True)
+
     if long_bullets:
         logger.info("  Tier 1: %d bullets > %d chars — shortening", len(long_bullets), LONG_THRESHOLD)
         for key, length in long_bullets:
             working[key] = _shorten_bullet_llm(working[key], target_chars=150)
             trim_log.append(f"shortened {key} ({length}→{len(working[key])})")
+
         docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
         if pages <= 1:
+            logger.info("  Single page achieved via Tier 1 (shortening). %s", trim_log)
             docx_bytes, pdf_bytes = _fill_page(docx_bytes)
             return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
+    # ── Tier 1.5: Shorten ALL bullets > 150 chars (more aggressive) ──────
     AGGRESSIVE_THRESHOLD = 150
     still_long = [(k, len(working.get(k,""))) for k in all_bullet_keys
                   if len(working.get(k,"")) > AGGRESSIVE_THRESHOLD]
     still_long.sort(key=lambda x: x[1], reverse=True)
+
     if still_long:
         logger.info("  Tier 1.5: %d bullets > %d chars — aggressive shortening",
                     len(still_long), AGGRESSIVE_THRESHOLD)
         for key, length in still_long:
             working[key] = _shorten_bullet_llm(working[key], target_chars=130)
             trim_log.append(f"aggressively shortened {key} ({length}→{len(working[key])})")
+
         docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
         if pages <= 1:
+            logger.info("  Single page achieved via Tier 1.5. %s", trim_log)
             docx_bytes, pdf_bytes = _fill_page(docx_bytes)
             return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
+    # ── Tier 2: Remove least-relevant project bullets ────────────────────
     PROJECT_BULLET_KEYS = ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
     removable = [k for k in PROJECT_BULLET_KEYS
                  if working.get(k,"").strip() and working[k].strip() != " "]
+
     if removable:
         logger.info("  Tier 2: scoring %d project bullets by JD relevancy", len(removable))
+        # Score each bullet; remove lowest-scoring first
         scored = [(k, _score_bullet_relevancy(working[k], ranked)) for k in removable]
-        scored.sort(key=lambda x: x[1])
+        scored.sort(key=lambda x: x[1])  # ascending — least relevant first
+
         for key, score in scored:
             working[key] = " "
             trim_log.append(f"removed {key} (score={score})")
             logger.info("  Tier 2: removed %s (relevancy score=%d)", key, score)
+
             docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
             if pages <= 1:
+                logger.info("  Single page achieved via Tier 2. %s", trim_log)
                 docx_bytes, pdf_bytes = _fill_page(docx_bytes)
                 return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
-    SKILL_TRIM_ORDER = ["SK_V5","SK_V4","SK_V3","SK_V2","SK_V1"]
+    # ── Tier 3: Trim excess skills ───────────────────────────────────────
+    SKILL_TRIM_ORDER = ["SK_V5", "SK_V4", "SK_V3", "SK_V2", "SK_V1"]
     logger.info("  Tier 3: trimming skills")
     for sk_key in SKILL_TRIM_ORDER:
         original = working.get(sk_key, "")
         if original and len(original.split(",")) > 3:
             working[sk_key] = _trim_skills_line(original, max_items=3)
             trim_log.append(f"trimmed {sk_key}")
+
             docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
             if pages <= 1:
+                logger.info("  Single page achieved via Tier 3 (skills). %s", trim_log)
                 docx_bytes, pdf_bytes = _fill_page(docx_bytes)
                 return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
-    AMZ_KEYS    = ["AMZ_B1","AMZ_B2","AMZ_B3"]
+    # ── Tier 4: Shorten Amazon bullets (last resort, never remove) ───────
+    AMZ_KEYS = ["AMZ_B1", "AMZ_B2", "AMZ_B3"]
     amz_bullets = [(k, len(working.get(k,""))) for k in AMZ_KEYS
                    if working.get(k,"").strip() and working[k].strip() != " "]
-    amz_bullets.sort(key=lambda x: x[1], reverse=True)
+    amz_bullets.sort(key=lambda x: x[1], reverse=True)  # longest first
+
     if amz_bullets:
         logger.info("  Tier 4: shortening Amazon bullets (last resort)")
         for key, length in amz_bullets:
-            if length > 80:
+            if length > 80:  # only shorten if meaningfully long
                 working[key] = _shorten_bullet_llm(working[key], target_chars=100)
                 trim_log.append(f"shortened {key} ({length}→{len(working[key])})")
+
                 docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
                 if pages <= 1:
+                    logger.info("  Single page achieved via Tier 4 (AMZ shorten). %s", trim_log)
                     docx_bytes, pdf_bytes = _fill_page(docx_bytes)
                     return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
 
+    # ── Fallback: all tiers exhausted ────────────────────────────────────
     logger.warning("  All tiers exhausted — could not achieve single page")
     docx_bytes, pdf_bytes, _ = _generate_and_check(working, reduce_spacing=True)
     return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; overflow-unresolved"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GitHub storage + URL shortening (unchanged)
+# GitHub storage + URL shortening
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe(s: str, n: int = 35) -> str:
     return re.sub(r"[^A-Za-z0-9_-]","_",s)[:n]
@@ -1674,9 +1505,7 @@ def upload_to_github(docx_bytes: bytes, pdf_bytes: bytes, job: dict) -> tuple[st
 
 def shorten_url(long_url: str) -> str:
     try:
-        resp = requests.get(
-            f"https://tinyurl.com/api-create.php?url={requests.utils.quote(long_url)}",
-            timeout=8)
+        resp = requests.get(f"https://tinyurl.com/api-create.php?url={requests.utils.quote(long_url)}", timeout=8)
         if resp.status_code == 200 and resp.text.startswith("https://tinyurl.com"):
             return resp.text.strip()
     except Exception:
@@ -1685,7 +1514,7 @@ def shorten_url(long_url: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sheets helpers (unchanged)
+# Sheets helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_creds() -> Credentials:
     j = os.environ.get("GOOGLE_CREDS_JSON","")
@@ -1708,15 +1537,15 @@ def get_pending_jobs(ws, doc_col: int) -> list[dict]:
     rows = ws.get_all_values()
     if len(rows) < 2: return []
     headers = rows[0]
-    col     = {h:i for i,h in enumerate(headers)}
-    def _get(row, key):
+    col = {h:i for i,h in enumerate(headers)}
+    def _get(row,key):
         i = col.get(key)
         return row[i].strip() if i is not None and i < len(row) else ""
     pending = []
     for row_num, row in enumerate(rows[1:], start=2):
         if _get(row,"status").lower() == "new" and not (row[doc_col-1].strip() if doc_col-1 < len(row) else ""):
             pending.append({
-                "row_num":   row_num,
+                "row_num": row_num,
                 "job_title": _get(row,"job_title") or "Cybersecurity Role",
                 "company":   _get(row,"company")   or "Unknown",
                 "domain":    _get(row,"domain")     or "General",
@@ -1727,29 +1556,14 @@ def get_pending_jobs(ws, doc_col: int) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHANGE VI: MAIN — agent loop + role similarity + external refs + overclaim gate
-#
-# What changed vs original:
-#   1. classify_role_similarity() called after keyword extraction
-#   2. research_external_references() called when role is "different"
-#   3. generate + validate wrapped in agent retry loop (max 3 attempts)
-#      — each failed attempt feeds missing_keywords + improvements back in
-#   4. On attempt 2 for "different" roles, external refs re-fetched if empty
-#   5. _validate_against_references() run as post-loop overclaim gate
-#      — result appended to val_note as [OVERCLAIM FLAG] if risk is "high"
-#   6. generate_content() now called with role_similarity, external_refs,
-#      agent_feedback (new params added in CHANGE V)
-#
-# Everything else (metrics, recruiter_simulate, enforce_single_page,
-# upload, sheet writes) is unchanged.
+# Main
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     logger.info("="*60)
     logger.info("Resume Tailor — Research Framework Edition (validation=%s)", VALIDATION_MODE)
     logger.info("="*60)
 
-    for name, val in [("GROQ_API_KEY",GROQ_API_KEY),("GITHUB_TOKEN",GITHUB_TOKEN),
-                      ("GITHUB_REPOSITORY",GITHUB_REPOSITORY)]:
+    for name, val in [("GROQ_API_KEY",GROQ_API_KEY),("GITHUB_TOKEN",GITHUB_TOKEN),("GITHUB_REPOSITORY",GITHUB_REPOSITORY)]:
         if not val: logger.error("%s not set.", name); sys.exit(1)
     if not TEMPLATE_PATH.exists():
         logger.error("resume_template.docx not found."); sys.exit(1)
@@ -1782,153 +1596,71 @@ def main():
         logger.info("[%d/%d] %s @ %s  (domain: %s)", i, len(pending),
                     job["job_title"], job["company"], job["domain"])
         try:
+            # Projects + tools
             p1_key, p2_key = DOMAIN_TO_PROJECTS.get(job["domain"], ("soc_auto","vuln_scanner"))
             jd_text  = f"{job['skills']} {job['summary']} {job['job_title']}"
             p1_tools = select_tools(p1_key, jd_text)
             p2_tools = select_tools(p2_key, jd_text)
             logger.info("  Projects: %s + %s | P1 tools: %s", p1_key, p2_key, p1_tools[:3])
 
-            # Feature 1: keyword extraction (unchanged)
+            # FEATURE 1: Extract keywords
             logger.info("  Extracting JD keywords...")
             jd_keywords = extract_keywords(jd_text)
 
-            # CHANGE VI: Classify role similarity — drives tone, variant, and
-            # whether external reference research is triggered below.
-            role_similarity = classify_role_similarity(job, jd_keywords)
-            logger.info("  Role similarity: %s", role_similarity)
-
-            # CHANGE VI: External reference research — only for "different" roles.
-            # Gives the LLM real examples to calibrate against before generating.
-            external_refs = ""
-            if role_similarity == "different":
-                logger.info("  Role is different — fetching external references...")
-                ext_ref_data  = research_external_references(job, job["domain"])
-                external_refs = ext_ref_data["combined"]
-
-            # GitHub research (strict validation mode only — unchanged)
+            # GitHub research (strict only)
             github_notes = ""
             if VALIDATION_MODE == "strict":
                 github_notes = research_github_projects(job["domain"], job["job_title"])
 
-            # Company intel (unchanged)
+            # Company intel
             intel       = get_company_intel(job["company"])
             scraped_ctx = "" if intel else scrape_company(job["company"])
 
-            # CHANGE VI: Agent generate → validate loop (max 3 attempts).
-            # Replaces the original single generate_content() + validate_resume() calls.
-            # Each failed attempt (ATS < 7) passes missing_keywords + improvements
-            # back into generate_content() as agent_feedback.
-            feedback      = None
-            content       = None
-            val_result    = None
-            attempts_used = 0
+            # Generate content (includes Features 2, 3, 4)
+            logger.info("  Generating content...")
+            content = generate_content(job, p1_key, p2_key, intel, scraped_ctx,
+                                       p1_tools, p2_tools, jd_keywords)
 
-            for attempt in range(1, 4):
-                attempts_used = attempt
-
-                # CHANGE VI: generate_content now receives role_similarity,
-                # external_refs, and agent_feedback — all new params (CHANGE V).
-                content = generate_content(
-                    job, p1_key, p2_key, intel, scraped_ctx,
-                    p1_tools, p2_tools, jd_keywords,
-                    role_similarity=role_similarity,
-                    external_refs=external_refs,
-                    agent_feedback=feedback,
-                )
-
-                # Lenient mode skips validation — no retry loop needed
-                if VALIDATION_MODE == "lenient":
-                    val_result = {"ats_score":"skipped","missing_keywords":"",
-                                  "improvements":"","github_insight":""}
-                    break
-
-                time.sleep(3)
-                val_result = validate_resume(content, job, github_notes, VALIDATION_MODE)
-                ats        = val_result.get("ats_score", "N/A")
-
-                try:
-                    score = int(str(ats))
-                except (ValueError, TypeError):
-                    break   # unparseable score — accept and move on
-
-                logger.info("  Agent attempt %d/3 — ATS=%s role=%s",
-                            attempt, ats, role_similarity)
-
-                if score >= 7:
-                    logger.info("  Agent: score %d ≥ 7 — accepting", score)
-                    break
-
-                # CHANGE VI: On attempt 2 for "different" roles, re-fetch external
-                # refs if first fetch came back empty (e.g. rate-limited).
-                if attempt == 2 and role_similarity == "different" and not external_refs:
-                    ext_ref_data  = research_external_references(job, job["domain"])
-                    external_refs = ext_ref_data["combined"]
-
-                # Build feedback dict for next attempt
-                feedback = {
-                    "attempt":          attempt,
-                    "ats_score":        ats,
-                    "missing_keywords": val_result.get("missing_keywords", ""),
-                    "improvements":     val_result.get("improvements", ""),
-                }
-                logger.info("  Agent: score %s < 7 — retrying with feedback: %s",
-                            ats, feedback["missing_keywords"])
-                time.sleep(5)
-
-            # Build validation note (same structure as original)
-            ats_score = val_result.get("ats_score","N/A")
-            val_note  = (
-                f"[{VALIDATION_MODE.upper()}] ATS:{ats_score}"
-                + (f" | Missing:{val_result.get('missing_keywords','')}" if val_result.get("missing_keywords") else "")
-                + (f" | Fix:{val_result.get('improvements','')}"         if val_result.get("improvements")     else "")
-                + (f" | GitHub:{val_result.get('github_insight','')}"    if val_result.get("github_insight")   else "")
-                + (f" | Attempts:{attempts_used}"                        if attempts_used > 1                  else "")
-            )
-
-            # CHANGE VI: Overclaim gate — runs after agent loop, only for
-            # "different" roles with external refs available.
-            # Adds 1 Groq call. Result visible in sheet as [OVERCLAIM FLAG].
-            if role_similarity == "different" and external_refs and VALIDATION_MODE != "lenient":
-                time.sleep(3)
-                overclaim = _validate_against_references(content, external_refs, job)
-                if overclaim.get("overclaim_risk") == "high":
-                    logger.warning("  Overclaim risk detected: %s",
-                                   overclaim.get("flagged_claims",""))
-                    val_note = (
-                        f"[OVERCLAIM FLAG] {overclaim.get('flagged_claims','')} | "
-                        + val_note
-                    )
-
-            logger.info("  %s", val_note)
-
-            # Feature 3: keyword tracking (unchanged)
+            # FEATURE 3: Track keyword usage
             track_keyword_usage(content, jd_keywords.get("ranked",[]))
 
-            # Feature 5: metrics (unchanged)
+            # Validate
+            if VALIDATION_MODE != "lenient": time.sleep(3)
+            val_result = validate_resume(content, job, github_notes, VALIDATION_MODE)
+            ats_score  = val_result.get("ats_score","N/A")
+            val_note   = (
+                f"[{VALIDATION_MODE.upper()}] ATS:{ats_score}"
+                + (f" | Missing:{val_result.get('missing_keywords','')}" if val_result.get("missing_keywords") else "")
+                + (f" | Fix:{val_result.get('improvements','')}" if val_result.get("improvements") else "")
+                + (f" | GitHub:{val_result.get('github_insight','')}" if val_result.get("github_insight") else "")
+            )
+            logger.info("  %s", val_note)
+
+            # FEATURE 5: Metrics
             metrics = compute_metrics(content, jd_keywords, ats_score)
 
-            # Feature 6: recruiter simulation (unchanged)
+            # FEATURE 6: Recruiter simulation
             if VALIDATION_MODE != "lenient":
                 time.sleep(2)
                 rec_sim = recruiter_simulate(content, job)
             else:
                 rec_sim = {"credibility":"skipped","stuffing_suspicion":"skipped","hireability":"skipped"}
 
-            # Feature H: single-page enforcement + PDF generation (unchanged)
+            # FEATURE H: Single-page enforcement + PDF generation
             logger.info("  Generating DOCX+PDF (single-page enforcement)...")
             docx_bytes, pdf_bytes, trim_log = enforce_single_page(content, job, jd_keywords)
             if trim_log and trim_log not in ("certs-p2-ok",""):
                 val_note += f" | Trimmed:{trim_log}"
             logger.info("  DOCX: %d bytes  PDF: %d bytes", len(docx_bytes), len(pdf_bytes))
 
-            # Upload + shorten (unchanged)
+            # Upload + shorten
             doc_raw, pdf_raw = upload_to_github(docx_bytes, pdf_bytes, job)
             doc_url = shorten_url(doc_raw)
             pdf_url = shorten_url(pdf_raw)
             logger.info("  Doc: %s", doc_url)
             logger.info("  PDF: %s", pdf_url)
 
-            # Sheet writes (unchanged)
+            # Write all columns to sheet
             ws.update_cell(job["row_num"], doc_col,   doc_url)
             ws.update_cell(job["row_num"], pdf_col,   pdf_url)
             ws.update_cell(job["row_num"], val_col,   val_note)
