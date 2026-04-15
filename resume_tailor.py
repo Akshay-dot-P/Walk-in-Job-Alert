@@ -12,15 +12,7 @@ D. Feature 3: track_keyword_usage() — 2-3x coverage tracking
 E. Feature 4: dynamic_skills_augment() — JD keywords filtered via whitelist
 F. Feature 5: compute_metrics() → keyword_coverage, keyword_density, skills_count
 G. Feature 6: recruiter_simulate() → credibility, stuffing_suspicion, hireability
-H. Single-page: enforce_single_page() — 5-tier STRICT single-page enforcement
-   + page-fill: measures bottom gap via pdfminer, distributes spacing to
-     fully utilise the page (binary search on section/skill/bullet spacing)
-   Tier 0: reduce paragraph spacing (non-destructive formatting)
-   Tier 1: shorten long bullets (>200 chars) via LLM
-   Tier 1.5: aggressive shortening (>150 chars)
-   Tier 2: remove least-relevant project bullet by JD keyword score
-   Tier 3: trim excess skills (SK_V5 → SK_V4 → SK_V1)
-   Tier 4: shorten longest Amazon bullet (never remove)
+H. Single-page: enforce_single_page() — trims least-relevant bullet if p2 overflows
 
 CONFLICT NOTES (Feature 2 only — all others conflict-free)
 Feature 2 had a partial conflict with "never fabricate" rule.
@@ -128,43 +120,20 @@ SYNONYM_MAP = {
 
 def apply_synonyms(text: str) -> str:
     """
-    Append one alias per matched term (max 2 per text).
-    - Uses word boundaries to avoid partial matches
-    - Preserves original casing
-    - Prevents duplicate alias insertion
+    Append one alias per matched term, max 2 expansions per bullet.
+    Keeps originals intact — only adds context aliases.
     """
-    if not text:
-        return text
-
     applied = 0
-
     for term, aliases in SYNONYM_MAP.items():
         if applied >= 2:
             break
-
-        alias = aliases[0]
-
-        # Skip if alias already present anywhere
-        if alias.lower() in text.lower():
-            continue
-
-        # Regex with word boundaries (safe matching)
-        pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
-
-        def replacer(match):
-            nonlocal applied
-            if applied >= 2:
-                return match.group(0)
-
-            applied += 1
-            return f"{match.group(0)} ({alias})"
-
-        # Replace only first occurrence
-        text, count = pattern.subn(replacer, text, count=1)
-
-        if count > 0:
-            continue
-
+        if re.search(re.escape(term), text, re.IGNORECASE):
+            alias = aliases[0]
+            if alias.lower() not in text.lower():
+                text = re.sub(
+                    re.escape(term), f"{term} ({alias})", text, count=1, flags=re.IGNORECASE
+                )
+                applied += 1
     return text
 
 
@@ -204,38 +173,17 @@ def extract_keywords(jd_text: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 def track_keyword_usage(content: dict, ranked_keywords: list) -> dict:
     """
-    Count keyword appearances across all bullets using SAFE matching.
-    - Uses word boundaries to avoid partial matches
-    - Case-insensitive matching
-    - Logs under (<1) and over (>3) usage
+    Count keyword appearances across all bullets. Returns usage dict.
+    Logs under-represented (<1) and over-represented (>3) keywords.
     """
-    bullet_keys = [
-        "AMZ_B1","AMZ_B2","AMZ_B3",
-        "P1_B1","P1_B2","P1_B3",
-        "P2_B1","P2_B2","P2_B3"
-    ]
-
-    # Combine all bullet text
-    all_text = " ".join(content.get(k, "") for k in bullet_keys)
-
-    usage = {}
-
-    for kw in ranked_keywords[:10]:
-        # SAFE regex with word boundaries
-        pattern = re.compile(rf"\b{re.escape(kw)}\b", re.IGNORECASE)
-        matches = pattern.findall(all_text)
-        usage[kw] = len(matches)
-
-    # Analysis
-    under = [k for k, c in usage.items() if c == 0]
-    over  = [k for k, c in usage.items() if c > 3]
+    bullet_keys = ["AMZ_B1","AMZ_B2","AMZ_B3","AMZ_B4","P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
+    all_text = " ".join(content.get(k,"") for k in bullet_keys).lower()
+    usage = {kw: len(re.findall(re.escape(kw.lower()), all_text)) for kw in ranked_keywords[:10]}
+    under = [k for k,c in usage.items() if c == 0]
+    over  = [k for k,c in usage.items() if c > 3]
     present = sum(1 for c in usage.values() if c > 0)
-
-    logger.info(
-        "  Keyword coverage: %d/%d present | under=%s over=%s",
-        present, len(usage), under[:3], over[:2]
-    )
-
+    logger.info("  Keyword coverage: %d/%d present | under=%s over=%s",
+                present, len(usage), under[:3], over[:2])
     return usage
 
 
@@ -302,16 +250,13 @@ def dynamic_skills_augment(profile_skills: dict, jd_keywords: dict) -> dict:
 def compute_metrics(content: dict, jd_keywords: dict, ats_score) -> dict:
     ranked  = jd_keywords.get("ranked", [])
     bullets = [content.get(k,"") for k in
-               ["AMZ_B1","AMZ_B2","AMZ_B3","P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]]
+               ["AMZ_B1","AMZ_B2","AMZ_B3","AMZ_B4","P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]]
     all_text = " ".join(bullets).lower()
 
     coverage = 0
     if ranked:
-        hits = sum(
-           1 for kw in ranked[:10]
-           if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", all_text, re.IGNORECASE)
-        )        
-    coverage = round(hits / min(len(ranked),10) * 100)
+        hits     = sum(1 for kw in ranked[:10] if kw.lower() in all_text)
+        coverage = round(hits / min(len(ranked),10) * 100)
 
     nonempty = [b for b in bullets if b.strip()]
     density  = 0.0
@@ -335,7 +280,8 @@ def compute_metrics(content: dict, jd_keywords: dict, ats_score) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 def recruiter_simulate(content: dict, job: dict) -> dict:
     bullets = "\n".join(f"• {content.get(k,'')}" for k in
-              ["AMZ_B1","AMZ_B2","AMZ_B3","P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
+              ["AMZ_B1","AMZ_B2","AMZ_B3","AMZ_B4",
+               "P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
               if content.get(k))
     skills  = " | ".join(content.get(f"SK_V{i}","") for i in range(1,6))
     system  = "You are an experienced India cybersecurity recruiter. Be direct. Return ONLY valid JSON."
@@ -491,155 +437,34 @@ DOMAIN_TO_PROJECTS = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LAYER 2: CONCEPT SWAPPABLE — deterministic domain phrases for LLM prompt
+# AMAZON BULLETS
 #
-# Each phrase describes something the project ACTUALLY does, framed for
-# a specific domain. Regex patterns match JD text; matched phrases go
-# straight into the Groq prompt as "weave 1-2 of these naturally."
-# Zero fabrication — only reframing of real capabilities.
-# ─────────────────────────────────────────────────────────────────────────────
-CONCEPT_SWAPPABLE = {
-    "soc_auto": {
-        r"grc|compliance|audit|iso\s*27001|nist|sox|itgc": [
-            "SIEM-based compliance monitoring and security audit log retention",
-            "automated security control validation via SPL correlation searches",
-        ],
-        r"fraud|aml|kyc|transaction.?monitor|financial.?crime": [
-            "transaction anomaly detection via log correlation and pattern matching",
-            "automated suspicious activity alerting with severity-based escalation",
-        ],
-        r"cloud|aws|azure|gcp|iam|saas": [
-            "cloud security event monitoring and IAM access anomaly detection",
-            "cross-account activity correlation for cloud-native threat detection",
-        ],
-        r"forensic|dfir|incident.?response|evidence|chain.?of.?custody": [
-            "forensic-grade event timeline reconstruction from SIEM log artifacts",
-            "automated evidence packaging with chain-of-custody documentation",
-        ],
-        r"network|ids|ips|firewall|packet|intrusion": [
-            "network intrusion detection via deep packet analysis and IDS alert correlation",
-            "protocol-level anomaly detection for network security monitoring",
-        ],
-    },
-    "vuln_scanner": {
-        r"grc|compliance|audit|iso\s*27001|nist|pci|sox": [
-            "vulnerability risk scoring mapped to compliance framework controls (PCI-DSS, NIST)",
-            "audit-ready remediation tracking with SLA compliance evidence",
-        ],
-        r"devsecops|appsec|ci/?cd|sdlc|secure.?cod|sast|dast": [
-            "application security testing integrated with development release cycles",
-            "vulnerability-to-remediation workflow for secure development lifecycle",
-        ],
-        r"cloud|aws|azure|container|docker|kubernetes": [
-            "cloud infrastructure vulnerability assessment and misconfiguration detection",
-            "continuous security scanning for cloud-deployed services and endpoints",
-        ],
-        r"fraud|aml|risk|financial": [
-            "risk-quantified vulnerability prioritization using exploit probability metrics",
-            "remediation deadline enforcement aligned with regulatory compliance windows",
-        ],
-    },
-    "phishing_osint": {
-        r"grc|compliance|audit|vendor.?risk|third.?party|due.?diligence": [
-            "domain reputation scoring for third-party vendor risk assessment",
-            "quantitative risk evidence generation from multi-source OSINT intelligence",
-        ],
-        r"fraud|aml|kyc|transaction|financial.?crime|sanctions": [
-            "KYC domain-verification workflow: WHOIS age, registrar, DNS, and SSL cross-check",
-            "suspicious transaction indicator enrichment mapping domains to known fraud typologies",
-        ],
-        r"cti|threat.?intel|ioc|indicator|feed|hunt": [
-            "IOC lifecycle management and multi-source threat intelligence correlation",
-            "proactive infrastructure-based threat hunting via domain attribution analysis",
-        ],
-        r"risk|assessment|scoring": [
-            "automated risk indicator enrichment for entity due diligence workflows",
-            "domain and IP reputation scoring for risk quantification documentation",
-        ],
-    },
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LAYER 3: BULLET VARIANTS — pre-framed alternate bullet sets per domain
+# B1-B3: Fixed strong base bullets. Reworded from original to remove apologetic
+# framing ("mirroring SOC", "demonstrating instincts central to SOC").
+# Skills speak for themselves — no comparison to security roles needed.
 #
-# Each variant rewrites the project's 3 bullets for a specific domain.
-# The LLM receives already-framed bullets instead of guessing from JD context.
-# ALL content is grounded — same project work, different framing.
+# B4: Dynamic — generated per-job by the LLM based on domain.
+# Template has [[AMZ_B4]] placeholder. It is CONDITIONALLY shown:
+#   - If resume fits ≤1 page with 4 bullets → show all 4
+#   - If resume overflows → tier-0 spacing reduction, then remove B4 first
+# This is handled in enforce_single_page() via TRIM_ORDER putting AMZ_B4 first.
 # ─────────────────────────────────────────────────────────────────────────────
-BULLET_VARIANTS = {
-    "soc_auto": {
-        "cloud_iam": [
-            "Deployed Splunk SIEM with SPL correlation searches to monitor IAM anomalies including unauthorized privilege escalation (T1078) and suspicious cross-account access patterns; mapped cloud-relevant TTPs to MITRE ATT&CK and wrote PICERL incident report.",
-            "Built automated cloud security detection pipeline: Python script ingests Splunk alerts for IAM policy violations, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification — enabling rapid response to identity-based threats.",
-            "Developed Sigma-compatible detection rules for cloud-specific TTPs including credential abuse and lateral movement; performed network analysis in Wireshark to identify anomalous authentication and DNS traffic patterns in cloud environments.",
-        ],
-        "dfir_forensics": [
-            "Deployed Splunk SIEM with SPL correlation searches for forensic event timeline reconstruction — tracked brute-force attempts (T1110), credential misuse (T1078), and script-based execution (T1059) across host and network logs with full MITRE ATT&CK TTP mapping.",
-            "Built automated evidence collection pipeline: Python script ingests Splunk alerts, performs IOC enrichment via VirusTotal API, and generates severity-classified incident packages with chain-of-custody documentation for forensic investigation handoff.",
-            "Converted detection logic to Sigma rules for cross-SIEM forensic portability; performed deep packet inspection in Wireshark to reconstruct attack sequences including SYN scans, DNS tunnelling, and credential exposure — documenting artifacts per PICERL framework.",
-        ],
-        "network_ids": [
-            "Deployed Splunk SIEM with SPL correlation searches for network intrusion detection — brute-force detection (index=* failed | stats count by src_ip), lateral movement, and privilege escalation alerts mapped to MITRE ATT&CK (T1110, T1078, T1059) with PICERL reporting.",
-            "Built automated network alert triage pipeline: Python script ingests Splunk IDS alerts, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification — reducing mean time to detect network-based threats.",
-            "Wrote Sigma rules (vendor-neutral IDS detection format) for enterprise network security; performed TCP/IP deep packet analysis in Wireshark to detect SYN scans, DNS tunnelling, port sweeps, and plaintext credential exposure across network segments.",
-        ],
-    },
-    "vuln_scanner": {
-        "devsecops_appsec": [
-            "Built automated application security testing pipeline integrating Nessus and OpenVAS APIs in Python; generates vulnerability reports classified by CVSS severity with EPSS exploit probability scoring from FIRST.org API for risk-based prioritization in development workflows.",
-            "Developed OWASP Top 10 automated application security checker detecting injection, broken authentication, SSRF, and XSS vulnerabilities; documented SQL injection exploit-to-remediation workflow with parameterised query fixes for secure development guidance.",
-            "Automated security scan scheduling via Bash and cron integrated with development cycles; built delta-scan logic to flag newly introduced CVEs per release and enforce remediation SLA deadlines (Critical=24hrs, High=7 days) for secure development lifecycle compliance.",
-        ],
-        "cloud_security": [
-            "Built automated cloud infrastructure vulnerability assessment pipeline using Nessus and OpenVAS APIs in Python; generates CVE reports classified by CVSS severity with EPSS scoring from FIRST.org API to prioritize cloud misconfiguration risks by exploit probability.",
-            "Developed automated security checker for cloud-hosted applications testing OWASP Top 10 vulnerabilities including injection, broken authentication, and SSRF; documented remediation workflows for cloud service misconfigurations and exposed endpoints.",
-            "Automated vulnerability scan scheduling via Bash and cron for continuous cloud security monitoring; built delta-scan logic to detect newly exposed CVEs and calculate remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) for cloud compliance.",
-        ],
-        "compliance_audit": [
-            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS APIs in Python; generates audit-ready CVE reports classified by CVSS severity with EPSS scoring from FIRST.org API — providing quantitative risk evidence for compliance documentation.",
-            "Developed OWASP Top 10 automated compliance checker validating web application security controls against regulatory requirements; documented vulnerability-to-remediation audit trails including SQL injection evidence and parameterised query fixes.",
-            "Automated compliance scan scheduling via Bash and cron; built delta-scan logic to track remediation progress against SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) — generating audit evidence for patch compliance and control effectiveness reporting.",
-        ],
-    },
-    "phishing_osint": {
-        "grc_risk_audit": [
-            "Built multi-source risk assessment pipeline: submits vendor domains and IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL certificate details to produce quantitative risk scores for third-party due diligence.",
-            "Implemented domain reputation assessment tool generating typosquatting variants of monitored domains and checking live DNS resolution — provides early warning for brand-impersonation risks in vendor and partner ecosystems.",
-            "Deployed automated risk assessment interface via Telegram bot enabling analysts to submit domains for enrichment; supports bulk CSV input/output for vendor risk assessment workflows and includes OSINT enrichment via theHarvester for comprehensive domain profiling.",
-        ],
-        "fraud_aml": [
-            "Built multi-API fraud intelligence pipeline: submits suspicious domains and IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL details as part of KYC domain-verification workflow to produce fraud probability scores.",
-            "Implemented typosquatting domain detector generating character-substitution variants of legitimate business domains and checking live DNS resolution — identifies brand-impersonation infrastructure used in financial fraud schemes before reaching threat feeds.",
-            "Deployed Telegram bot interface for live suspicious entity enrichment supporting bulk CSV input/output for investigation workflows; includes OSINT enrichment via theHarvester for domain profiling to support suspicious transaction report (STR) documentation.",
-        ],
-        "cti_threat_intel": [
-            "Built multi-API cyber threat intelligence pipeline: submits IOCs to VirusTotal, AbuseIPDB, and URLScan.io simultaneously; cross-references WHOIS registration data, DNS records, and SSL certificate details to produce unified threat confidence scores for intelligence products.",
-            "Implemented typosquatting domain detector generating character-substitution variants of tracked infrastructure and checking live DNS resolution — provides proactive threat detection capability for infrastructure-based threat hunting.",
-            "Deployed Telegram bot interface for real-time IOC enrichment enabling analysts to process indicators at scale; supports bulk CSV input/output for threat intelligence workflows and includes OSINT enrichment via theHarvester for comprehensive domain attribution.",
-        ],
-    },
-}
-
-# Maps domain → {project_key: variant_name}
-# Missing project_key or None = use default bullets
-DOMAIN_BULLET_VARIANT = {
-    "SOC":       {},
-    "VAPT":      {},
-    "AppSec":    {"vuln_scanner": "devsecops_appsec"},
-    "GRC":       {"vuln_scanner": "compliance_audit", "phishing_osint": "grc_risk_audit"},
-    "Risk":      {"vuln_scanner": "compliance_audit", "phishing_osint": "grc_risk_audit"},
-    "Fraud-AML": {"phishing_osint": "fraud_aml", "vuln_scanner": "compliance_audit"},
-    "CloudSec":  {"soc_auto": "cloud_iam", "vuln_scanner": "cloud_security"},
-    "IAM":       {"soc_auto": "cloud_iam", "phishing_osint": "cti_threat_intel"},
-    "Forensics": {"soc_auto": "dfir_forensics", "phishing_osint": "cti_threat_intel"},
-    "Network":   {"soc_auto": "network_ids"},
-    "General":   {},
-}
-
 AMAZON_BASE = [
-    "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, mirroring the structured alert triage and escalation workflow used in SOC Tier 1 analyst roles.",
-    "Performed root cause analysis on seller claims to identify policy violations and anomalous patterns; escalated findings to senior reviewers, demonstrating investigative instincts central to SOC and fraud analyst operations.",
-    "Maintained audit-ready case documentation recording investigation findings, decisions, and corrective actions, establishing the evidence chain-of-custody discipline required for security incident reporting and IT audit.",
+    # B1: Structured triage discipline — impact-first, no apologetics
+    "Triaged 50+ weekly inventory cases by severity and policy eligibility; applied structured investigation logic, documented decisions per case, and escalated edge cases — sustaining systematic triage discipline across 80+ weeks of continuous high-volume operations.",
+
+    # B2: RCA and anomaly detection — quantified, evidence-based
+    "Conducted root cause analysis on 20+ complex seller claims weekly; identified policy violations and anomalous reimbursement patterns; escalated structured findings with supporting evidence — maintaining 95%+ case accuracy under sustained operational pressure.",
+
+    # B3: Audit documentation — active discipline not passive outcome
+    "Maintained structured case documentation across 500+ investigations: capturing investigation findings, policy decisions, corrective actions, and audit trail — enabling retrospective review and evidence retrieval on demand for compliance and quality assurance.",
+
+    # B4: Dynamic placeholder — LLM fills based on domain (GRC/SOC/Fraud/Cloud)
+    # Used as the BASE INSTRUCTION to the LLM. Not shown directly.
+    "DYNAMIC: Generate a 4th bullet about Amazon experience relevant to the job domain. "
+    "Focus on one of: process compliance and regulatory adherence, cross-team escalation "
+    "and risk communication, data pattern analysis and anomaly flagging, or operational "
+    "metrics and SLA management. Write as a strong past-tense action bullet. Max 200 chars.",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -690,36 +515,7 @@ def select_tools(project_key: str, jd_text: str, max_tools: int = 5) -> list[str
     return (base + extra)[:max_tools]
 
 
-def select_concepts(project_key: str, jd_text: str, max_concepts: int = 3) -> list[str]:
-    """
-    Scan JD text for domain patterns and return grounded concept phrases.
-    These go into the LLM prompt as domain-specific framing signals.
-    Every phrase describes something the project actually does — only the
-    framing changes. Uses CONCEPT_SWAPPABLE (regex → phrases).
-    """
-    concept_map = CONCEPT_SWAPPABLE.get(project_key, {})
-    jd_lower = jd_text.lower()
-    concepts = []
-    for pattern, phrases in concept_map.items():
-        if re.search(pattern, jd_lower):
-            for phrase in phrases:
-                if phrase not in concepts:
-                    concepts.append(phrase)
-    return concepts[:max_concepts]
-
-
-def get_project_bullets(project_key: str, domain: str) -> list[str]:
-    """
-    Get domain-specific variant bullets for a project, or fall back to defaults.
-    Uses DOMAIN_BULLET_VARIANT mapping + BULLET_VARIANTS data.
-    """
-    variant_name = DOMAIN_BULLET_VARIANT.get(domain, {}).get(project_key)
-    if variant_name:
-        variants = BULLET_VARIANTS.get(project_key, {})
-        if variant_name in variants:
-            logger.debug("  Bullet variant: %s → %s", project_key, variant_name)
-            return variants[variant_name]
-    return PROJECTS[project_key]["bullets"]
+# ─────────────────────────────────────────────────────────────────────────────
 # Company scraping / GitHub research
 # ─────────────────────────────────────────────────────────────────────────────
 _HDRS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36"}
@@ -840,33 +636,6 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
     )
 
     # BUG FIX C: soft char limit — keep differentiators
-    # Build project-specific differentiator preservation list
-    # Only include TTPs/syntax that belong to the actually selected projects
-    _PROJ_DIFFERENTIATORS = {
-        "soc_auto":       ["SPL query syntax (index=* failed | stats)",
-                           "MITRE TTP numbers (T1110/T1078/T1059)",
-                           "SOAR pipeline detail"],
-        "vuln_scanner":   ["EPSS scoring", "FIRST.org API mention",
-                           "CVSS severity classification",
-                           "remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days)"],
-        "phishing_osint": ["typosquatting detection detail",
-                           "multi-API cross-referencing (VirusTotal, AbuseIPDB, URLScan.io)",
-                           "WHOIS/DNS/SSL analysis detail"],
-    }
-    active_diffs = []
-    for pk in set([p1_key, p2_key]):
-        active_diffs.extend(_PROJ_DIFFERENTIATORS.get(pk, []))
-
-    if active_diffs:
-        diff_instruction = (
-            f"NEVER drop from project bullets: {', '.join(active_diffs)}.\n"
-            "These differentiators are what make a fresher resume stand out — keep them even if longer.\n"
-            "IMPORTANT: Only include technical details that belong to each specific project. "
-            "Do NOT add MITRE TTP numbers, SPL queries, or SOAR details to projects that don't have them.\n"
-        )
-    else:
-        diff_instruction = ""
-
     user = f"""JOB:
   Title:   {job['job_title']}
   Company: {job['company']}
@@ -875,24 +644,28 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
   Skills:  {job['skills']}
 {co_ctx}{kw_hint}
 SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
-{diff_instruction}
-Return JSON with EXACTLY 13 keys:
+NEVER drop: EPSS scoring, SPL query syntax (index=* failed | stats), MITRE TTP numbers
+(T1110/T1078/T1059), SOAR pipeline detail, or FIRST.org API mention.
+These differentiators are what make a fresher resume stand out — keep them even if longer.
+
+Return JSON with EXACTLY 14 keys:
 {{
-  "AMZ_B1": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT say 'mirroring SOC' or 'similar to SOC' — let the skills speak for themselves: {AMAZON_BASE[0]}",
-  "AMZ_B2": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[1]}",
-  "AMZ_B3": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[2]}",
+  "AMZ_B1": "Rewrite with 1-2 domain keywords, action verb, 'and' not '&'. Do NOT say 'mirroring SOC' or compare to security roles — let skills speak for themselves: {AMAZON_BASE[0]}",
+  "AMZ_B2": "Rewrite with 1-2 domain keywords, action verb, 'and' not '&'. Do NOT compare to security roles explicitly: {AMAZON_BASE[1]}",
+  "AMZ_B3": "Rewrite with 1-2 domain keywords, action verb, 'and' not '&'. Do NOT compare to security roles explicitly: {AMAZON_BASE[2]}",
+  "AMZ_B4": "{AMAZON_BASE[3]}",
   "P1_TITLE": "{p1['title']}",
   "P1_TECH":  "{', '.join(p1_tools)}",
-  "P1_B1": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][0]}",
-  "P1_B2": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][1]}",
-  "P1_B3": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][2]}",
+  "P1_B1": "Rewrite using P1_TECH tools, preserve technical detail, use 'and' not '&': {p1['bullets'][0]}",
+  "P1_B2": "Rewrite using P1_TECH tools, preserve technical detail, use 'and' not '&': {p1['bullets'][1]}",
+  "P1_B3": "Rewrite using P1_TECH tools, preserve technical detail, use 'and' not '&': {p1['bullets'][2]}",
   "P2_TITLE": "{p2['title']}",
   "P2_TECH":  "{', '.join(p2_tools)}",
-  "P2_B1": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][0]}",
-  "P2_B2": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][1]}",
-  "P2_B3": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][2]}"
+  "P2_B1": "Rewrite using P2_TECH tools, preserve technical detail, use 'and' not '&': {p2['bullets'][0]}",
+  "P2_B2": "Rewrite using P2_TECH tools, preserve technical detail, use 'and' not '&': {p2['bullets'][1]}",
+  "P2_B3": "Rewrite using P2_TECH tools, preserve technical detail, use 'and' not '&': {p2['bullets'][2]}"
 }}
-Rules: action verb start | 'and' not '&' | escape internal quotes | each project uses ONLY its own technical details"""
+Rules: action verb start | 'and' not '&' | escape internal quotes | keep differentiators"""
 
     raw = _call_groq(system, user, GROQ_GEN_MODEL)
     raw = _repair_json(raw)
@@ -907,7 +680,7 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | each project
         )
         content = json.loads(fixed)
 
-    expected = ["AMZ_B1","AMZ_B2","AMZ_B3",
+    expected = ["AMZ_B1","AMZ_B2","AMZ_B3","AMZ_B4",
                 "P1_TITLE","P1_TECH","P1_B1","P1_B2","P1_B3",
                 "P2_TITLE","P2_TECH","P2_B1","P2_B2","P2_B3"]
     missing = [k for k in expected if k not in content]
@@ -929,66 +702,40 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | each project
 # ─────────────────────────────────────────────────────────────────────────────
 # Validation
 # ─────────────────────────────────────────────────────────────────────────────
-def _normalize_validation_output(data: dict) -> dict:
-    return {
-        "ats_score": str(data.get("ats_score", "N/A")),
-        "missing_keywords": str(data.get("missing_keywords", "")),
-        "improvements": str(data.get("improvements", "")),
-        "github_insight": str(data.get("github_insight", "")),
-    }
-
-
 def validate_resume(content: dict, job: dict, github_notes: str, mode: str) -> dict:
     EMPTY = {"ats_score":"skipped","missing_keywords":"","improvements":"","github_insight":""}
-
     if mode == "lenient":
         logger.info("  Validation: lenient — skipped")
         return EMPTY
-
     bullets = " | ".join(filter(None,[
-        content.get("AMZ_B1",""),content.get("AMZ_B2",""),content.get("AMZ_B3",""),
+        content.get("AMZ_B1",""),content.get("AMZ_B2",""),
+        content.get("AMZ_B3",""),content.get("AMZ_B4",""),
         content.get("P1_B1",""),content.get("P1_B2",""),
         content.get("P2_B1",""),content.get("P2_B2",""),
     ]))
-
     if mode == "normal":
         prompt = (f"Job: {job.get('job_title','')} | JD keywords: {job.get('skills','')[:200]}\n"
                   f"Bullets: {bullets[:500]}\nATS review for 0-2yr cybersecurity candidate.\n"
                   "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 6>\"}")
         try:
-            raw  = _call_groq("Return only valid JSON, no markdown.", prompt, GROQ_VAL_MODEL, max_tokens=150)
+            raw  = _call_groq("Return only valid JSON, no markdown.",prompt,GROQ_VAL_MODEL,max_tokens=150)
             data = json.loads(_repair_json(raw))
-            data = _normalize_validation_output(data)
-
-            logger.info(
-                "  ATS=%s missing=%s",
-                data.get("ats_score"),
-                str(data.get("missing_keywords",""))[:50]
-            )
+            data.setdefault("improvements",""); data.setdefault("github_insight","")
+            logger.info("  ATS=%s missing=%s", data.get("ats_score"), data.get("missing_keywords","")[:50])
             return data
-
         except Exception as exc:
-            logger.warning("  Validation failed: %s | raw=%s", exc, raw[:200] if 'raw' in locals() else "")
-            return EMPTY
-
+            logger.warning("  Validation failed: %s", exc); return EMPTY
     gh_sec = (f"\nSimilar GitHub projects:\n{github_notes[:500]}\n" if github_notes else "")
-
     prompt = (f"Job: {job.get('job_title','')} | Domain: {job.get('domain','')}\n"
               f"JD: {job.get('skills','')[:250]}\nBullets: {bullets[:600]}\n{gh_sec}"
               "Return raw JSON: {\"ats_score\":<1-10>,\"missing_keywords\":\"<max 8>\","
               "\"improvements\":\"<2 fixes>\",\"github_insight\":\"<1 thing>\"}")
-
     try:
-        raw  = _call_groq("Strict ATS reviewer. Return only valid JSON.", prompt, GROQ_VAL_MODEL, max_tokens=300)
+        raw  = _call_groq("Strict ATS reviewer. Return only valid JSON.",prompt,GROQ_VAL_MODEL,max_tokens=300)
         data = json.loads(_repair_json(raw))
-        data = _normalize_validation_output(data)
-
-        logger.info("  ATS=%s", data.get("ats_score"))
-        return data
-
+        logger.info("  ATS=%s", data.get("ats_score")); return data
     except Exception as exc:
-        logger.warning("  Validation failed: %s | raw=%s", exc, raw[:200] if 'raw' in locals() else "")
-        return EMPTY
+        logger.warning("  Validation failed: %s", exc); return EMPTY
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1042,7 +789,7 @@ def generate_pdf(docx_bytes: bytes) -> bytes:
         docx_path = os.path.join(tmpdir, "resume.docx")
         with open(docx_path,"wb") as f: f.write(docx_bytes)
         result = subprocess.run(
-            ["libreoffice", "--headless", "--convert-to", "pdf:writer_pdf_Export", "--outdir", tmpdir, docx_path],
+            ["libreoffice","--headless","--convert-to","pdf","--outdir",tmpdir,docx_path],
             capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             raise RuntimeError(f"LibreOffice: {result.stderr[:200]}")
@@ -1053,426 +800,82 @@ def generate_pdf(docx_bytes: bytes) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FEATURE H: Single-page enforcement — 5-tier relevancy-aware trimming
-#
-# Tier 0: Reduce paragraph spacing in DOCX (non-destructive formatting)
-# Tier 1: Shorten long bullets (>200 chars) via LLM — non-destructive
-# Tier 2: Remove least-relevant project bullet by JD keyword score
-# Tier 3: Trim excess skills (SK_V5 → SK_V4 → SK_V1)
-# Tier 4: Shorten longest Amazon bullet (never remove)
-#
-# STRICT: Always enforces single page. No exceptions for certs on page 2.
+# FEATURE H: Single-page enforcement
+# Page 2 containing ONLY certifications is acceptable (certs are real content).
+# Page 2 containing skills/bullets/projects = trim iteratively.
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _count_pdf_pages(pdf_bytes: bytes) -> int:
     try:
         import pikepdf
         return len(pikepdf.open(io.BytesIO(pdf_bytes)).pages)
-    except Exception as e:
-        logger.warning("Page count failed: %s", e)
-        return 999   # force trimming instead of skipping
+    except Exception:
+        return 1
 
 
-def _score_bullet_relevancy(bullet_text: str, ranked_keywords: list) -> int:
-    """
-    Score a bullet's relevancy to the JD based on keyword overlap.
-    Returns count of ranked JD keywords found in the bullet (0–10).
-    Uses word-boundary regex — no LLM call.
-    """
-    if not bullet_text or not ranked_keywords:
-        return 0
-    score = 0
-    lower = bullet_text.lower()
-    for kw in ranked_keywords[:10]:
-        if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", lower, re.IGNORECASE):
-            score += 1
-    return score
-
-
-def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
-    """
-    Use Groq to compress a bullet to ~target_chars while preserving
-    differentiators (EPSS, SPL syntax, MITRE TTPs, FIRST.org, SOAR).
-    Falls back to original text on failure.
-    """
-    if not bullet_text or len(bullet_text) <= target_chars:
-        return bullet_text
-    system = (
-        "You are a resume bullet editor. Shorten the bullet to under "
-        f"{target_chars} characters. PRESERVE: EPSS scoring, SPL query syntax, "
-        "MITRE TTP numbers (T1110/T1078/T1059), SOAR detail, FIRST.org mention. "
-        "Use 'and' not '&'. Return ONLY the shortened bullet, no quotes, no explanation."
-    )
-    user = f"Shorten this resume bullet to ~{target_chars} chars:\n{bullet_text}"
+def _get_page2_text(pdf_bytes: bytes) -> str:
     try:
-        result = _call_groq(system, user, GROQ_GEN_MODEL, max_tokens=250)
-        result = result.strip().strip('"')
-        if len(result) > 20:  # sanity check
-            logger.info("    Shortened %d→%d chars", len(bullet_text), len(result))
-            return result
-    except Exception as exc:
-        logger.warning("    Bullet shortening failed: %s", exc)
-    return bullet_text
+        from pdfminer.pdfpage import PDFPage
+        from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
+        from pdfminer.converter import TextConverter
+        from pdfminer.layout import LAParams
+        rsrcmgr = PDFResourceManager()
+        retstr  = io.StringIO()
+        device  = TextConverter(rsrcmgr, retstr, codec="utf-8", laparams=LAParams())
+        interp  = PDFPageInterpreter(rsrcmgr, device)
+        pages   = list(PDFPage.get_pages(io.BytesIO(pdf_bytes)))
+        if len(pages) < 2: return ""
+        interp.process_page(pages[1])
+        text = retstr.getvalue(); device.close(); retstr.close()
+        return text.strip()
+    except Exception:
+        return ""
 
 
-def _trim_skills_line(skills_value: str, max_items: int = 4) -> str:
+def _page2_certs_only(text: str) -> bool:
+    if not text: return True
+    lower = text.lower()
+    return (any(m in lower for m in ["comptia","cisco networking","certification","in progress"])
+            and not any(m in lower for m in ["projects","work experience","soc operations",
+                                             "siem","technical skills","automation"]))
+
+
+def enforce_single_page(content: dict, job: dict) -> tuple[bytes, bytes, str]:
     """
-    Trim a comma-separated skills value to at most max_items.
-    Keeps the first max_items entries (most important ones listed first).
+    Generate DOCX+PDF. Trim least-relevant bullets iteratively if p2
+    has non-cert content. Trim order: P2_B3 → P1_B3 → P2_B2 → P1_B2.
     """
-    if not skills_value:
-        return skills_value
-    items = [x.strip() for x in skills_value.split(",") if x.strip()]
-    if len(items) <= max_items:
-        return skills_value
-    trimmed = ", ".join(items[:max_items])
-    logger.info("    Skills trimmed: %d→%d items", len(items), max_items)
-    return trimmed
+    # AMZ_B4 removed first — it's the bonus 4th bullet, added only when space allows.
+    # P2_B3 second — least-relevant project's last bullet.
+    # P1_B3 third — primary project's last bullet (has most differentiators, trim last).
+    TRIM_ORDER = ["AMZ_B4", "P2_B3", "P1_B3", "P2_B2", "P1_B2"]
+    trim_log   = []
+    working    = dict(content)
 
+    for attempt in range(len(TRIM_ORDER)+1):
+        docx_bytes = fill_template(working)
+        pdf_bytes  = generate_pdf(docx_bytes)
+        pages      = _count_pdf_pages(pdf_bytes)
 
-def _reduce_paragraph_spacing(docx_bytes: bytes) -> bytes:
-    """
-    Reduce paragraph before/after spacing in the DOCX to squeeze content.
-    This is non-destructive — no content is removed, only formatting changes.
-    Targets: section headings get 2pt before/0pt after, bullet paras get 0pt/0pt.
-    """
-    doc = Document(io.BytesIO(docx_bytes))
-    from docx.shared import Pt
-    for para in doc.paragraphs:
-        pf = para.paragraph_format
-        text = para.text.strip()
-        if not text:
-            # Remove empty paragraphs' spacing entirely
-            pf.space_before = Pt(0)
-            pf.space_after  = Pt(0)
-            continue
-        # Section headings (bold, short text) — minimal spacing
-        if para.style and para.style.name and 'Heading' in para.style.name:
-            pf.space_before = Pt(2)
-            pf.space_after  = Pt(0)
-        else:
-            # All other paragraphs — reduce spacing
-            if pf.space_before is None or pf.space_before > Pt(2):
-                pf.space_before = Pt(1)
-            if pf.space_after is None or pf.space_after > Pt(2):
-                pf.space_after = Pt(0)
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf.read()
-
-
-# Section titles in the template to identify section-header paragraphs
-_SECTION_TITLES = {"education", "work experience", "projects", "technical skills", "certifications"}
-
-
-def _is_section_header(para) -> bool:
-    """Check if a paragraph is a section header (Education, Projects, etc.)."""
-    text = para.text.strip().lower()
-    return text in _SECTION_TITLES
-
-
-def _is_skill_row(para) -> bool:
-    """Check if a paragraph is a filled-in skill row (e.g. 'SOC Operations: ...')."""
-    text = para.text.strip()
-    if not text or len(text) < 5:
-        return False
-    # Skill rows are "Label: value1, value2, ..." — short label with colon
-    if ":" in text:
-        label = text.split(":")[0].strip()
-        if 3 <= len(label) <= 30:
-            return True
-    return False
-
-
-def _expand_spacing_to_fill_page(docx_bytes: bytes, extra_pts: float) -> bytes:
-    """
-    Distribute extra vertical space across section headers, skill rows,
-    bullet paragraphs, and empty separator paragraphs to fill the page.
-
-    Distribution ratios:
-    - 40% to section headers (space_before) — ~5 headers, biggest visual impact
-    - 20% to skill rows (space_before + space_after)
-    - 20% to bullet list paragraphs (space_after)
-    - 20% to empty separator paragraphs (space_before + space_after)
-    """
-    from docx.shared import Pt, Emu
-    doc = Document(io.BytesIO(docx_bytes))
-
-    section_headers = []
-    skill_rows = []
-    bullet_rows = []
-    separator_rows = []
-
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if not text:
-            separator_rows.append(para)
-            continue
-        if _is_section_header(para):
-            section_headers.append(para)
-        elif _is_skill_row(para):
-            skill_rows.append(para)
-        elif para.style and para.style.name == 'List Paragraph':
-            bullet_rows.append(para)
-
-    n_headers    = max(len(section_headers), 1)
-    n_skills     = max(len(skill_rows), 1)
-    n_bullets    = max(len(bullet_rows), 1)
-    n_separators = max(len(separator_rows), 1)
-
-    header_share    = extra_pts * 0.40 / n_headers
-    skill_share     = extra_pts * 0.20 / n_skills
-    bullet_share    = extra_pts * 0.20 / n_bullets
-    separator_share = extra_pts * 0.20 / n_separators
-
-    def _get_pts(val):
-        """Convert a spacing value to float points."""
-        if val is None or val == 0:
-            return 0.0
-        # val is in EMU; 1pt = 12700 EMU
-        return val / 12700.0
-
-    for para in section_headers:
-        pf = para.paragraph_format
-        current_pts = _get_pts(pf.space_before)
-        pf.space_before = Pt(current_pts + header_share)
-
-    for para in skill_rows:
-        pf = para.paragraph_format
-        cb = _get_pts(pf.space_before)
-        ca = _get_pts(pf.space_after)
-        pf.space_before = Pt(cb + skill_share * 0.5)
-        pf.space_after  = Pt(ca + skill_share * 0.5)
-
-    for para in bullet_rows:
-        pf = para.paragraph_format
-        ca = _get_pts(pf.space_after)
-        pf.space_after = Pt(ca + bullet_share)
-
-    for para in separator_rows:
-        pf = para.paragraph_format
-        cb = _get_pts(pf.space_before)
-        ca = _get_pts(pf.space_after)
-        pf.space_before = Pt(cb + separator_share * 0.5)
-        pf.space_after  = Pt(ca + separator_share * 0.5)
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
-    return buf.read()
-
-
-def _fill_page(docx_bytes: bytes) -> tuple[bytes, bytes]:
-    """
-    Expand spacing to fill the single page fully.
-    Does NOT try to measure PDF content position (unreliable with lines/rules).
-    Instead, binary searches extra spacing (0–200pt) and checks page count
-    each iteration. Finds the maximum spacing that still fits on one page.
-
-    Returns (final_docx_bytes, final_pdf_bytes).
-    """
-    pdf_bytes = generate_pdf(docx_bytes)
-    pages = _count_pdf_pages(pdf_bytes)
-    if pages != 1:
-        return docx_bytes, pdf_bytes  # safety — don't fill if not single page
-
-    # Quick check: can we add ANY spacing? Try 5pt first.
-    trial_docx = _expand_spacing_to_fill_page(docx_bytes, 5.0)
-    trial_pdf  = generate_pdf(trial_docx)
-    if _count_pdf_pages(trial_pdf) > 1:
-        # Even 5pt overflows — page is already very full, no room to expand
-        logger.info("  Page fill: page already near-full, no expansion possible")
-        return docx_bytes, pdf_bytes
-
-    # Binary search: find max extra_pts in [0, 200] that still fits 1 page
-    # 200pt ≈ 2.78 inches — more than enough for any realistic gap
-    lo, hi = 0.0, 200.0
-    best_docx, best_pdf = docx_bytes, pdf_bytes
-
-    # First, find an upper bound that actually overflows
-    # (start at 200, if it fits, use it directly)
-    trial_docx = _expand_spacing_to_fill_page(docx_bytes, hi)
-    trial_pdf  = generate_pdf(trial_docx)
-    if _count_pdf_pages(trial_pdf) <= 1:
-        # Even 200pt fits — use it (this means the page was very empty)
-        logger.info("  Page fill: distributed 200.0pt (maximum), still fits")
-        return trial_docx, trial_pdf
-
-    logger.info("  Page fill: binary searching optimal spacing (0-200pt)...")
-
-    for iteration in range(10):  # 10 iterations → ~0.2pt precision
-        mid = (lo + hi) / 2
-        trial_docx = _expand_spacing_to_fill_page(docx_bytes, mid)
-        trial_pdf  = generate_pdf(trial_docx)
-        trial_pages = _count_pdf_pages(trial_pdf)
-
-        if trial_pages <= 1:
-            lo = mid
-            best_docx = trial_docx
-            best_pdf  = trial_pdf
-        else:
-            hi = mid
-
-    logger.info("  Page fill complete: distributed %.1fpt of spacing", lo)
-    return best_docx, best_pdf
-
-
-def _generate_and_check(working: dict, reduce_spacing: bool = False,
-                        fill_page: bool = False) -> tuple[bytes, bytes, int]:
-    """Fill template, generate PDF, count pages. Returns (docx, pdf, pages)."""
-    docx_bytes = fill_template(working)
-    if reduce_spacing:
-        docx_bytes = _reduce_paragraph_spacing(docx_bytes)
-    pdf_bytes  = generate_pdf(docx_bytes)
-    pages      = _count_pdf_pages(pdf_bytes)
-    if fill_page and pages == 1:
-        docx_bytes, pdf_bytes = _fill_page(docx_bytes)
-        pages = _count_pdf_pages(pdf_bytes)
-    return docx_bytes, pdf_bytes, pages
-
-
-def enforce_single_page(content: dict, job: dict,
-                        jd_keywords: dict | None = None) -> tuple[bytes, bytes, str]:
-    """
-    Generate DOCX+PDF and STRICTLY enforce single-page output.
-    Applies up to 5 tiers of trimming, then fills remaining space:
-
-    Tier 0: Reduce paragraph spacing (non-destructive formatting)
-    Tier 1: Shorten bullets > 200 chars via LLM (non-destructive)
-    Tier 2: Remove least-relevant project bullet (scored by JD keyword overlap)
-    Tier 3: Trim excess skills (SK_V5 → SK_V4 → SK_V1)
-    Tier 4: Shorten longest Amazon bullet (never fully remove)
-
-    Page Fill: After achieving single page, measures bottom white space using
-    pdfminer and distributes extra spacing across section headers, skill rows,
-    and bullet paragraphs via binary search to fully utilize the page.
-    """
-    ranked = (jd_keywords or {}).get("ranked", [])
-    trim_log = []
-    working  = dict(content)
-
-    # ── Initial check (no spacing reduction yet) ─────────────────────────
-    docx_bytes, pdf_bytes, pages = _generate_and_check(working)
-
-    if pages <= 1:
-        # Page fits — now fill it to avoid white space at bottom
-        logger.info("  Single page OK — filling page to reduce white space")
-        docx_bytes, pdf_bytes = _fill_page(docx_bytes)
-        return docx_bytes, pdf_bytes, "page-filled"
-
-    logger.info("  %d pages detected — enforcing single page", pages)
-
-    # ── Tier 0: Reduce paragraph spacing ─────────────────────────────────
-    logger.info("  Tier 0: reducing paragraph spacing")
-    docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
-    trim_log.append("reduced-spacing")
-
-    if pages <= 1:
-        logger.info("  Single page achieved via Tier 0 (spacing). %s", trim_log)
-        docx_bytes, pdf_bytes = _fill_page(docx_bytes)
-        return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
-
-    # ── Tier 1: Shorten long bullets (>200 chars) ────────────────────────
-    LONG_THRESHOLD = 200
-    all_bullet_keys = ["AMZ_B1","AMZ_B2","AMZ_B3",
-                       "P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
-    long_bullets = [(k, len(working.get(k,""))) for k in all_bullet_keys
-                    if len(working.get(k,"")) > LONG_THRESHOLD]
-    # Sort by length descending — shorten longest first
-    long_bullets.sort(key=lambda x: x[1], reverse=True)
-
-    if long_bullets:
-        logger.info("  Tier 1: %d bullets > %d chars — shortening", len(long_bullets), LONG_THRESHOLD)
-        for key, length in long_bullets:
-            working[key] = _shorten_bullet_llm(working[key], target_chars=150)
-            trim_log.append(f"shortened {key} ({length}→{len(working[key])})")
-
-        docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
         if pages <= 1:
-            logger.info("  Single page achieved via Tier 1 (shortening). %s", trim_log)
-            docx_bytes, pdf_bytes = _fill_page(docx_bytes)
-            return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
+            if trim_log: logger.info("  Single page achieved. Trimmed: %s", trim_log)
+            return docx_bytes, pdf_bytes, "; ".join(trim_log) if trim_log else ""
 
-    # ── Tier 1.5: Shorten ALL bullets > 150 chars (more aggressive) ──────
-    AGGRESSIVE_THRESHOLD = 150
-    still_long = [(k, len(working.get(k,""))) for k in all_bullet_keys
-                  if len(working.get(k,"")) > AGGRESSIVE_THRESHOLD]
-    still_long.sort(key=lambda x: x[1], reverse=True)
+        p2_text = _get_page2_text(pdf_bytes)
 
-    if still_long:
-        logger.info("  Tier 1.5: %d bullets > %d chars — aggressive shortening",
-                    len(still_long), AGGRESSIVE_THRESHOLD)
-        for key, length in still_long:
-            working[key] = _shorten_bullet_llm(working[key], target_chars=130)
-            trim_log.append(f"aggressively shortened {key} ({length}→{len(working[key])})")
+        if _page2_certs_only(p2_text):
+            logger.info("  2 pages — page 2 is certifications only, acceptable")
+            return docx_bytes, pdf_bytes, "certs-p2-ok"
 
-        docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
-        if pages <= 1:
-            logger.info("  Single page achieved via Tier 1.5. %s", trim_log)
-            docx_bytes, pdf_bytes = _fill_page(docx_bytes)
-            return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
+        if attempt >= len(TRIM_ORDER):
+            logger.warning("  Could not achieve single page — keeping as-is")
+            return docx_bytes, pdf_bytes, "overflow-unresolved"
 
-    # ── Tier 2: Remove least-relevant project bullets ────────────────────
-    PROJECT_BULLET_KEYS = ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]
-    removable = [k for k in PROJECT_BULLET_KEYS
-                 if working.get(k,"").strip() and working[k].strip() != " "]
+        key = TRIM_ORDER[attempt]
+        working[key] = ""   # blank the placeholder so template shows nothing
+        trim_log.append(f"removed {key}")
+        logger.info("  Page overflow — removed %s", key)
 
-    if removable:
-        logger.info("  Tier 2: scoring %d project bullets by JD relevancy", len(removable))
-        # Score each bullet; remove lowest-scoring first
-        scored = [(k, _score_bullet_relevancy(working[k], ranked)) for k in removable]
-        scored.sort(key=lambda x: x[1])  # ascending — least relevant first
-
-        for key, score in scored:
-            working[key] = " "
-            trim_log.append(f"removed {key} (score={score})")
-            logger.info("  Tier 2: removed %s (relevancy score=%d)", key, score)
-
-            docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
-            if pages <= 1:
-                logger.info("  Single page achieved via Tier 2. %s", trim_log)
-                docx_bytes, pdf_bytes = _fill_page(docx_bytes)
-                return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
-
-    # ── Tier 3: Trim excess skills ───────────────────────────────────────
-    SKILL_TRIM_ORDER = ["SK_V5", "SK_V4", "SK_V3", "SK_V2", "SK_V1"]
-    logger.info("  Tier 3: trimming skills")
-    for sk_key in SKILL_TRIM_ORDER:
-        original = working.get(sk_key, "")
-        if original and len(original.split(",")) > 3:
-            working[sk_key] = _trim_skills_line(original, max_items=3)
-            trim_log.append(f"trimmed {sk_key}")
-
-            docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
-            if pages <= 1:
-                logger.info("  Single page achieved via Tier 3 (skills). %s", trim_log)
-                docx_bytes, pdf_bytes = _fill_page(docx_bytes)
-                return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
-
-    # ── Tier 4: Shorten Amazon bullets (last resort, never remove) ───────
-    AMZ_KEYS = ["AMZ_B1", "AMZ_B2", "AMZ_B3"]
-    amz_bullets = [(k, len(working.get(k,""))) for k in AMZ_KEYS
-                   if working.get(k,"").strip() and working[k].strip() != " "]
-    amz_bullets.sort(key=lambda x: x[1], reverse=True)  # longest first
-
-    if amz_bullets:
-        logger.info("  Tier 4: shortening Amazon bullets (last resort)")
-        for key, length in amz_bullets:
-            if length > 80:  # only shorten if meaningfully long
-                working[key] = _shorten_bullet_llm(working[key], target_chars=100)
-                trim_log.append(f"shortened {key} ({length}→{len(working[key])})")
-
-                docx_bytes, pdf_bytes, pages = _generate_and_check(working, reduce_spacing=True)
-                if pages <= 1:
-                    logger.info("  Single page achieved via Tier 4 (AMZ shorten). %s", trim_log)
-                    docx_bytes, pdf_bytes = _fill_page(docx_bytes)
-                    return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; page-filled"
-
-    # ── Fallback: all tiers exhausted ────────────────────────────────────
-    logger.warning("  All tiers exhausted — could not achieve single page")
-    docx_bytes, pdf_bytes, _ = _generate_and_check(working, reduce_spacing=True)
-    return docx_bytes, pdf_bytes, "; ".join(trim_log) + "; overflow-unresolved"
+    return fill_template(working), generate_pdf(fill_template(working)), "; ".join(trim_log)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1648,7 +1051,7 @@ def main():
 
             # FEATURE H: Single-page enforcement + PDF generation
             logger.info("  Generating DOCX+PDF (single-page enforcement)...")
-            docx_bytes, pdf_bytes, trim_log = enforce_single_page(content, job, jd_keywords)
+            docx_bytes, pdf_bytes, trim_log = enforce_single_page(content, job)
             if trim_log and trim_log not in ("certs-p2-ok",""):
                 val_note += f" | Trimmed:{trim_log}"
             logger.info("  DOCX: %d bytes  PDF: %d bytes", len(docx_bytes), len(pdf_bytes))
