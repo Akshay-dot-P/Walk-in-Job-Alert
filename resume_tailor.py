@@ -637,10 +637,262 @@ DOMAIN_BULLET_VARIANT = {
 }
 
 AMAZON_BASE = [
-    "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, mirroring the structured alert triage and escalation workflow used in SOC Tier 1 analyst roles.",
-    "Performed root cause analysis on seller claims to identify policy violations and anomalous patterns; escalated findings to senior reviewers, demonstrating investigative instincts central to SOC and fraud analyst operations.",
-    "Maintained audit-ready case documentation recording investigation findings, decisions, and corrective actions, establishing the evidence chain-of-custody discipline required for security incident reporting and IT audit.",
-    "Spotted recurring fraud patterns across 200+ weekly cases and flagged them early — cutting repeat-issue investigation time before escalation."]
+    "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, applying structured case review and escalation decisions.",
+    "Performed root cause analysis on seller claims to identify policy violations, anomalous patterns, and cases requiring senior reviewer escalation.",
+    "Maintained audit-ready case documentation recording investigation findings, decisions, evidence notes, and corrective actions.",
+    "Spotted recurring fraud patterns across 200+ weekly cases and flagged them early, cutting repeat-issue investigation time before escalation.",
+]
+
+AMAZON_KEYS = ["AMZ_B1", "AMZ_B2", "AMZ_B3", "AMZ_B4"]
+AMAZON_ACTION_VERBS = ("Triaged", "Investigated", "Analyzed", "Detected", "Documented")
+
+AMAZON_ROLE_FOCUS = {
+    "soc": "SOC ROLES: prioritize alert triage, incident investigation, escalation workflows, and pattern analysis.",
+    "security_operations": "SECURITY OPERATIONS ROLES: prioritize security monitoring, escalation handling, investigation records, and case handoffs.",
+    "cybersecurity_analyst": "CYBERSECURITY ANALYST ROLES: prioritize alert triage, anomaly review, root cause analysis, and evidence-based reporting.",
+    "incident_response": "INCIDENT RESPONSE / DFIR ROLES: prioritize incident prioritization, root cause analysis, impact assessment, escalation, and handoff notes.",
+    "threat_intel": "THREAT INTELLIGENCE / OSINT ROLES: prioritize suspicious indicators, pattern recognition, abuse trends, and intelligence documentation.",
+    "vulnerability_management": "VULNERABILITY MANAGEMENT / APPSEC ROLES: prioritize severity, risk impact, remediation tracking, repeat issues, and evidence review.",
+    "cloud_security": "CLOUD SECURITY ROLES: prioritize policy exceptions, access review, risk signals, escalation triggers, and audit-ready notes.",
+    "iam": "IAM / ACCESS GOVERNANCE ROLES: prioritize eligibility validation, policy exceptions, access review mindset, control gaps, and evidence notes.",
+    "dlp": "DLP ROLES: prioritize policy violations, sensitive-case review, anomaly identification, escalation triggers, and investigation records.",
+    "network_security": "NETWORK SECURITY ROLES: prioritize anomaly signals, monitoring prioritization, escalation triggers, and investigation notes.",
+    "grc": "GRC / COMPLIANCE ROLES: prioritize audit documentation, compliance tracking, control validation, policy exceptions, and evidence gaps.",
+    "it_audit": "IT AUDIT / ITGC ROLES: prioritize audit trails, control adherence, evidence completeness, control weaknesses, and documentation.",
+    "technology_risk": "TECHNOLOGY RISK ROLES: prioritize risk identification, root cause analysis, control gaps, risk tracking, and escalation priorities.",
+    "tprm": "THIRD-PARTY / VENDOR RISK ROLES: prioritize due diligence, evidence review, documentation gaps, risk scoring, and review prioritization.",
+    "privacy": "PRIVACY / DATA PROTECTION ROLES: prioritize data handling, policy risk, compliance evidence, control gaps, and traceability.",
+    "data_governance": "DATA GOVERNANCE ROLES: prioritize data quality, completeness checks, policy exceptions, traceability, and control review.",
+    "fraud": "FRAUD ROLES: prioritize fraud detection, anomaly identification, pattern recognition, suspicious behavior, and case investigation.",
+    "aml_kyc": "AML / KYC ROLES: prioritize evidence review, suspicious activity indicators, transaction monitoring analysis, and investigation records.",
+    "trust_safety": "TRUST AND SAFETY ROLES: prioritize policy enforcement, abuse patterns, user risk, evidence-based review, and escalation decisions.",
+    "risk_operations": "RISK OPERATIONS ROLES: prioritize process risk, exception handling, escalation, repeat-issue reduction, and workflow tracking.",
+    "content_risk": "CONTENT RISK ROLES: prioritize policy review, abuse trends, anomaly detection, escalation, and consistent enforcement decisions.",
+    "credit_risk": "CREDIT RISK ROLES: prioritize policy exceptions, eligibility decisions, risk indicators, evidence review, and review prioritization.",
+    "general": "GENERAL OPERATIONS ROLES: prioritize process efficiency, escalation handling, structured decision-making, and workflow optimization.",
+}
+
+AMAZON_FALLBACK_BULLETS = {
+    "soc": {
+        "AMZ_B1": "Triaged 50+ weekly reimbursement cases by severity, applying alert triage and escalation workflow discipline.",
+        "AMZ_B2": "Investigated seller claims using incident investigation discipline, identifying anomalies and escalation triggers.",
+        "AMZ_B3": "Analyzed case patterns to spot recurring anomalies, strengthening pattern analysis for security review.",
+        "AMZ_B4": "Documented findings, decisions, and corrective actions to support escalation workflows and repeatable case review.",
+    },
+    "security_operations": {
+        "AMZ_B1": "Triaged weekly case queues by severity, strengthening security monitoring and escalation handling.",
+        "AMZ_B2": "Investigated policy exceptions to identify anomalies, root causes, and repeat operational risks.",
+        "AMZ_B3": "Analyzed recurring case patterns to support structured decisions and faster escalation workflows.",
+        "AMZ_B4": "Documented decisions and corrective actions to maintain clear investigation records and handoffs.",
+    },
+    "cybersecurity_analyst": {
+        "AMZ_B1": "Triaged cases by severity and eligibility, building alert triage discipline for analyst workflows.",
+        "AMZ_B2": "Investigated claim anomalies and policy violations using root cause analysis and escalation judgment.",
+        "AMZ_B3": "Analyzed recurring patterns to identify risk indicators and prioritize follow-up investigations.",
+        "AMZ_B4": "Documented findings and corrective actions to support evidence-based security review and reporting.",
+    },
+    "incident_response": {
+        "AMZ_B1": "Triaged urgent cases by severity, applying incident prioritization and escalation workflow discipline.",
+        "AMZ_B2": "Investigated claim anomalies to isolate root cause, impact, and cases needing senior escalation.",
+        "AMZ_B3": "Analyzed recurring issue patterns to support incident investigation and follow-up actions.",
+        "AMZ_B4": "Documented findings, decisions, and corrective actions for clear incident records and handoffs.",
+    },
+    "threat_intel": {
+        "AMZ_B1": "Analyzed recurring case patterns to identify suspicious signals and emerging abuse trends.",
+        "AMZ_B2": "Detected anomalous seller claim behavior and flagged repeat indicators for deeper review.",
+        "AMZ_B3": "Investigated policy violations using pattern recognition and evidence-based case assessment.",
+        "AMZ_B4": "Documented indicators, findings, and escalation notes to support threat intelligence review.",
+    },
+    "vulnerability_management": {
+        "AMZ_B1": "Analyzed repeat case issues to identify process gaps, severity patterns, and remediation priorities.",
+        "AMZ_B2": "Investigated policy exceptions to identify root causes, risk impact, and corrective actions.",
+        "AMZ_B3": "Triaged cases by severity and eligibility, supporting prioritization of high-risk exceptions.",
+        "AMZ_B4": "Documented findings and corrective actions to support remediation tracking and review evidence.",
+    },
+    "cloud_security": {
+        "AMZ_B1": "Triaged case exceptions by severity, applying escalation discipline to access and policy reviews.",
+        "AMZ_B2": "Investigated anomalous claims and policy violations, building evidence for security case review.",
+        "AMZ_B3": "Analyzed recurring patterns to identify risk signals, abuse trends, and escalation triggers.",
+        "AMZ_B4": "Documented findings, decisions, and corrective actions for audit-ready security review handoffs.",
+    },
+    "iam": {
+        "AMZ_B1": "Triaged eligibility cases by policy criteria, building access review and exception-handling discipline.",
+        "AMZ_B2": "Investigated policy exceptions to validate eligibility, risk indicators, and escalation needs.",
+        "AMZ_B3": "Analyzed recurring claim patterns to detect anomalous eligibility behavior and control gaps.",
+        "AMZ_B4": "Documented decisions, evidence notes, and corrective actions for access governance review.",
+    },
+    "dlp": {
+        "AMZ_B1": "Triaged policy-driven cases by severity, applying case review and escalation discipline.",
+        "AMZ_B2": "Investigated claim anomalies to identify policy violations, evidence gaps, and escalation triggers.",
+        "AMZ_B3": "Analyzed recurring policy exceptions to spot repeat risk signals and investigation priorities.",
+        "AMZ_B4": "Documented findings and corrective actions to support investigation records and policy review.",
+    },
+    "network_security": {
+        "AMZ_B1": "Triaged cases by severity, applying monitoring prioritization and escalation discipline.",
+        "AMZ_B2": "Investigated policy violations using structured evidence review and root cause analysis.",
+        "AMZ_B3": "Analyzed recurring case patterns to identify anomaly signals and escalation triggers.",
+        "AMZ_B4": "Documented findings and corrective actions for clear investigation records and handoffs.",
+    },
+    "grc": {
+        "AMZ_B1": "Documented investigation findings and corrective actions in audit-ready case notes for compliance tracking.",
+        "AMZ_B2": "Analyzed seller claims to identify policy risk and validate decisions against control criteria.",
+        "AMZ_B3": "Investigated reimbursement cases for policy exceptions, flagging risk indicators and evidence gaps.",
+        "AMZ_B4": "Triaged weekly cases by severity and eligibility, supporting audit documentation and control review.",
+    },
+    "it_audit": {
+        "AMZ_B1": "Documented case evidence, decisions, and corrective actions to support audit trail completeness.",
+        "AMZ_B2": "Investigated policy exceptions to validate control adherence and identify evidence gaps.",
+        "AMZ_B3": "Analyzed recurring case issues to flag control weaknesses and repeat process exceptions.",
+        "AMZ_B4": "Triaged weekly cases by severity and eligibility, supporting consistent audit documentation.",
+    },
+    "technology_risk": {
+        "AMZ_B1": "Triaged weekly cases by severity, identifying policy risk and escalation priorities.",
+        "AMZ_B2": "Investigated seller claims to identify root causes, control gaps, and repeat issue patterns.",
+        "AMZ_B3": "Analyzed case trends to flag operational risk indicators and reduce repeated investigation delays.",
+        "AMZ_B4": "Documented findings, decisions, and corrective actions to support risk tracking and review.",
+    },
+    "tprm": {
+        "AMZ_B1": "Analyzed claim evidence to identify policy risk, documentation gaps, and escalation needs.",
+        "AMZ_B2": "Investigated exceptions using due diligence discipline, validating evidence before decisions.",
+        "AMZ_B3": "Triaged cases by severity and eligibility, supporting risk scoring and review prioritization.",
+        "AMZ_B4": "Documented findings and corrective actions to support vendor risk evidence review.",
+    },
+    "privacy": {
+        "AMZ_B1": "Triaged policy-sensitive cases by severity, supporting data handling and escalation discipline.",
+        "AMZ_B2": "Investigated claim exceptions to identify evidence gaps, policy risk, and corrective actions.",
+        "AMZ_B3": "Analyzed recurring case patterns to flag privacy risk indicators and control gaps.",
+        "AMZ_B4": "Documented decisions and findings to support compliance evidence and review traceability.",
+    },
+    "data_governance": {
+        "AMZ_B1": "Documented case decisions and evidence notes to support data quality and review traceability.",
+        "AMZ_B2": "Analyzed recurring case patterns to identify data gaps, policy exceptions, and control issues.",
+        "AMZ_B3": "Investigated seller claim records to validate completeness, accuracy, and escalation needs.",
+        "AMZ_B4": "Triaged weekly cases by severity and eligibility, supporting structured data governance review.",
+    },
+    "fraud": {
+        "AMZ_B1": "Detected recurring fraud patterns across 200+ weekly cases, flagging anomalies for faster case investigation.",
+        "AMZ_B2": "Investigated seller claims for policy violations, applying pattern recognition to suspicious reimbursement activity.",
+        "AMZ_B3": "Analyzed case queues to identify anomaly trends and escalate repeat issues before payout decisions.",
+        "AMZ_B4": "Documented investigation findings and decisions to support transaction case review and escalation.",
+    },
+    "aml_kyc": {
+        "AMZ_B1": "Investigated seller claims for policy violations, applying KYC evidence review and escalation.",
+        "AMZ_B2": "Detected anomalous case patterns across weekly queues, flagging suspicious activity indicators.",
+        "AMZ_B3": "Analyzed recurring reimbursement issues to support transaction monitoring case review.",
+        "AMZ_B4": "Documented findings, decisions, and escalation notes for clear AML investigation records.",
+    },
+    "trust_safety": {
+        "AMZ_B1": "Triaged policy enforcement cases by severity, balancing user risk, eligibility, and escalation needs.",
+        "AMZ_B2": "Investigated abuse patterns and policy violations using evidence-based case review.",
+        "AMZ_B3": "Detected recurring seller behavior trends and flagged anomalies for trust and safety escalation.",
+        "AMZ_B4": "Documented decisions and corrective actions to support consistent policy enforcement.",
+    },
+    "risk_operations": {
+        "AMZ_B1": "Triaged high-volume case queues by severity, improving escalation handling and structured decisions.",
+        "AMZ_B2": "Investigated repeat issues to identify root causes, process risk, and corrective actions.",
+        "AMZ_B3": "Analyzed recurring patterns to improve workflow efficiency and reduce investigation delays.",
+        "AMZ_B4": "Documented findings and handoffs to support risk operations tracking and review.",
+    },
+    "content_risk": {
+        "AMZ_B1": "Triaged policy cases by severity and eligibility, supporting content risk review discipline.",
+        "AMZ_B2": "Investigated policy violations and anomalous patterns using evidence-based case assessment.",
+        "AMZ_B3": "Detected recurring abuse trends across case queues and flagged issues for escalation.",
+        "AMZ_B4": "Documented decisions, findings, and corrective actions to support consistent policy enforcement.",
+    },
+    "credit_risk": {
+        "AMZ_B1": "Analyzed seller claims to identify policy exceptions, risk indicators, and repeat issue patterns.",
+        "AMZ_B2": "Investigated case evidence to validate eligibility decisions and escalation needs.",
+        "AMZ_B3": "Triaged reimbursement cases by severity, supporting credit risk review prioritization.",
+        "AMZ_B4": "Documented findings and decisions to support risk tracking, evidence review, and handoffs.",
+    },
+    "general": {
+        "AMZ_B1": "Triaged 50+ weekly cases by severity and eligibility, improving escalation handling and structured decisions.",
+        "AMZ_B2": "Investigated seller claims to identify policy gaps, root causes, and repeat workflow issues.",
+        "AMZ_B3": "Analyzed recurring case patterns to improve process efficiency and reduce repeat investigation time.",
+        "AMZ_B4": "Documented findings, decisions, and corrective actions to support workflow optimization and handoffs.",
+    },
+}
+
+AMAZON_DOMAIN_FOCUS = {
+    "SOC": "soc",
+    "VAPT": "vulnerability_management",
+    "AppSec": "vulnerability_management",
+    "CloudSec": "cloud_security",
+    "IAM": "iam",
+    "Forensics": "incident_response",
+    "Network": "network_security",
+    "GRC": "grc",
+    "Risk": "technology_risk",
+    "Fraud-AML": "fraud",
+    "General": "general",
+}
+
+AMAZON_FOCUS_PATTERNS = [
+    ("trust_safety", r"\b(trust\s*(?:and|&)\s*safety|abuse|policy enforcement|user safety|platform safety)\b"),
+    ("content_risk", r"\b(content risk|content moderation|content safety|policy review|moderation analyst)\b"),
+    ("aml_kyc", r"\b(aml|anti-money laundering|kyc|cdd|edd|transaction monitoring|sanctions|financial crime|str analyst|cft)\b"),
+    ("fraud", r"\b(fraud|chargeback|loss prevention|suspicious reimbursement|fraud operations)\b"),
+    ("privacy", r"\b(privacy|data protection|gdpr|dpdp|pdpb|dpo|consent management|privacy compliance)\b"),
+    ("data_governance", r"\b(data governance|data quality|data lineage|metadata|records governance)\b"),
+    ("tprm", r"\b(third[- ]party risk|tprm|vendor risk|supplier risk|supply chain risk|due diligence)\b"),
+    ("credit_risk", r"\b(credit risk|credit analyst|loan|underwriting|collections|portfolio risk)\b"),
+    ("risk_operations", r"\b(operational risk|risk operations|ops risk|rcsa|loss event|process risk)\b"),
+    ("it_audit", r"\b(it audit|is audit|itgc|technology audit|internal audit|control testing|sox)\b"),
+    ("technology_risk", r"\b(technology risk|cyber risk|it risk|enterprise risk|erm|risk analyst)\b"),
+    ("grc", r"\b(grc|compliance|iso\s*27001|nist|pci[- ]dss|regulatory compliance|control validation)\b"),
+    ("dlp", r"\b(dlp|data loss prevention|information protection|data leakage)\b"),
+    ("iam", r"\b(iam|identity|access governance|identity governance|pam|idam|sailpoint|okta|cyberark|privileged access)\b"),
+    ("cloud_security", r"\b(cloud security|aws security|azure security|gcp security|cspm|cloudtrail|guardduty|cloud iam)\b"),
+    ("incident_response", r"\b(incident response|incident responder|dfir|forensic|digital forensics|ediscovery)\b"),
+    ("threat_intel", r"\b(threat intelligence|cti|osint|threat hunting|ioc|indicator|dark web|threat research)\b"),
+    ("vulnerability_management", r"\b(vulnerability|vapt|penetration|pentest|appsec|application security|devsecops|sast|dast|patch management)\b"),
+    ("network_security", r"\b(network security|ids|ips|firewall|intrusion|packet|endpoint security)\b"),
+    ("soc", r"\b(soc|siem|blue team|alert triage|security monitoring|security operations center|tier\s*[12]|l[12]\s+analyst)\b"),
+    ("security_operations", r"\b(security operations|detect and respond|security monitoring analyst)\b"),
+    ("cybersecurity_analyst", r"\b(cybersecurity analyst|cyber security analyst|security analyst|information security|infosec|cyber analyst)\b"),
+]
+
+
+def get_amazon_focus_key(job: dict) -> str:
+    """Map a job to the right Amazon experience framing bucket."""
+    domain = str(job.get("domain", "")).strip()
+    role_text = " ".join(str(job.get(k, "")) for k in ("job_title", "summary", "skills")).lower()
+
+    for focus_key, pattern in AMAZON_FOCUS_PATTERNS:
+        if re.search(pattern, role_text):
+            return focus_key
+
+    return AMAZON_DOMAIN_FOCUS.get(domain, "general")
+
+
+def get_amazon_role_focus(job: dict) -> str:
+    return AMAZON_ROLE_FOCUS[get_amazon_focus_key(job)]
+
+
+def sanitize_amazon_bullets(content: dict, job: dict) -> dict:
+    """
+    Enforce the non-negotiable Amazon bullet constraints after LLM generation.
+    Falls back per bullet so valid model output can still be preserved.
+    """
+    focus_key = get_amazon_focus_key(job)
+    fallback = AMAZON_FALLBACK_BULLETS[focus_key]
+    explicit_comparison = re.compile(
+        r"\b(mirroring|similar to|akin to|central to|used in|required for)\b.*\b(role|roles|soc|security|audit)\b",
+        re.IGNORECASE,
+    )
+
+    for key in AMAZON_KEYS:
+        bullet = re.sub(r"\s+", " ", str(content.get(key, ""))).strip()
+        bullet = bullet.replace(" & ", " and ")
+        invalid = (
+            not bullet
+            or len(bullet) > 160
+            or "amazon operations" in bullet.lower()
+            or explicit_comparison.search(bullet) is not None
+            or not bullet.startswith(AMAZON_ACTION_VERBS)
+        )
+        content[key] = fallback[key] if invalid else bullet
+    return content
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Company intelligence
@@ -830,6 +1082,9 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
         kw_hint = (f"\nKEYWORD INJECTION: Weave these top JD keywords naturally across bullets "
                    f"(target 2-3x total, max 2 per bullet): {', '.join(ranked[:8])}\n")
 
+    amazon_context = "\n".join(f"- {b}" for b in AMAZON_BASE)
+    amazon_role_focus = get_amazon_role_focus(job)
+
     # BUG FIX B: 'and' not '&'
     system = (
         "You are a senior cybersecurity resume writer for the Indian job market. "
@@ -874,14 +1129,33 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
   Summary: {job['summary']}
   Skills:  {job['skills']}
 {co_ctx}{kw_hint}
+AMAZON EXPERIENCE REFRAMING:
+CANDIDATE BACKGROUND (REAL EXPERIENCE):
+{amazon_context}
+
+ROLE FOCUS:
+{amazon_role_focus}
+
+TASK FOR AMZ_B1-AMZ_B4:
+Generate 4 strong, ATS-optimized experience bullets by reframing the same real
+Amazon experience for this role. This is a career transition, so adapt the same
+experience differently based on role focus. Do NOT invent new work, tools, or systems.
+
+STRICT AMZ RULES:
+- Each AMZ bullet max 160 characters.
+- Each AMZ bullet starts with one of: Triaged, Investigated, Analyzed, Detected, Documented.
+- Each AMZ bullet includes 1-2 relevant keywords from ROLE FOCUS.
+- Do NOT mention "Amazon operations".
+- Do NOT explicitly compare the work to security/audit roles.
+
 SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
 {diff_instruction}
 Return JSON with EXACTLY 13 keys:
 {{
-  "AMZ_B1": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT say 'mirroring SOC' or 'similar to SOC' — let the skills speak for themselves: {AMAZON_BASE[0]}",
-  "AMZ_B2": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[1]}",
-  "AMZ_B3": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[2]}",
-  "AMZ_B4": "Rewrite with 1-2 domain keywords, action verb start, 'and' not '&'. Do NOT explicitly compare to security roles: {AMAZON_BASE[3]}",
+  "AMZ_B1": "Role-focused bullet from CANDIDATE BACKGROUND item 1; follow all STRICT AMZ RULES.",
+  "AMZ_B2": "Role-focused bullet from CANDIDATE BACKGROUND item 2; follow all STRICT AMZ RULES.",
+  "AMZ_B3": "Role-focused bullet from CANDIDATE BACKGROUND item 3; follow all STRICT AMZ RULES.",
+  "AMZ_B4": "Role-focused bullet from CANDIDATE BACKGROUND item 4; follow all STRICT AMZ RULES.",
 
   "P1_TITLE": "{p1['title']}",
   "P1_TECH":  "{', '.join(p1_tools)}",
@@ -924,6 +1198,8 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | each project
     for k in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
         if content.get(k):
             content[k] = apply_synonyms(content[k])
+
+    content = sanitize_amazon_bullets(content, job)
 
     return content
 
