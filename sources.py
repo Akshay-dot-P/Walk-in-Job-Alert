@@ -24,6 +24,7 @@ import time
 import logging
 import asyncio
 import os
+import json
 from datetime import datetime
 import feedparser
 import httpx
@@ -32,7 +33,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-LOCATION            = "Bengaluru, Karnataka, India"
+LOCATION            = "Bengaluru/Bangalore, Karnataka, India"
 HOURS_OLD           = 72
 RESULTS_PER_TERM    = 40
 WORKDAY_PAGE_SIZE   = 20
@@ -46,11 +47,28 @@ WORKDAY_COMPANIES = [
     ("Salesforce", "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/Careers/jobs"),
     ("Cisco", "https://cisco.wd5.myworkdayjobs.com/wday/cxs/External/jobs"),
 ]
-WORKDAY_SEARCH_QUERY = "Security Engineer"
+WORKDAY_SEARCH_QUERIES = [
+    "Tax Intern",
+    "VAPT Intern",
+    "Cybersecurity Intern",
+    "Networking Security Intern",
+    "Senior Security Engineer",
+    "Cloud Security Engineer",
+    "DevSecOps Engineer",
+    "Application Security Engineer",
+    "SOC Analyst",
+    "Information Security Analyst",
+    "Cyber Security Analyst",
+    "Cloud Security Engineer",
+    "Container Security Engineer",
+    "Data Security Engineer",
+    "Risk and Compliance Analyst",
+    "Fraud Risk Analyst",
+]
 WORKDAY_TITLE_KEYWORDS = (
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
 )
-WORKDAY_ALLOWED_COUNTRIES = ("india",)
+WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
 
 # CI/runtime controls (keep defaults aligned with current behavior unless overridden)
 LINKEDIN_SLEEP_SECONDS = float(os.environ.get("LINKEDIN_SLEEP_SECONDS", "5"))
@@ -58,9 +76,8 @@ GOOGLE_SLEEP_SECONDS = float(os.environ.get("GOOGLE_SLEEP_SECONDS", "4"))
 INDEED_SLEEP_SECONDS = float(os.environ.get("INDEED_SLEEP_SECONDS", "5"))
 SOURCE_COOLDOWN_SECONDS = float(os.environ.get("SOURCE_COOLDOWN_SECONDS", "8"))
 
-# 0 means "no explicit cap". In GitHub Actions we auto-cap if unset.
+# 0 means no explicit cap.
 MAX_LINKEDIN_TERMS = int(os.environ.get("MAX_LINKEDIN_TERMS", "0"))
-DEFAULT_CI_MAX_LINKEDIN_TERMS = 35
 
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
@@ -351,9 +368,45 @@ def _normalize_workday_jobs_url(url: str) -> str:
     return clean
 
 
+def _load_workday_companies() -> list[tuple[str, str]]:
+    """
+    Optional override:
+      WORKDAY_COMPANIES_JSON='[["Name","https://.../jobs"], ...]'
+    """
+    raw = os.environ.get("WORKDAY_COMPANIES_JSON", "").strip()
+    if not raw:
+        return WORKDAY_COMPANIES
+
+    try:
+        parsed = json.loads(raw)
+        companies: list[tuple[str, str]] = []
+        for item in parsed:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            name = str(item[0]).strip()
+            url = str(item[1]).strip()
+            if name and url:
+                companies.append((name, url))
+        return companies or WORKDAY_COMPANIES
+    except Exception as exc:
+        logger.warning("Invalid WORKDAY_COMPANIES_JSON, using defaults: %s", exc)
+        return WORKDAY_COMPANIES
+
+
 def _extract_workday_job_id(posting: dict) -> str:
+    if not isinstance(posting, dict):
+        return ""
+
+    bullet = posting.get("bulletFields")
+    bullet_id = ""
+    if isinstance(bullet, list):
+        for item in bullet:
+            if isinstance(item, dict) and item.get("id"):
+                bullet_id = item.get("id")
+                break
+
     candidates = [
-        posting.get("bulletFields", [{}])[0].get("id") if posting.get("bulletFields") else "",
+        bullet_id,
         posting.get("jobReqId"),
         posting.get("externalPath"),
         posting.get("id"),
@@ -365,6 +418,9 @@ def _extract_workday_job_id(posting: dict) -> str:
 
 
 def _extract_posted_date(posting: dict) -> str:
+    if not isinstance(posting, dict):
+        return ""
+
     raw = (
         posting.get("postedOn")
         or posting.get("postedDate")
@@ -410,15 +466,29 @@ async def _workday_post_with_retry(
     for attempt in range(1, retries + 1):
         try:
             resp = await client.post(url, json=payload)
+            if resp.status_code == 429:
+                wait = min(2 ** attempt, 10)
+                logger.warning("%s: rate limited (429), retry %d/%d in %ss",
+                               company_name, attempt, retries, wait)
+                await asyncio.sleep(wait)
+                continue
             if resp.status_code >= 500:
                 raise httpx.HTTPStatusError(
                     f"{resp.status_code} server error",
                     request=resp.request,
                     response=resp,
                 )
+            if resp.status_code >= 400:
+                # Return client errors directly so caller can try alternate payloads.
+                logger.warning("%s: Workday returned %s for payload keys=%s",
+                               company_name, resp.status_code, sorted(payload.keys()))
+                return {
+                    "__http_error__": resp.status_code,
+                    "__response_text__": (resp.text or "")[:400],
+                }
             resp.raise_for_status()
             return resp.json()
-        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
+        except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError) as exc:
             if attempt >= retries:
                 logger.warning("%s: request failed after %d attempts: %s",
                                company_name, retries, exc)
@@ -449,6 +519,8 @@ async def _fetch_workday_job_description(
     )
     for payload in payload_variants:
         detail_json = await _workday_post_with_retry(client, detail_url, company_name, payload)
+        if detail_json.get("__http_error__"):
+            continue
         desc = _extract_detail_description(detail_json)
         if desc:
             return desc
@@ -458,10 +530,10 @@ async def _fetch_workday_job_description(
 def filter_workday_jobs(
     jobs: list[dict],
     title_keywords: tuple[str, ...] | list[str] | None = None,
-    allowed_countries: tuple[str, ...] | list[str] | None = None,
+    allowed_locations: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict]:
     title_keywords = tuple(k.lower() for k in (title_keywords or ()))
-    allowed_countries = tuple(c.lower() for c in (allowed_countries or ()))
+    allowed_locations = tuple(c.lower() for c in (allowed_locations or ()))
 
     filtered = []
     for job in jobs:
@@ -469,7 +541,7 @@ def filter_workday_jobs(
         location = str(job.get("location") or "").lower()
 
         title_ok = True if not title_keywords else any(k in title for k in title_keywords)
-        location_ok = True if not allowed_countries else any(c in location for c in allowed_countries)
+        location_ok = True if not allowed_locations else any(c in location for c in allowed_locations)
         if title_ok and location_ok:
             filtered.append(job)
     return filtered
@@ -479,43 +551,75 @@ async def _scrape_workday_company(
     client: httpx.AsyncClient,
     company_name: str,
     jobs_url: str,
-    search_query: str,
+    search_queries: list[str],
     title_keywords: tuple[str, ...] | list[str] | None = None,
-    allowed_countries: tuple[str, ...] | list[str] | None = None,
+    allowed_locations: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict]:
     jobs_url = _normalize_workday_jobs_url(jobs_url)
 
     all_postings: list[dict] = []
-    total_results = 0
-    for page_idx in range(WORKDAY_MAX_PAGES):
-        offset = page_idx * WORKDAY_PAGE_SIZE
-        payload = {
-            "appliedFacets": {},
-            "limit": WORKDAY_PAGE_SIZE,
-            "offset": offset,
-            "searchText": search_query,
-        }
-        response_json = await _workday_post_with_retry(client, jobs_url, company_name, payload)
-        if not response_json:
-            break
+    total_results_sum = 0
+    query_list = [q.strip() for q in (search_queries or []) if str(q).strip()]
+    if not query_list:
+        query_list = [""]
 
-        total_results = int(response_json.get("total", 0) or 0)
-        postings = response_json.get("jobPostings", []) or []
-        if not postings:
-            break
-        all_postings.extend(postings)
+    for search_query in query_list:
+        for page_idx in range(WORKDAY_MAX_PAGES):
+            offset = page_idx * WORKDAY_PAGE_SIZE
+            payload_variants = [
+                {
+                    "appliedFacets": {},
+                    "limit": WORKDAY_PAGE_SIZE,
+                    "offset": offset,
+                    "searchText": search_query,
+                },
+                {
+                    "appliedFacets": {},
+                    "limit": WORKDAY_PAGE_SIZE,
+                    "offset": offset,
+                    "searchText": search_query,
+                    "userPreferredLanguage": "en-US",
+                },
+                {
+                    "appliedFacets": [],
+                    "limit": WORKDAY_PAGE_SIZE,
+                    "offset": offset,
+                    "searchText": search_query,
+                },
+            ]
+
+            response_json: dict = {}
+            for payload in payload_variants:
+                response_json = await _workday_post_with_retry(client, jobs_url, company_name, payload)
+                if response_json and not response_json.get("__http_error__"):
+                    break
+
+            if not response_json or response_json.get("__http_error__"):
+                break
+
+            total_results = int(response_json.get("total", 0) or 0)
+            postings = response_json.get("jobPostings", []) or []
+            if not isinstance(postings, list) or not postings:
+                break
+            total_results_sum += total_results
+            all_postings.extend(postings)
+
+            if len(all_postings) >= WORKDAY_MAX_RESULTS:
+                break
+            if offset + WORKDAY_PAGE_SIZE >= total_results:
+                break
 
         if len(all_postings) >= WORKDAY_MAX_RESULTS:
             break
-        if offset + WORKDAY_PAGE_SIZE >= total_results:
-            break
 
-    logger.info("%s: %d total results", company_name, total_results)
+    logger.info("%s: %d total results", company_name, total_results_sum)
 
     # Dedup by Workday job ID within company response.
     deduped: list[dict] = []
     seen_job_ids: set[str] = set()
     for posting in all_postings[:WORKDAY_MAX_RESULTS]:
+        if not isinstance(posting, dict):
+            continue
         job_id = _extract_workday_job_id(posting)
         if job_id and job_id in seen_job_ids:
             continue
@@ -556,7 +660,7 @@ async def _scrape_workday_company(
     filtered = filter_workday_jobs(
         records,
         title_keywords=title_keywords,
-        allowed_countries=allowed_countries,
+        allowed_locations=allowed_locations,
     )
     logger.info("%s: %d jobs found (filtered)", company_name, len(filtered))
     return filtered
@@ -564,10 +668,10 @@ async def _scrape_workday_company(
 
 async def scrape_workday_jobs(
     companies: list[tuple[str, str]],
-    search_query: str,
+    search_queries: list[str],
     worker_count: int = WORKDAY_WORKERS,
     title_keywords: tuple[str, ...] | list[str] | None = None,
-    allowed_countries: tuple[str, ...] | list[str] | None = None,
+    allowed_locations: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict]:
     if not companies:
         return []
@@ -588,9 +692,9 @@ async def scrape_workday_jobs(
                     client=client,
                     company_name=company_name,
                     jobs_url=jobs_url,
-                    search_query=search_query,
+                    search_queries=search_queries,
                     title_keywords=title_keywords,
-                    allowed_countries=allowed_countries,
+                    allowed_locations=allowed_locations,
                 )
 
         tasks = [run_company(name, url) for name, url in companies]
@@ -607,16 +711,17 @@ async def scrape_workday_jobs(
 
 
 def _scrape_workday() -> list[dict]:
-    logger.info("=== Workday API: %d tenants | query='%s' ===",
-                len(WORKDAY_COMPANIES), WORKDAY_SEARCH_QUERY)
+    companies = _load_workday_companies()
+    logger.info("=== Workday API: %d tenants | %d queries ===",
+                len(companies), len(WORKDAY_SEARCH_QUERIES))
     try:
         return asyncio.run(
             scrape_workday_jobs(
-                companies=WORKDAY_COMPANIES,
-                search_query=WORKDAY_SEARCH_QUERY,
+                companies=companies,
+                search_queries=WORKDAY_SEARCH_QUERIES,
                 worker_count=WORKDAY_WORKERS,
                 title_keywords=WORKDAY_TITLE_KEYWORDS,
-                allowed_countries=WORKDAY_ALLOWED_COUNTRIES,
+                allowed_locations=WORKDAY_ALLOWED_LOCATIONS,
             )
         )
     except Exception as exc:
@@ -650,13 +755,6 @@ def _effective_linkedin_terms() -> list[str]:
     explicit_cap = MAX_LINKEDIN_TERMS
     if explicit_cap > 0:
         return LINKEDIN_TERMS[:explicit_cap]
-
-    in_github_actions = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
-    if in_github_actions:
-        logger.info("GitHub Actions detected: limiting LinkedIn terms to %d (set MAX_LINKEDIN_TERMS to override)",
-                    DEFAULT_CI_MAX_LINKEDIN_TERMS)
-        return LINKEDIN_TERMS[:DEFAULT_CI_MAX_LINKEDIN_TERMS]
-
     return LINKEDIN_TERMS
 
 
