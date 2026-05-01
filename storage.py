@@ -4,6 +4,7 @@
 import os
 import json
 import logging
+import re
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -115,16 +116,31 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
 # DEDUP
 # =============================================================================
 
-def _build_seen_sets(worksheet) -> tuple[set[str], set[str]]:
+def _extract_workday_job_id_from_url(url: str) -> str:
+    text = (url or "").strip()
+    if not text:
+        return ""
+    # Workday external URLs typically end with .../job/<externalPath>
+    # Keep the final segment as stable ID fallback for historical rows.
+    if "/myworkdayjobs.com/" not in text:
+        return ""
+    m = re.search(r"/job/([^/?#]+)", text)
+    if not m:
+        return ""
+    return m.group(1).strip()
+
+
+def _build_seen_sets(worksheet) -> tuple[set[str], set[str], set[str]]:
     seen_urls:           set[str] = set()
     seen_company_titles: set[str] = set()
+    seen_job_ids:        set[str] = set()
 
     try:
         all_values = worksheet.get_all_values()
 
         if not all_values or len(all_values) < 2:
             logger.info("Sheet is empty or header-only — no dedup history.")
-            return seen_urls, seen_company_titles
+            return seen_urls, seen_company_titles, seen_job_ids
 
         headers = all_values[0]
         rows    = all_values[1:]
@@ -140,6 +156,9 @@ def _build_seen_sets(worksheet) -> tuple[set[str], set[str]]:
                 url = row[url_idx].strip()
                 if url:
                     seen_urls.add(url)
+                    workday_id = _extract_workday_job_id_from_url(url)
+                    if workday_id:
+                        seen_job_ids.add(workday_id)
 
             company = (row[company_idx].lower().strip()
                        if company_idx is not None and company_idx < len(row) else "")
@@ -154,15 +173,22 @@ def _build_seen_sets(worksheet) -> tuple[set[str], set[str]]:
     except Exception as e:
         logger.error("Dedup read failed: %s — all listings treated as new", e)
 
-    logger.info("Dedup index: %d URLs, %d company+title pairs",
-                len(seen_urls), len(seen_company_titles))
-    return seen_urls, seen_company_titles
+    logger.info("Dedup index: %d URLs, %d company+title pairs, %d Workday IDs",
+                len(seen_urls), len(seen_company_titles), len(seen_job_ids))
+    return seen_urls, seen_company_titles, seen_job_ids
 
 
-def _is_duplicate(listing, seen_urls, seen_company_titles) -> bool:
+def _is_duplicate(listing, seen_urls, seen_company_titles, seen_job_ids) -> bool:
+    job_id = str(listing.get("job_id", "")).strip()
+    if job_id and job_id in seen_job_ids:
+        return True
+
     # Check both "apply_url" and "url" keys since scorer may use either
     url = str(listing.get("apply_url", "") or listing.get("url", "")).strip()
     if url and url in seen_urls:
+        return True
+    workday_id_from_url = _extract_workday_job_id_from_url(url)
+    if workday_id_from_url and workday_id_from_url in seen_job_ids:
         return True
 
     company = str(listing.get("company", "")).lower().strip()
@@ -207,28 +233,44 @@ def save_new_listings(scored_listings: list[dict]) -> list[dict]:
         logger.warning("Proceeding with all listings as new (sheet unavailable).")
         return scored_listings
 
-    seen_urls, seen_company_titles = _build_seen_sets(worksheet)
+    seen_urls, seen_company_titles, seen_job_ids = _build_seen_sets(worksheet)
 
     new_listings = []
+    company_stats: dict[str, dict[str, int]] = {}
     for listing in scored_listings:
-        if _is_duplicate(listing, seen_urls, seen_company_titles):
+        source_company = str(listing.get("source_company", "")).strip() or str(listing.get("company", "")).strip() or "Unknown"
+        stats = company_stats.setdefault(source_company, {"new": 0, "existing": 0})
+
+        if _is_duplicate(listing, seen_urls, seen_company_titles, seen_job_ids):
+            stats["existing"] += 1
             logger.info("Duplicate — skipping: %s | %s",
                         listing.get("company", "?"), listing.get("job_title", "?"))
             continue
 
         success = _save_listing(worksheet, listing)
         if success:
+            stats["new"] += 1
             new_listings.append(listing)
             # Update in-memory sets so duplicates within this batch are caught
             url = str(listing.get("apply_url", "") or listing.get("url", "")).strip()
             if url:
                 seen_urls.add(url)
+                workday_id = _extract_workday_job_id_from_url(url)
+                if workday_id:
+                    seen_job_ids.add(workday_id)
+            job_id = str(listing.get("job_id", "")).strip()
+            if job_id:
+                seen_job_ids.add(job_id)
             company = str(listing.get("company", "")).lower().strip()
             title   = str(listing.get("job_title", "")).lower().strip()
             if company and title:
                 seen_company_titles.add(f"{company}|{title}")
             elif title:
                 seen_company_titles.add(title)
+
+    for company_name, stat in company_stats.items():
+        logger.info("%s: %d new, %d already in DB",
+                    company_name, stat["new"], stat["existing"])
 
     logger.info("Storage complete: %d new / %d duplicates skipped",
                 len(new_listings), len(scored_listings) - len(new_listings))
