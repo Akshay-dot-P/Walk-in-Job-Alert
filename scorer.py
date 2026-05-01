@@ -250,6 +250,47 @@ def pre_filter(listings: list) -> list:
     return kept
 
 
+def _parse_date_yyyy_mm_dd(value: str) -> datetime | None:
+    s = (value or "").strip()
+    if not s:
+        return None
+    # Common forms we see in this repo: "YYYY-MM-DD" or ISO-like "YYYY-MM-DDTHH:MM:SS"
+    if "T" in s:
+        s = s.split("T", 1)[0]
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def freshness_filter(listings: list[dict], max_age_days: int) -> list[dict]:
+    """
+    Drop listings older than max_age_days if they have a parseable date.
+    If date is missing/unparseable, keep the listing (conservative).
+    """
+    if not max_age_days or max_age_days <= 0:
+        return listings
+
+    now = datetime.now(timezone.utc)
+    kept: list[dict] = []
+    dropped = 0
+    for l in listings:
+        raw = str(l.get("date_posted") or l.get("posted_date") or "").strip()
+        dt = _parse_date_yyyy_mm_dd(raw)
+        if not dt:
+            kept.append(l)
+            continue
+        age_days = (now - dt).days
+        if age_days > max_age_days:
+            dropped += 1
+            continue
+        kept.append(l)
+
+    logger.info("Freshness filter (max_age_days=%d): %d/%d kept, %d dropped",
+                max_age_days, len(kept), len(listings), dropped)
+    return kept
+
+
 
 # =============================================================================
 # GROQ CALL  (unchanged from original — uses retry-after header)
@@ -425,6 +466,12 @@ def score_all(listings: list, min_score: int = 4) -> list:
     relevant = pre_filter(listings)
     if not relevant:
         logger.info("Nothing relevant after pre-filter")
+        return []
+
+    max_age_days = int(os.environ.get("MAX_POST_AGE_DAYS", "21"))
+    relevant = freshness_filter(relevant, max_age_days=max_age_days)
+    if not relevant:
+        logger.info("Nothing left after freshness filter")
         return []
 
     # Dedup before scoring:
