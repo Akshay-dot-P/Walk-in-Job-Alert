@@ -395,6 +395,8 @@ def score_listing(listing: dict) -> dict | None:
             "posted_date":          d.get("posted_date") or "",
             "source":               listing.get("source", ""),
             "url":                  listing.get("job_url") or listing.get("url", ""),
+            "job_id":               listing.get("job_id", ""),
+            "source_company":       listing.get("company", ""),
             "status":               "New",
         }
 
