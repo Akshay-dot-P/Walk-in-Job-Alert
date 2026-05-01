@@ -22,7 +22,10 @@ FIXES in this version:
 import re
 import time
 import logging
+import asyncio
+from datetime import datetime
 import feedparser
+import httpx
 import jobspy
 import pandas as pd
 
@@ -31,6 +34,22 @@ logger = logging.getLogger(__name__)
 LOCATION            = "Bengaluru, Karnataka, India"
 HOURS_OLD           = 72
 RESULTS_PER_TERM    = 40
+WORKDAY_PAGE_SIZE   = 20
+WORKDAY_MAX_PAGES   = 25
+WORKDAY_MAX_RESULTS = WORKDAY_PAGE_SIZE * WORKDAY_MAX_PAGES
+WORKDAY_TIMEOUT_S   = 30.0
+WORKDAY_WORKERS     = 2
+
+WORKDAY_COMPANIES = [
+    ("BMO", "https://bmo.wd3.myworkdayjobs.com/wday/cxs/bmo/External/jobs"),
+    ("Salesforce", "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/Careers/jobs"),
+    ("Cisco", "https://cisco.wd5.myworkdayjobs.com/wday/cxs/External/jobs"),
+]
+WORKDAY_SEARCH_QUERY = "Security Engineer"
+WORKDAY_TITLE_KEYWORDS = (
+    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
+)
+WORKDAY_ALLOWED_COUNTRIES = ("india",)
 
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
@@ -312,6 +331,288 @@ def _to_records(df) -> list[dict]:
     return records
 
 
+def _normalize_workday_jobs_url(url: str) -> str:
+    clean = (url or "").strip().rstrip("/")
+    if not clean:
+        raise ValueError("Empty Workday tenant URL")
+    if not clean.endswith("/jobs"):
+        raise ValueError(f"Workday URL must end with /jobs: {url}")
+    return clean
+
+
+def _extract_workday_job_id(posting: dict) -> str:
+    candidates = [
+        posting.get("bulletFields", [{}])[0].get("id") if posting.get("bulletFields") else "",
+        posting.get("jobReqId"),
+        posting.get("externalPath"),
+        posting.get("id"),
+    ]
+    for c in candidates:
+        if c:
+            return str(c).strip("/")
+    return ""
+
+
+def _extract_posted_date(posting: dict) -> str:
+    raw = (
+        posting.get("postedOn")
+        or posting.get("postedDate")
+        or posting.get("startDate")
+        or posting.get("timeType")
+        or ""
+    )
+    text = str(raw).strip()
+    if not text:
+        return ""
+    if "T" in text:
+        return text.split("T", 1)[0]
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return text
+
+
+def _extract_detail_description(detail_payload: dict) -> str:
+    if not isinstance(detail_payload, dict):
+        return ""
+    candidates = [
+        detail_payload.get("jobPostingInfo", {}).get("jobDescription"),
+        detail_payload.get("jobDescription"),
+        detail_payload.get("description"),
+        detail_payload.get("jobPostingInfo", {}).get("externalDescription"),
+    ]
+    for c in candidates:
+        if c:
+            return str(c)
+    return ""
+
+
+async def _workday_post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    company_name: str,
+    payload: dict,
+    retries: int = 3,
+) -> dict:
+    for attempt in range(1, retries + 1):
+        try:
+            resp = await client.post(url, json=payload)
+            if resp.status_code >= 500:
+                raise httpx.HTTPStatusError(
+                    f"{resp.status_code} server error",
+                    request=resp.request,
+                    response=resp,
+                )
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
+            if attempt >= retries:
+                logger.warning("%s: request failed after %d attempts: %s",
+                               company_name, retries, exc)
+                return {}
+            backoff = min(2 ** attempt, 8)
+            logger.warning("%s: request error (%s), retry %d/%d in %ss",
+                           company_name, exc, attempt, retries, backoff)
+            await asyncio.sleep(backoff)
+    return {}
+
+
+async def _fetch_workday_job_description(
+    client: httpx.AsyncClient,
+    jobs_url: str,
+    company_name: str,
+    posting: dict,
+) -> str:
+    ext_path = str(posting.get("externalPath") or "").strip("/")
+    if not ext_path:
+        return str(posting.get("description") or "")
+
+    detail_url = f"{jobs_url}/job/{ext_path}"
+    # Some tenants expect {} and some accept small context payloads.
+    payload_variants = (
+        {},
+        {"appliedFacets": {}},
+        {"jobPostingId": posting.get("id")},
+    )
+    for payload in payload_variants:
+        detail_json = await _workday_post_with_retry(client, detail_url, company_name, payload)
+        desc = _extract_detail_description(detail_json)
+        if desc:
+            return desc
+    return str(posting.get("description") or "")
+
+
+def filter_workday_jobs(
+    jobs: list[dict],
+    title_keywords: tuple[str, ...] | list[str] | None = None,
+    allowed_countries: tuple[str, ...] | list[str] | None = None,
+) -> list[dict]:
+    title_keywords = tuple(k.lower() for k in (title_keywords or ()))
+    allowed_countries = tuple(c.lower() for c in (allowed_countries or ()))
+
+    filtered = []
+    for job in jobs:
+        title = str(job.get("title") or "").lower()
+        location = str(job.get("location") or "").lower()
+
+        title_ok = True if not title_keywords else any(k in title for k in title_keywords)
+        location_ok = True if not allowed_countries else any(c in location for c in allowed_countries)
+        if title_ok and location_ok:
+            filtered.append(job)
+    return filtered
+
+
+async def _scrape_workday_company(
+    client: httpx.AsyncClient,
+    company_name: str,
+    jobs_url: str,
+    search_query: str,
+    title_keywords: tuple[str, ...] | list[str] | None = None,
+    allowed_countries: tuple[str, ...] | list[str] | None = None,
+) -> list[dict]:
+    jobs_url = _normalize_workday_jobs_url(jobs_url)
+
+    all_postings: list[dict] = []
+    total_results = 0
+    for page_idx in range(WORKDAY_MAX_PAGES):
+        offset = page_idx * WORKDAY_PAGE_SIZE
+        payload = {
+            "appliedFacets": {},
+            "limit": WORKDAY_PAGE_SIZE,
+            "offset": offset,
+            "searchText": search_query,
+        }
+        response_json = await _workday_post_with_retry(client, jobs_url, company_name, payload)
+        if not response_json:
+            break
+
+        total_results = int(response_json.get("total", 0) or 0)
+        postings = response_json.get("jobPostings", []) or []
+        if not postings:
+            break
+        all_postings.extend(postings)
+
+        if len(all_postings) >= WORKDAY_MAX_RESULTS:
+            break
+        if offset + WORKDAY_PAGE_SIZE >= total_results:
+            break
+
+    logger.info("%s: %d total results", company_name, total_results)
+
+    # Dedup by Workday job ID within company response.
+    deduped: list[dict] = []
+    seen_job_ids: set[str] = set()
+    for posting in all_postings[:WORKDAY_MAX_RESULTS]:
+        job_id = _extract_workday_job_id(posting)
+        if job_id and job_id in seen_job_ids:
+            continue
+        if job_id:
+            seen_job_ids.add(job_id)
+        deduped.append(posting)
+
+    records: list[dict] = []
+    for posting in deduped:
+        title = str(posting.get("title") or "").strip()
+        ext_path = str(posting.get("externalPath") or "").strip("/")
+        location = str(
+            posting.get("locationsText")
+            or posting.get("location")
+            or posting.get("formattedLocation")
+            or ""
+        ).strip()
+        job_id = _extract_workday_job_id(posting) or ext_path
+        external_url = f"{jobs_url}/job/{ext_path}" if ext_path else jobs_url
+
+        description = await _fetch_workday_job_description(
+            client=client,
+            jobs_url=jobs_url,
+            company_name=company_name,
+            posting=posting,
+        )
+        records.append({
+            "title": title,
+            "company": company_name,
+            "location": location,
+            "job_url": external_url,
+            "description": description,
+            "date_posted": _extract_posted_date(posting),
+            "source": "workday",
+            "job_id": job_id,
+        })
+
+    filtered = filter_workday_jobs(
+        records,
+        title_keywords=title_keywords,
+        allowed_countries=allowed_countries,
+    )
+    logger.info("%s: %d jobs found (filtered)", company_name, len(filtered))
+    return filtered
+
+
+async def scrape_workday_jobs(
+    companies: list[tuple[str, str]],
+    search_query: str,
+    worker_count: int = WORKDAY_WORKERS,
+    title_keywords: tuple[str, ...] | list[str] | None = None,
+    allowed_countries: tuple[str, ...] | list[str] | None = None,
+) -> list[dict]:
+    if not companies:
+        return []
+
+    workers = max(1, min(int(worker_count or 1), 3))
+    sem = asyncio.Semaphore(workers)
+    timeout = httpx.Timeout(WORKDAY_TIMEOUT_S)
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; WalkInJobAlert/1.0)",
+    }
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
+        async def run_company(company_name: str, jobs_url: str) -> list[dict]:
+            async with sem:
+                return await _scrape_workday_company(
+                    client=client,
+                    company_name=company_name,
+                    jobs_url=jobs_url,
+                    search_query=search_query,
+                    title_keywords=title_keywords,
+                    allowed_countries=allowed_countries,
+                )
+
+        tasks = [run_company(name, url) for name, url in companies]
+        company_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    combined: list[dict] = []
+    for idx, res in enumerate(company_results):
+        company_name = companies[idx][0]
+        if isinstance(res, Exception):
+            logger.error("%s: Workday scrape crashed: %s", company_name, res)
+            continue
+        combined.extend(res)
+    return combined
+
+
+def _scrape_workday() -> list[dict]:
+    logger.info("=== Workday API: %d tenants | query='%s' ===",
+                len(WORKDAY_COMPANIES), WORKDAY_SEARCH_QUERY)
+    try:
+        return asyncio.run(
+            scrape_workday_jobs(
+                companies=WORKDAY_COMPANIES,
+                search_query=WORKDAY_SEARCH_QUERY,
+                worker_count=WORKDAY_WORKERS,
+                title_keywords=WORKDAY_TITLE_KEYWORDS,
+                allowed_countries=WORKDAY_ALLOWED_COUNTRIES,
+            )
+        )
+    except Exception as exc:
+        logger.error("Workday source failed: %s", exc)
+        return []
+
+
 def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
     kwargs = dict(
         site_name=site,
@@ -502,6 +803,7 @@ def gather_all_listings() -> list[dict]:
         ("Google Jobs",    _scrape_google_jobs),
         ("Indeed",         _scrape_indeed),
         ("LinkedIn Posts", fetch_linkedin_posts),
+        ("Workday",        _scrape_workday),
     ]
 
     counts = {}
