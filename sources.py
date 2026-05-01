@@ -23,6 +23,7 @@ import re
 import time
 import logging
 import asyncio
+import os
 from datetime import datetime
 import feedparser
 import httpx
@@ -50,6 +51,16 @@ WORKDAY_TITLE_KEYWORDS = (
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
 )
 WORKDAY_ALLOWED_COUNTRIES = ("india",)
+
+# CI/runtime controls (keep defaults aligned with current behavior unless overridden)
+LINKEDIN_SLEEP_SECONDS = float(os.environ.get("LINKEDIN_SLEEP_SECONDS", "5"))
+GOOGLE_SLEEP_SECONDS = float(os.environ.get("GOOGLE_SLEEP_SECONDS", "4"))
+INDEED_SLEEP_SECONDS = float(os.environ.get("INDEED_SLEEP_SECONDS", "5"))
+SOURCE_COOLDOWN_SECONDS = float(os.environ.get("SOURCE_COOLDOWN_SECONDS", "8"))
+
+# 0 means "no explicit cap". In GitHub Actions we auto-cap if unset.
+MAX_LINKEDIN_TERMS = int(os.environ.get("MAX_LINKEDIN_TERMS", "0"))
+DEFAULT_CI_MAX_LINKEDIN_TERMS = 35
 
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
@@ -635,18 +646,33 @@ def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
     return []
 
 
+def _effective_linkedin_terms() -> list[str]:
+    explicit_cap = MAX_LINKEDIN_TERMS
+    if explicit_cap > 0:
+        return LINKEDIN_TERMS[:explicit_cap]
+
+    in_github_actions = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+    if in_github_actions:
+        logger.info("GitHub Actions detected: limiting LinkedIn terms to %d (set MAX_LINKEDIN_TERMS to override)",
+                    DEFAULT_CI_MAX_LINKEDIN_TERMS)
+        return LINKEDIN_TERMS[:DEFAULT_CI_MAX_LINKEDIN_TERMS]
+
+    return LINKEDIN_TERMS
+
+
 def _scrape_linkedin() -> list[dict]:
-    logger.info("=== LinkedIn Jobs: %d terms ===", len(LINKEDIN_TERMS))
+    terms = _effective_linkedin_terms()
+    logger.info("=== LinkedIn Jobs: %d terms ===", len(terms))
     seen: set = set()
     results = []
-    for i, term in enumerate(LINKEDIN_TERMS):
+    for i, term in enumerate(terms):
         batch = _run_scrape(["linkedin"], term)
         new   = [r for r in batch if r["job_url"] not in seen]
         for r in new: seen.add(r["job_url"])
         results.extend(new)
         logger.info("  [%d/%d] +%d (total %d) | %s…",
-                    i+1, len(LINKEDIN_TERMS), len(new), len(results), term[:55])
-        time.sleep(5)
+                    i+1, len(terms), len(new), len(results), term[:55])
+        time.sleep(LINKEDIN_SLEEP_SECONDS)
     logger.info("LinkedIn Jobs: %d unique", len(results))
     return results
 
@@ -673,7 +699,7 @@ def _scrape_google_jobs() -> list[dict]:
         for r in new: seen.add(r["job_url"])
         results.extend(new)
         logger.info("  [%d/%d] Google +%d", i+1, len(terms), len(new))
-        time.sleep(4)
+        time.sleep(GOOGLE_SLEEP_SECONDS)
     logger.info("Google Jobs: %d unique", len(results))
     return results
 
@@ -702,7 +728,7 @@ def _scrape_indeed() -> list[dict]:
         for r in new: seen.add(r["job_url"])
         results.extend(new)
         logger.info("  [%d/%d] Indeed +%d", i+1, len(terms), len(new))
-        time.sleep(5)
+        time.sleep(INDEED_SLEEP_SECONDS)
     logger.info("Indeed: %d unique", len(results))
     return results
 
@@ -824,7 +850,7 @@ def gather_all_listings() -> list[dict]:
 
         counts[name] = len(all_results) - before
         logger.info("%s → %d new unique", name, counts[name])
-        time.sleep(8)
+        time.sleep(SOURCE_COOLDOWN_SECONDS)
 
     logger.info("TOTAL: %d unique | %s",
                 len(all_results),
