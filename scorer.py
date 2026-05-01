@@ -427,13 +427,26 @@ def score_all(listings: list, min_score: int = 4) -> list:
         logger.info("Nothing relevant after pre-filter")
         return []
 
-    # Dedup by company+title before scoring (prevents scoring same post N times)
+    # Dedup before scoring:
+    # 1) Prefer stable identifiers (job_id / URL)
+    # 2) Else fallback to exact company+title
+    # Never dedup by company-only or title-only.
     seen_key: set[str] = set()
     deduped = []
     for l in relevant:
+        job_id = sanitize(str(l.get("job_id", "")).strip()).lower()
+        url = sanitize(str(l.get("job_url") or l.get("url") or "").strip()).lower()
         title   = sanitize(l.get("title", "")).lower().strip()
         company = sanitize(l.get("company", "")).lower().strip()
-        key = f"{company}|{title}" if company else title
+        if job_id:
+            key = f"jobid:{job_id}"
+        elif url:
+            key = f"url:{url}"
+        elif company and title:
+            key = f"ct:{company}|{title}"
+        else:
+            # Keep ambiguous records instead of aggressively dropping them.
+            key = f"raw:{len(deduped)}:{title}"
         if key in seen_key:
             continue
         seen_key.add(key)
