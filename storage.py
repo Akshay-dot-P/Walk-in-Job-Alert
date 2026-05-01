@@ -167,8 +167,6 @@ def _build_seen_sets(worksheet) -> tuple[set[str], set[str], set[str]]:
 
             if company and title:
                 seen_company_titles.add(f"{company}|{title}")
-            elif title:
-                seen_company_titles.add(title)
 
     except Exception as e:
         logger.error("Dedup read failed: %s — all listings treated as new", e)
@@ -194,8 +192,6 @@ def _is_duplicate(listing, seen_urls, seen_company_titles, seen_job_ids) -> bool
     company = str(listing.get("company", "")).lower().strip()
     title   = str(listing.get("job_title", "")).lower().strip()
     if company and title and f"{company}|{title}" in seen_company_titles:
-        return True
-    if not company and title and title in seen_company_titles:
         return True
 
     return False
@@ -265,8 +261,6 @@ def save_new_listings(scored_listings: list[dict]) -> list[dict]:
             title   = str(listing.get("job_title", "")).lower().strip()
             if company and title:
                 seen_company_titles.add(f"{company}|{title}")
-            elif title:
-                seen_company_titles.add(title)
 
     for company_name, stat in company_stats.items():
         logger.info("%s: %d new, %d already in DB",
