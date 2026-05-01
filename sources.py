@@ -32,6 +32,8 @@ import jobspy
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 LOCATION            = "Bengaluru/Bangalore, Karnataka, India"
 HOURS_OLD           = 72
@@ -69,15 +71,6 @@ WORKDAY_TITLE_KEYWORDS = (
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
 )
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
-
-# CI/runtime controls (keep defaults aligned with current behavior unless overridden)
-LINKEDIN_SLEEP_SECONDS = float(os.environ.get("LINKEDIN_SLEEP_SECONDS", "5"))
-GOOGLE_SLEEP_SECONDS = float(os.environ.get("GOOGLE_SLEEP_SECONDS", "4"))
-INDEED_SLEEP_SECONDS = float(os.environ.get("INDEED_SLEEP_SECONDS", "5"))
-SOURCE_COOLDOWN_SECONDS = float(os.environ.get("SOURCE_COOLDOWN_SECONDS", "8"))
-
-# 0 means no explicit cap.
-MAX_LINKEDIN_TERMS = int(os.environ.get("MAX_LINKEDIN_TERMS", "0"))
 
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
@@ -510,7 +503,24 @@ async def _fetch_workday_job_description(
     if not ext_path:
         return str(posting.get("description") or "")
 
-    detail_url = f"{jobs_url}/job/{ext_path}"
+    # Workday tenants are inconsistent: sometimes externalPath already contains "job/<...>".
+    # Avoid generating ".../job/job/<...>" URLs.
+    detail_url = f"{jobs_url}/{ext_path}" if ext_path.startswith("job/") else f"{jobs_url}/job/{ext_path}"
+
+    # First try GET (some tenants reject POST with 405).
+    try:
+        r = await client.get(detail_url)
+        if r.status_code == 200:
+            try:
+                detail_json = r.json()
+                desc = _extract_detail_description(detail_json)
+                if desc:
+                    return desc
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Some tenants expect {} and some accept small context payloads.
     payload_variants = (
         {},
@@ -638,7 +648,9 @@ async def _scrape_workday_company(
             or ""
         ).strip()
         job_id = _extract_workday_job_id(posting) or ext_path
-        external_url = f"{jobs_url}/job/{ext_path}" if ext_path else jobs_url
+        external_url = (
+            f"{jobs_url}/{ext_path}" if ext_path.startswith("job/") else f"{jobs_url}/job/{ext_path}"
+        ) if ext_path else jobs_url
 
         description = await _fetch_workday_job_description(
             client=client,
@@ -751,26 +763,20 @@ def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
     return []
 
 
-def _effective_linkedin_terms() -> list[str]:
-    explicit_cap = MAX_LINKEDIN_TERMS
-    if explicit_cap > 0:
-        return LINKEDIN_TERMS[:explicit_cap]
-    return LINKEDIN_TERMS
-
-
 def _scrape_linkedin() -> list[dict]:
-    terms = _effective_linkedin_terms()
-    logger.info("=== LinkedIn Jobs: %d terms ===", len(terms))
+    logger.info("=== LinkedIn Jobs: %d terms ===", len(LINKEDIN_TERMS))
     seen: set = set()
     results = []
-    for i, term in enumerate(terms):
+    for i, term in enumerate(LINKEDIN_TERMS):
+        # Log BEFORE scrape so a slow/hung term doesn't look like a freeze.
+        logger.info("  [%d/%d] scraping | %s…", i + 1, len(LINKEDIN_TERMS), term[:55])
         batch = _run_scrape(["linkedin"], term)
         new   = [r for r in batch if r["job_url"] not in seen]
         for r in new: seen.add(r["job_url"])
         results.extend(new)
         logger.info("  [%d/%d] +%d (total %d) | %s…",
-                    i+1, len(terms), len(new), len(results), term[:55])
-        time.sleep(LINKEDIN_SLEEP_SECONDS)
+                    i+1, len(LINKEDIN_TERMS), len(new), len(results), term[:55])
+        time.sleep(5)
     logger.info("LinkedIn Jobs: %d unique", len(results))
     return results
 
@@ -797,7 +803,7 @@ def _scrape_google_jobs() -> list[dict]:
         for r in new: seen.add(r["job_url"])
         results.extend(new)
         logger.info("  [%d/%d] Google +%d", i+1, len(terms), len(new))
-        time.sleep(GOOGLE_SLEEP_SECONDS)
+        time.sleep(4)
     logger.info("Google Jobs: %d unique", len(results))
     return results
 
@@ -826,7 +832,7 @@ def _scrape_indeed() -> list[dict]:
         for r in new: seen.add(r["job_url"])
         results.extend(new)
         logger.info("  [%d/%d] Indeed +%d", i+1, len(terms), len(new))
-        time.sleep(INDEED_SLEEP_SECONDS)
+        time.sleep(5)
     logger.info("Indeed: %d unique", len(results))
     return results
 
@@ -948,7 +954,7 @@ def gather_all_listings() -> list[dict]:
 
         counts[name] = len(all_results) - before
         logger.info("%s → %d new unique", name, counts[name])
-        time.sleep(SOURCE_COOLDOWN_SECONDS)
+        time.sleep(8)
 
     logger.info("TOTAL: %d unique | %s",
                 len(all_results),
