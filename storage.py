@@ -233,14 +233,22 @@ def save_new_listings(scored_listings: list[dict]) -> list[dict]:
 
     new_listings = []
     company_stats: dict[str, dict[str, int]] = {}
+    seen_duplicate_logs: set[str] = set()
     for listing in scored_listings:
         source_company = str(listing.get("source_company", "")).strip() or str(listing.get("company", "")).strip() or "Unknown"
         stats = company_stats.setdefault(source_company, {"new": 0, "existing": 0})
 
         if _is_duplicate(listing, seen_urls, seen_company_titles, seen_job_ids):
             stats["existing"] += 1
-            logger.info("Duplicate — skipping: %s | %s",
-                        listing.get("company", "?"), listing.get("job_title", "?"))
+            # Compress duplicate spam: only log once per duplicate key in this run
+            company = str(listing.get("company", "?")).strip()
+            title = str(listing.get("job_title", "?")).strip()
+            url = str(listing.get("apply_url", "") or listing.get("url", "")).strip()
+            job_id = str(listing.get("job_id", "")).strip()
+            dup_key = job_id or url or f"{company.lower()}|{title.lower()}"
+            if dup_key not in seen_duplicate_logs:
+                seen_duplicate_logs.add(dup_key)
+                logger.info("Duplicate — skipping: %s | %s", company, title)
             continue
 
         success = _save_listing(worksheet, listing)
