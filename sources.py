@@ -32,12 +32,6 @@ import httpx
 import jobspy
 import pandas as pd
 
-
-
-
-
-
-
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -49,164 +43,36 @@ WORKDAY_PAGE_SIZE   = 20
 WORKDAY_MAX_PAGES   = 25
 WORKDAY_MAX_RESULTS = WORKDAY_PAGE_SIZE * WORKDAY_MAX_PAGES
 WORKDAY_TIMEOUT_S   = 30.0
-WORKDAY_WORKERS     = 4
+WORKDAY_WORKERS     = 2
 
 # CXS list URL must be /wday/cxs/{tenant}/{site_id}/jobs (see ApplyPilot employers.yaml).
-# PayPal uses site_id "jobs" → path ends with .../jobs/jobs (verified).
-# Disable strict entry/intern filtering: WORKDAY_EXPERIENCE_STRICT=0
 WORKDAY_COMPANIES = [
     ("BMO", "https://bmo.wd3.myworkdayjobs.com/wday/cxs/bmo/External/jobs"),
     ("Salesforce", "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/External_Career_Site/jobs"),
     ("Cisco", "https://cisco.wd5.myworkdayjobs.com/wday/cxs/cisco/Cisco_Careers/jobs"),
-    ("PayPal", "https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs/jobs"),
-    ("Adobe", "https://adobe.wd5.myworkdayjobs.com/wday/cxs/adobe/external_experienced/jobs"),
-    ("Intel", "https://intel.wd1.myworkdayjobs.com/wday/cxs/intel/External/jobs"),
-    ("NVIDIA", "https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs"),
-    ("Mastercard", "https://mastercard.wd1.myworkdayjobs.com/wday/cxs/mastercard/CorporateCareers/jobs"),
-    ("PwC", "https://pwc.wd3.myworkdayjobs.com/wday/cxs/pwc/Global_Experienced_Careers/jobs"),
-    ("FIS", "https://fis.wd5.myworkdayjobs.com/wday/cxs/fis/SearchJobs/jobs"),
-    ("Thomson Reuters", "https://thomsonreuters.wd5.myworkdayjobs.com/wday/cxs/thomsonreuters/External_Career_Site/jobs"),
-    ("Motorola Solutions", "https://motorolasolutions.wd5.myworkdayjobs.com/wday/cxs/motorolasolutions/Careers/jobs"),
-    ("Ciena", "https://ciena.wd5.myworkdayjobs.com/wday/cxs/ciena/Careers/jobs"),
-    ("BlackBerry", "https://bb.wd3.myworkdayjobs.com/wday/cxs/bb/BlackBerry/jobs"),
-    ("Workday", "https://workday.wd5.myworkdayjobs.com/wday/cxs/workday/Workday/jobs"),
-    ("TELUS International", "https://telusinternational.wd3.myworkdayjobs.com/wday/cxs/telusinternational/External/jobs"),
-    ("Magna", "https://magna.wd3.myworkdayjobs.com/wday/cxs/magna/Magna/jobs"),
-    ("TD Bank", "https://td.wd3.myworkdayjobs.com/wday/cxs/td/TD_Bank_Careers/jobs"),
-    ("RBC", "https://rbc.wd3.myworkdayjobs.com/wday/cxs/rbc/RBCGLOBAL1/jobs"),
-
 ]
-# Intern / entry / junior-oriented queries only — avoid "Senior …" strings that pull mid-career roles.
 WORKDAY_SEARCH_QUERIES = [
-    "Security Intern",
+    "Tax Intern",
+    "VAPT Intern",
     "Cybersecurity Intern",
-    "Technology Intern",
-    "Risk Intern",
-    "Compliance Intern",
-    "Apprentice",
-    "Graduate Trainee",
-    "Junior Security Engineer",
-    "Entry Level Security",
+    "Networking Security Intern",
+    "Senior Security Engineer",
+    "Cloud Security Engineer",
+    "DevSecOps Engineer",
+    "Application Security Engineer",
     "SOC Analyst",
-    "Cyber Security Analyst",
     "Information Security Analyst",
-    "GRC Analyst",
-    "Risk Analyst",
-    "Compliance Analyst",
-    "Application Security",
-    "Cloud Security",
-    "DevSecOps",
+    "Cyber Security Analyst",
+    "Cloud Security Engineer",
+    "Container Security Engineer",
+    "Data Security Engineer",
+    "Risk and Compliance Analyst",
+    "Fraud Risk Analyst",
 ]
 WORKDAY_TITLE_KEYWORDS = (
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
 )
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
-
-# Title-only: mid/senior IC and leadership (Workday gate before AI scoring).
-_WORKDAY_SENIOR_TITLE_RE = re.compile(
-    r"(?i)\b(senior|\bsr\.?\b|principal\b|staff\s+engineer|staff\s+architect|distinguished|"
-    r"director\b|vice\s+president|\bvp\b(?!\s+i)|chief\s+|head\s+of|executive\s+vice|"
-    r"lead\s+engineer|lead\s+developer|lead\s+architect|group\s+manager|"
-    r"engineering\s+manager|product\s+manager|people\s+manager)\b",
-)
-_WORKDAY_TITLE_ROMAN_SENIOR_RE = re.compile(r"(?i)\s(iii|iv|v|vi)\s*$")
-_WORKDAY_TITLE_YEARS_PLUS_RE = re.compile(
-    r"(?i)\(?\s*\d{1,2}\s*\+\s*(?:years?|yrs?)|\b\d{1,2}\s*\+\s*years?\b",
-)
-# Description: explicit minimum experience (conservative).
-_WORKDAY_DESC_MIN_YEARS_RE = re.compile(
-    r"(?is)(?:minimum|min\.?|at\s+least|requires?\s+(?:a\s+)?(?:minimum\s+)?(?:of\s+)?)"
-    r"(\d{1,2})\s*\+?\s*(?:years?|yrs?)\b",
-)
-_WORKDAY_DESC_HIGH_RANGE_RE = re.compile(
-    r"(?i)\b(\d{1,2})\s*[\+\-–]\s*(\d{1,2})\s*(?:years?|yrs?)\s+(?:of\s+)?(?:experience|exp)",
-)
-_WORKDAY_ENTRY_SIGNAL_RE = re.compile(
-    r"(?is)\b(intern|internship|apprentice|apprenticeship|trainee|co[\s-]?op\b|"
-    r"entry[\s-]level|entry\s+level|fresher|new\s+grad|graduate\s+program|"
-    r"campus\s+(hire|recruiting|program)|early\s+career|university\s+graduate|"
-    r"0[\s\-–]*2\s*yrs?|0\s+to\s+2|upto\s+2|up\s+to\s+2|less\s+than\s+3\s+years?|"
-    r"1[\s\-–]*2\s*year|associate\s+level|junior\b|graduate\s+hire|"
-    r"analyst\s+i\b|engineer\s+i\b|engineer\s+1\b|l1\b|level\s+1\b|tier\s+1\b)\b",
-)
-
-
-def _workday_experience_strict_enabled() -> bool:
-    return os.environ.get("WORKDAY_EXPERIENCE_STRICT", "1").strip().lower() not in (
-        "0", "false", "no", "off",
-    )
-
-
-def _workday_loose_plain_text(html_or_text: str) -> str:
-    if not html_or_text:
-        return ""
-    t = re.sub(r"<[^>]+>", " ", html_or_text)
-    t = re.sub(r"\s+", " ", t)
-    return t.strip().lower()
-
-
-def _workday_passes_entry_experience_gate(title: str, description: str) -> bool:
-    """
-    Keep intern / apprenticeship / entry / 0–2y-style roles; drop obvious senior
-    titles and postings that state high minimum years of experience.
-    """
-    t_raw = (title or "").strip()
-    t = t_raw.lower()
-    d_plain = _workday_loose_plain_text(description or "")
-    blob = f"{t}\n{d_plain}"
-
-    if _WORKDAY_TITLE_YEARS_PLUS_RE.search(t_raw):
-        return False
-    if _WORKDAY_SENIOR_TITLE_RE.search(t_raw):
-        return False
-    if _WORKDAY_TITLE_ROMAN_SENIOR_RE.search(t_raw) and "intern" not in t and "trainee" not in t:
-        return False
-    if re.search(r"\bmanager\b", t) and "intern" not in t and "trainee" not in t:
-        return False
-
-    for m in _WORKDAY_DESC_MIN_YEARS_RE.finditer(blob):
-        try:
-            if int(m.group(1)) >= 5:
-                return False
-        except ValueError:
-            pass
-    for m in _WORKDAY_DESC_HIGH_RANGE_RE.finditer(blob):
-        try:
-            lo, hi = int(m.group(1)), int(m.group(2))
-            if lo >= 5 or hi >= 8:
-                return False
-        except ValueError:
-            pass
-    if re.search(r"(?i)\b([6-9]|\d{2})\s*\+\s*years?\b", blob):
-        return False
-
-    if _WORKDAY_ENTRY_SIGNAL_RE.search(blob):
-        return True
-    if re.search(r"(?i)\b(fresher|graduate|stipend|stipendiary)\b", blob):
-        return True
-
-    # Analyst / SOC-style titles without senior markers (already excluded above).
-    if re.search(
-        r"(?i)\b(soc|security|cyber|grc|risk|compliance|fraud|iam|appsec|"
-        r"vulnerability|incident|threat|network\s+security)\b",
-        t,
-    ) and re.search(r"(?i)\b(analyst|specialist|consultant|engineer|administrator)\b", t):
-        return True
-
-    return False
-
-
-def _workday_experience_hint(title: str, description: str) -> str:
-    """Short label for listing dicts (pre-AI); aligns with scorer experience_required."""
-    blob = _workday_loose_plain_text(f"{title}\n{description}")
-    if re.search(r"(?i)\b(intern|internship)\b", blob):
-        return "intern"
-    if re.search(r"(?i)\b(apprentice|apprenticeship)\b", blob):
-        return "apprenticeship"
-    if _WORKDAY_ENTRY_SIGNAL_RE.search(blob) or re.search(r"(?i)\b(fresher|graduate\s+hire)\b", blob):
-        return "0-2 years"
-    return ""
-
 
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
@@ -650,7 +516,18 @@ async def _workday_post_with_retry(
                     "__response_text__": (resp.text or "")[:400],
                 }
             resp.raise_for_status()
-            return resp.json()
+            raw = (resp.text or "").strip()
+            if not raw:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.debug(
+                    "%s: non-JSON Workday response for payload keys=%s (prefix=%r)",
+                    company_name, sorted(payload.keys()), raw[:120],
+                )
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
         except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError) as exc:
             if attempt >= retries:
                 logger.warning("%s: request failed after %d attempts: %s",
@@ -681,7 +558,13 @@ async def _fetch_workday_job_description(
     try:
         r = await client.get(detail_url)
         if r.status_code == 200:
-            detail_json = r.json()
+            raw = (r.text or "").strip()
+            if not raw:
+                return str(posting.get("description") or "")
+            try:
+                detail_json = json.loads(raw)
+            except json.JSONDecodeError:
+                return str(posting.get("description") or "")
             desc = _extract_detail_description(detail_json)
             if desc:
                 return desc
@@ -695,11 +578,9 @@ def filter_workday_jobs(
     jobs: list[dict],
     title_keywords: tuple[str, ...] | list[str] | None = None,
     allowed_locations: tuple[str, ...] | list[str] | None = None,
-    strict_entry_experience: bool | None = None,
 ) -> list[dict]:
     title_keywords = tuple(k.lower() for k in (title_keywords or ()))
     allowed_locations = tuple(c.lower() for c in (allowed_locations or ()))
-    strict_xp = _workday_experience_strict_enabled() if strict_entry_experience is None else strict_entry_experience
 
     filtered = []
     for job in jobs:
@@ -708,14 +589,8 @@ def filter_workday_jobs(
 
         title_ok = True if not title_keywords else any(k in title for k in title_keywords)
         location_ok = True if not allowed_locations else any(c in location for c in allowed_locations)
-        if not title_ok or not location_ok:
-            continue
-        if strict_xp and not _workday_passes_entry_experience_gate(
-            str(job.get("title") or ""),
-            str(job.get("description") or ""),
-        ):
-            continue
-        filtered.append(job)
+        if title_ok and location_ok:
+            filtered.append(job)
     return filtered
 
 
@@ -730,7 +605,7 @@ async def _scrape_workday_company(
     jobs_url = _normalize_workday_jobs_url(jobs_url)
 
     all_postings: list[dict] = []
-    total_results_peak = 0
+    total_results_sum = 0
     query_list = [q.strip() for q in (search_queries or []) if str(q).strip()]
     if not query_list:
         query_list = [""]
@@ -781,7 +656,7 @@ async def _scrape_workday_company(
             postings = response_json.get("jobPostings", []) or []
             if not isinstance(postings, list) or not postings:
                 break
-            total_results_peak = max(total_results_peak, total_results)
+            total_results_sum += total_results
             all_postings.extend(postings)
 
             if len(all_postings) >= WORKDAY_MAX_RESULTS:
@@ -831,7 +706,6 @@ async def _scrape_workday_company(
             company_name=company_name,
             posting=posting,
         )
-
         records.append({
             "title": title,
             "company": company_name,
@@ -841,7 +715,6 @@ async def _scrape_workday_company(
             "date_posted": _extract_posted_date(posting),
             "source": "workday",
             "job_id": job_id,
-
         })
 
     filtered = filter_workday_jobs(
