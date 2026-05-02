@@ -149,7 +149,7 @@ def _workday_experience_hint(title: str, description: str) -> str:
 
 
 FQ_FRESHER = (
-    '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
+    '(fresher OR "entry level" OR "entry-level" OR junior OR trainee) '
         location_ok = True if not allowed_locations else any(c in location for c in allowed_locations)
         if not title_ok or not location_ok:
             continue
