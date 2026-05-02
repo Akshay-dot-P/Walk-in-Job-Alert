@@ -26,6 +26,7 @@ import asyncio
 import os
 import json
 from datetime import datetime
+from urllib.parse import urlparse
 import feedparser
 import httpx
 import jobspy
@@ -44,10 +45,11 @@ WORKDAY_MAX_RESULTS = WORKDAY_PAGE_SIZE * WORKDAY_MAX_PAGES
 WORKDAY_TIMEOUT_S   = 30.0
 WORKDAY_WORKERS     = 2
 
+# CXS list URL must be /wday/cxs/{tenant}/{site_id}/jobs (see ApplyPilot employers.yaml).
 WORKDAY_COMPANIES = [
     ("BMO", "https://bmo.wd3.myworkdayjobs.com/wday/cxs/bmo/External/jobs"),
-    ("Salesforce", "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/Careers/jobs"),
-    ("Cisco", "https://cisco.wd5.myworkdayjobs.com/wday/cxs/External/jobs"),
+    ("Salesforce", "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/External_Career_Site/jobs"),
+    ("Cisco", "https://cisco.wd5.myworkdayjobs.com/wday/cxs/cisco/Cisco_Careers/jobs"),
 ]
 WORKDAY_SEARCH_QUERIES = [
     "Tax Intern",
@@ -361,6 +363,38 @@ def _normalize_workday_jobs_url(url: str) -> str:
     return clean
 
 
+def _workday_cxs_api_root(jobs_url: str) -> str:
+    """CXS JSON APIs use .../wday/cxs/{tenant}/{site} — detail lives here, not under .../jobs."""
+    clean = (jobs_url or "").strip().rstrip("/")
+    if clean.endswith("/jobs"):
+        return clean[:-5]
+    return clean
+
+
+def _workday_detail_json_url(jobs_url: str, external_path: str) -> str:
+    """Full URL for GET job detail JSON (ApplyPilot workday_detail)."""
+    root = _workday_cxs_api_root(jobs_url)
+    ext = (external_path or "").strip()
+    if not ext:
+        return ""
+    if ext.startswith("/"):
+        return root + ext
+    return f"{root}/{ext}"
+
+
+def _workday_public_job_url(jobs_url: str, external_path: str) -> str:
+    """Browser careers URL: {origin}/{site_id}{externalPath} (human-readable posting link)."""
+    u = urlparse(jobs_url)
+    parts = u.path.strip("/").split("/")
+    if len(parts) >= 5 and parts[0] == "wday" and parts[1] == "cxs" and parts[-1] == "jobs":
+        site = parts[-2]
+        ext = (external_path or "").strip()
+        if ext and not ext.startswith("/"):
+            ext = "/" + ext
+        return f"{u.scheme}://{u.netloc}/{site}{ext}"
+    return ""
+
+
 def _load_workday_companies() -> list[tuple[str, str]]:
     """
     Optional override:
@@ -455,6 +489,7 @@ async def _workday_post_with_retry(
     company_name: str,
     payload: dict,
     retries: int = 3,
+    log_client_error: bool = True,
 ) -> dict:
     for attempt in range(1, retries + 1):
         try:
@@ -472,9 +507,10 @@ async def _workday_post_with_retry(
                     response=resp,
                 )
             if resp.status_code >= 400:
-                # Return client errors directly so caller can try alternate payloads.
-                logger.warning("%s: Workday returned %s for payload keys=%s",
-                               company_name, resp.status_code, sorted(payload.keys()))
+                # Return client errors so caller can try alternate payloads.
+                log_fn = logger.warning if log_client_error else logger.debug
+                log_fn("%s: Workday returned %s for payload keys=%s",
+                       company_name, resp.status_code, sorted(payload.keys()))
                 return {
                     "__http_error__": resp.status_code,
                     "__response_text__": (resp.text or "")[:400],
@@ -499,41 +535,25 @@ async def _fetch_workday_job_description(
     company_name: str,
     posting: dict,
 ) -> str:
-    ext_path = str(posting.get("externalPath") or "").strip("/")
-    if not ext_path:
+    raw_ext = str(posting.get("externalPath") or "").strip()
+    if not raw_ext:
         return str(posting.get("description") or "")
 
-    # Workday tenants are inconsistent: sometimes externalPath already contains "job/<...>".
-    # Avoid generating ".../job/job/<...>" URLs.
-    detail_url = f"{jobs_url}/{ext_path}" if ext_path.startswith("job/") else f"{jobs_url}/job/{ext_path}"
+    # JSON detail is .../cxs/{tenant}/{site}/job/... — never insert .../jobs/ before /job/...
+    detail_url = _workday_detail_json_url(jobs_url, raw_ext)
+    if not detail_url:
+        return str(posting.get("description") or "")
 
-    # First try GET (some tenants reject POST with 405).
     try:
         r = await client.get(detail_url)
         if r.status_code == 200:
-            try:
-                detail_json = r.json()
-                desc = _extract_detail_description(detail_json)
-                if desc:
-                    return desc
-            except Exception:
-                pass
+            detail_json = r.json()
+            desc = _extract_detail_description(detail_json)
+            if desc:
+                return desc
     except Exception:
         pass
 
-    # Some tenants expect {} and some accept small context payloads.
-    payload_variants = (
-        {},
-        {"appliedFacets": {}},
-        {"jobPostingId": posting.get("id")},
-    )
-    for payload in payload_variants:
-        detail_json = await _workday_post_with_retry(client, detail_url, company_name, payload)
-        if detail_json.get("__http_error__"):
-            continue
-        desc = _extract_detail_description(detail_json)
-        if desc:
-            return desc
     return str(posting.get("description") or "")
 
 
@@ -599,12 +619,20 @@ async def _scrape_workday_company(
             ]
 
             response_json: dict = {}
+            last_status = None
             for payload in payload_variants:
-                response_json = await _workday_post_with_retry(client, jobs_url, company_name, payload)
+                response_json = await _workday_post_with_retry(
+                    client, jobs_url, company_name, payload, log_client_error=False,
+                )
                 if response_json and not response_json.get("__http_error__"):
                     break
+                last_status = response_json.get("__http_error__")
 
             if not response_json or response_json.get("__http_error__"):
+                logger.warning(
+                    "%s: Workday search failed offset=%s query=%r (tried %d payload variants, last HTTP=%s)",
+                    company_name, offset, search_query, len(payload_variants), last_status,
+                )
                 break
 
             total_results = int(response_json.get("total", 0) or 0)
@@ -640,7 +668,8 @@ async def _scrape_workday_company(
     records: list[dict] = []
     for posting in deduped:
         title = str(posting.get("title") or "").strip()
-        ext_path = str(posting.get("externalPath") or "").strip("/")
+        raw_external = str(posting.get("externalPath") or "")
+        ext_path = raw_external.strip("/")
         location = str(
             posting.get("locationsText")
             or posting.get("location")
@@ -649,8 +678,10 @@ async def _scrape_workday_company(
         ).strip()
         job_id = _extract_workday_job_id(posting) or ext_path
         external_url = (
-            f"{jobs_url}/{ext_path}" if ext_path.startswith("job/") else f"{jobs_url}/job/{ext_path}"
-        ) if ext_path else jobs_url
+            _workday_public_job_url(jobs_url, raw_external)
+            or _workday_detail_json_url(jobs_url, raw_external)
+            or jobs_url
+        )
 
         description = await _fetch_workday_job_description(
             client=client,
@@ -694,7 +725,10 @@ async def scrape_workday_jobs(
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (compatible; WalkInJobAlert/1.0)",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
     }
 
     async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
