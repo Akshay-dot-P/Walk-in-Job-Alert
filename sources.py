@@ -1,49 +1,15 @@
-"""
-sources.py — comprehensive entry-level + intern cybersec/GRC/risk scraper
-
-SOURCES:
-  1. LinkedIn Jobs      — 80 focused searches (max 4 OR terms each)
-  2. Google Jobs        — 10 broader searches (different index)
-  3. Indeed India       — 12 targeted searches
-  4. LinkedIn Posts     — 40 Google RSS queries (hiring posts + intern posts)
-
-NAUKRI: permanently removed — GitHub Actions IPs blocked (HTTP 406 recaptcha).
-GLASSDOOR: permanently removed — consistent 403 from GitHub Actions IPs.
-
-FIXES in this version:
-  - LinkedIn Posts now filters out login pages, sign-up pages, company pages
-  - LinkedIn profile pages filtered by URL (/in/) and title regex
-  - Added minimum description length check to drop empty/useless entries
-  - Post URLs validated to only keep actual post/pulse/article/feed links
-  - Profile regex catches Name - Title @ Company AND Name - Title | Company formats
-  - GARBAGE_URL_PATTERNS now includes linkedin.com/in/ as permanent catch-all
-"""
-
-import re
-import time
-import logging
-import asyncio
-import os
-import json
-from datetime import datetime
-from urllib.parse import urlparse
-import feedparser
-import httpx
 import jobspy
 import pandas as pd
+
+
+
+
+
+
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-LOCATION            = "Bengaluru/Bangalore, Karnataka, India"
-HOURS_OLD           = 72
-RESULTS_PER_TERM    = 40
-WORKDAY_PAGE_SIZE   = 20
-WORKDAY_MAX_PAGES   = 25
-WORKDAY_MAX_RESULTS = WORKDAY_PAGE_SIZE * WORKDAY_MAX_PAGES
-WORKDAY_TIMEOUT_S   = 30.0
-WORKDAY_WORKERS     = 4
 
 # CXS list URL must be /wday/cxs/{tenant}/{site_id}/jobs (see ApplyPilot employers.yaml).
 # PayPal uses site_id "jobs" → path ends with .../jobs/jobs (verified).
@@ -68,29 +34,11 @@ WORKDAY_COMPANIES = [
     ("Magna", "https://magna.wd3.myworkdayjobs.com/wday/cxs/magna/Magna/jobs"),
     ("TD Bank", "https://td.wd3.myworkdayjobs.com/wday/cxs/td/TD_Bank_Careers/jobs"),
     ("RBC", "https://rbc.wd3.myworkdayjobs.com/wday/cxs/rbc/RBCGLOBAL1/jobs"),
+
 ]
 # Intern / entry / junior-oriented queries only — avoid "Senior …" strings that pull mid-career roles.
 WORKDAY_SEARCH_QUERIES = [
-    "Security Intern",
-    "Cybersecurity Intern",
-    "Technology Intern",
-    "Risk Intern",
-    "Compliance Intern",
-    "Apprentice",
-    "Graduate Trainee",
-    "Junior Security Engineer",
-    "Entry Level Security",
-    "SOC Analyst",
-    "Cyber Security Analyst",
-    "Information Security Analyst",
-    "GRC Analyst",
-    "Risk Analyst",
-    "Compliance Analyst",
-    "Application Security",
-    "Cloud Security",
-    "DevSecOps",
-]
-WORKDAY_TITLE_KEYWORDS = (
+@@ -94,112 +101,7 @@
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
 )
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
@@ -98,9 +46,9 @@ WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
 # Title-only: mid/senior IC and leadership (Workday gate before AI scoring).
 _WORKDAY_SENIOR_TITLE_RE = re.compile(
     r"(?i)\b(senior|\bsr\.?\b|principal\b|staff\s+engineer|staff\s+architect|distinguished|"
-    r"director\b|vice\s+president|\bvp\b(?!\s+i)|chief\s+|head\s+of|executive\s+vice|"
+    r"director\b|vice\s+president|\bvp\b|chief\s+|head\s+of|executive\s+vice|"
     r"lead\s+engineer|lead\s+developer|lead\s+architect|group\s+manager|"
-    r"engineering\s+manager|product\s+manager|people\s+manager)\b",
+    r"people\s+manager)\b",
 )
 _WORKDAY_TITLE_ROMAN_SENIOR_RE = re.compile(r"(?i)\s(iii|iv|v|vi)\s*$")
 _WORKDAY_TITLE_YEARS_PLUS_RE = re.compile(
@@ -203,503 +151,6 @@ def _workday_experience_hint(title: str, description: str) -> str:
 
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
-    'OR graduate OR "0-2 years" OR "0 to 2 years" OR "upto 2 years" '
-    'OR "0-1 year" OR "less than 2 years" OR associate)'
-)
-
-FQ_INTERN = (
-    '(intern OR internship OR stipend OR "6 month" OR "3 month" '
-    'OR "summer intern" OR "winter intern" OR apprentice '
-    'OR fellowship OR "graduate trainee" OR "management trainee")'
-)
-
-FQ_ALL = (
-    '(fresher OR "entry level" OR junior OR trainee OR intern OR internship '
-    'OR graduate OR stipend OR "0-2 years" OR "0 to 2 years" OR associate '
-    'OR apprentice OR fellowship)'
-)
-
-
-def qf(role): return f"({role}) {FQ_FRESHER}"
-def qi(role): return f"({role}) {FQ_INTERN}"
-def qa(role): return f"({role}) {FQ_ALL}"
-
-
-LINKEDIN_TERMS = [
-    # SOC / Blue Team
-    qf('"SOC analyst" OR "L1 SOC analyst" OR "security operations analyst" OR "l1 analyst" OR "tier 1 analyst"'),
-    qf('"L2 SOC analyst" OR "tier 1 analyst" OR "blue team analyst"'),
-    qf('"cyber defense analyst" OR "security operations center analyst"'),
-    # SIEM
-    qf('"SIEM analyst" OR "SIEM engineer" OR "Splunk analyst"'),
-    qf('"QRadar analyst" OR "Microsoft Sentinel analyst" OR "security monitoring analyst"'),
-    qf('"log analysis analyst" OR "security event analyst" OR "SIEM administrator"'),
-    # Threat Intelligence
-    qf('"threat intelligence analyst" OR "CTI analyst" OR "cyber threat intelligence"'),
-    qf('"threat hunting analyst" OR "OSINT analyst" OR "threat research analyst"'),
-    qf('"dark web analyst" OR "intelligence analyst" OR "threat analyst"'),
-    # Incident Response
-    qf('"incident response analyst" OR "IR analyst" OR "incident responder"'),
-    qf('"DFIR analyst" OR "digital forensics analyst" OR "cyber incident analyst"'),
-    qf('"forensic analyst" OR "eDiscovery analyst" OR "computer forensics analyst"'),
-    # VAPT / Pentest
-    qf('"VAPT engineer" OR "VAPT analyst" OR "penetration tester"'),
-    qf('"ethical hacker" OR "pentest engineer" OR "pentest analyst"'),
-    qf('"red team analyst" OR "offensive security analyst" OR "security researcher"'),
-    qf('"bug bounty" OR "vulnerability researcher" OR "web application pentest"'),
-    qf('"network pentest" OR "mobile pentest" OR "API security tester"'),
-    # Vulnerability Management
-    qf('"vulnerability analyst" OR "vulnerability management analyst" OR "vulnerability analyst"'),
-    qf('"VA analyst" OR "Qualys analyst" OR "Tenable analyst"'),
-    qf('"patch management analyst" OR "security assessment analyst"'),
-    # AppSec / DevSecOps
-    qf('"application security engineer" OR "appsec engineer" OR "appsec analyst"'),
-    qf('"DevSecOps engineer" OR "DevSecOps analyst" OR "software security engineer"'),
-    qf('"DAST analyst" OR "SAST analyst" OR "secure code review analyst"'),
-    # Network Security
-    qf('"network security engineer" OR "network security analyst"'),
-    qf('"firewall engineer" OR "firewall analyst" OR "IDS IPS analyst"'),
-    qf('"Palo Alto engineer" OR "Fortinet engineer" OR "Cisco security engineer"'),
-    qf('"endpoint security analyst" OR "systems security administrator"'),
-    # Cloud Security
-    qf('"cloud security analyst" OR "cloud security engineer"'),
-    qf('"cloud security architect" OR "cloud security administrator"'),
-    qf('"AWS security engineer" OR "Azure security engineer" OR "GCP security"'),
-    qf('"CSPM analyst" OR "cloud compliance analyst" OR "cloud IAM analyst"'),
-    qf('"cloud security auditor" OR "cloud forensic analyst"'),
-    # IAM / PAM / DLP
-    qf('"IAM analyst" OR "identity access management analyst" OR "IAM engineer"'),
-    qf('"PAM analyst" OR "privileged access management analyst" OR "CyberArk analyst"'),
-    qf('"DLP analyst" OR "data loss prevention analyst" OR "SailPoint analyst"'),
-    qf('"Okta analyst" OR "SSO engineer" OR "identity governance analyst"'),
-    qf('"zero trust analyst" OR "access governance analyst" OR "IDAM analyst"'),
-    # GRC
-    qf('"GRC analyst" OR "IT GRC analyst" OR "cyber GRC analyst"'),
-    qf('"ISO 27001 analyst" OR "SOC 2 analyst" OR "NIST analyst"'),
-    qf('"third party risk analyst" OR "TPRM analyst" OR "vendor risk analyst"'),
-    qf('"supply chain risk analyst" OR "CIS controls analyst" OR "GRC engineer"'),
-    # IT Audit
-    qf('"IT audit analyst" OR "IS audit analyst" OR "IT auditor"'),
-    qf('"information systems audit" OR "CISA" OR "ITGC analyst"'),
-    qf('"technology audit analyst" OR "cyber audit analyst"'),
-    qf('"internal audit IT" OR "Big 4 IT audit" OR "security audit analyst"'),
-    # Risk
-    qf('"risk analyst" OR "operational risk analyst" OR "cyber risk analyst"'),
-    qf('"IT risk analyst" OR "enterprise risk analyst" OR "ERM analyst"'),
-    qf('"RCSA analyst" OR "Basel analyst" OR "ORC analyst"'),
-    qf('"business continuity analyst" OR "BCP analyst" OR "DR analyst"'),
-    qf('"technology risk associate" OR "risk management analyst"'),
-    # Compliance
-    qf('"compliance analyst" OR "IT compliance analyst" OR "regulatory compliance analyst"'),
-    qf('"PCI DSS analyst" OR "SOX compliance analyst" OR "RBI compliance analyst"'),
-    qf('"SEBI compliance analyst" OR "IRDAI compliance" OR "PDPB analyst"'),
-    qf('"data governance analyst" OR "compliance monitoring analyst"'),
-    # Fraud / AML / KYC
-    qf('"fraud analyst" OR "fraud detection analyst" OR "fraud prevention analyst"'),
-    qf('"AML analyst" OR "anti-money laundering analyst" OR "transaction monitoring analyst"'),
-    qf('"KYC analyst" OR "KYC associate" OR "financial crime analyst"'),
-    qf('"sanctions analyst" OR "UBO analyst" OR "customer due diligence analyst"'),
-    # Privacy
-    qf('"data privacy analyst" OR "privacy analyst" OR "DPO support"'),
-    qf('"data protection analyst" OR "GDPR analyst" OR "PDPB compliance analyst"'),
-    qf('"privacy compliance analyst" OR "CIPP" OR "consent management analyst"'),
-    # Malware / Forensics
-    qf('"malware analyst" OR "malware researcher" OR "sandbox analyst"'),
-    qf('"reverse engineer" OR "binary analysis analyst" OR "memory forensics analyst"'),
-    qf('"mobile forensics analyst" OR "cyber forensics analyst"'),
-    # Indian market titles
-    qf('"associate security analyst" OR "junior security officer"'),
-    qf('"executive information security" OR "technology risk associate"'),
-    qf('"cyber risk associate" OR "security management trainee"'),
-    qf('"security officer trainee" OR "security graduate trainee" OR "security apprentice"'),
-    qf('"security awareness trainer" OR "security awareness executive"'),
-    # General catch-all
-    qf('"cybersecurity analyst" OR "security analyst" OR "information security analyst"'),
-    qf('"infosec analyst" OR "cyber analyst" OR "security engineer" Bangalore'),
-
-    # ── INTERN SEARCHES ──
-    qi('"cybersecurity intern" OR "cyber security intern" OR "security intern"'),
-    qi('"infosec intern" OR "information security intern"'),
-    qi('"SOC intern" OR "security operations intern" OR "blue team intern"'),
-    qi('"GRC intern" OR "governance risk compliance intern"'),
-    qi('"IT audit intern" OR "IS audit intern" OR "risk intern"'),
-    qi('"compliance intern" OR "regulatory compliance intern"'),
-    qi('"cloud security intern" OR "AWS security intern" OR "Azure security intern"'),
-    qi('"network security intern" OR "firewall intern"'),
-    qi('"VAPT intern" OR "penetration testing intern" OR "ethical hacking intern"'),
-    qi('"fraud analyst intern" OR "KYC intern" OR "AML intern"'),
-    qi('"threat intelligence intern" OR "OSINT intern"'),
-    qi('"vulnerability assessment intern" OR "security assessment intern"'),
-    qi('"data privacy intern" OR "privacy compliance intern"'),
-    qi('"appsec intern" OR "application security intern" OR "DevSecOps intern"'),
-    qi('"security research intern" OR "malware analyst intern"'),
-    qi('"IAM intern" OR "identity management intern" OR "DLP intern"'),
-    qi('"incident response intern" OR "DFIR intern" OR "forensics intern"'),
-    qi('"risk analyst intern" OR "operational risk intern"'),
-    qi('cybersecurity OR "information security" OR "cyber security"'),
-    qi('"security program" OR "security fellowship" OR "security graduate program"'),
-]
-
-
-LINKEDIN_POST_QUERIES = [
-    # Fresher hiring posts
-    "site:linkedin.com hiring bangalore cybersecurity fresher 2026",
-    "site:linkedin.com hiring bangalore SOC analyst fresher",
-    "site:linkedin.com hiring bangalore GRC compliance analyst fresher",
-    "site:linkedin.com hiring bangalore KYC AML fraud analyst fresher",
-    "site:linkedin.com hiring bangalore IAM security analyst fresher",
-    "site:linkedin.com opening bangalore cybersecurity entry level",
-    "site:linkedin.com urgent hiring bangalore information security analyst",
-    "site:linkedin.com bangalore immediate joining cybersecurity fresher",
-    "site:linkedin.com bangalore SOC analyst hiring fresher junior",
-    "site:linkedin.com bangalore VAPT penetration tester fresher opening",
-    "site:linkedin.com bangalore cloud security AWS GCP fresher hiring",
-    "site:linkedin.com bangalore risk analyst compliance fresher opening",
-    "site:linkedin.com bangalore IT audit CISA fresher hiring",
-    "site:linkedin.com bangalore AML KYC fraud analyst fresher hiring",
-    "site:linkedin.com bangalore data privacy GDPR analyst fresher",
-    "site:linkedin.com bangalore incident response DFIR analyst fresher",
-    "site:linkedin.com bangalore threat intelligence CTI analyst fresher",
-    "site:linkedin.com bangalore DevSecOps appsec engineer fresher",
-    # Intern posts
-    "site:linkedin.com cybersecurity intern bangalore 2026",
-    "site:linkedin.com security intern hiring bangalore stipend",
-    "site:linkedin.com GRC intern bangalore hiring",
-    "site:linkedin.com SOC intern bangalore opening",
-    "site:linkedin.com IT audit intern bangalore hiring",
-    "site:linkedin.com risk compliance intern bangalore",
-    "site:linkedin.com cloud security intern bangalore",
-    "site:linkedin.com network security intern bangalore",
-    "site:linkedin.com VAPT intern bangalore hiring",
-    "site:linkedin.com fraud KYC AML intern bangalore",
-    "site:linkedin.com threat intelligence intern bangalore",
-    "site:linkedin.com data privacy intern bangalore",
-    "site:linkedin.com appsec DevSecOps intern bangalore",
-    "site:linkedin.com cybersecurity internship bangalore stipend",
-    "site:linkedin.com paid internship security bangalore 2026",
-    "site:linkedin.com 6 month internship cybersecurity bangalore",
-    "site:linkedin.com 3 month internship security bangalore",
-    "site:linkedin.com summer internship cybersecurity bangalore",
-    "site:linkedin.com offering internship security bangalore",
-    "site:linkedin.com looking for cybersecurity intern bangalore",
-]
-
-# URLs containing these strings are garbage — filter them out
-GARBAGE_URL_PATTERNS = [
-    "linkedin.com/login",
-    "linkedin.com/signup",
-    "linkedin.com/authwall",
-    "linkedin.com/company/",      # company page, not a post
-    "linkedin.com/school/",
-    "linkedin.com/jobs/",         # jobs board redirect, not a post
-    "linkedin.com/in/",           # profile pages — people, not job postings
-    "accounts.google.com",
-    "support.google.com",
-    "/404",
-]
-
-# Titles that are obviously not job posts
-GARBAGE_TITLE_PATTERNS = [
-    "log in or sign up",
-    "sign up",
-    "join now",
-    "jobs at ",
-    "careers at ",
-    "about us",
-    "linkedin india",
-    "linkedin: log in",
-    "error",
-    "page not found",
-    "403",
-    "404",
-]
-
-# Regex: matches LinkedIn profile headline formats
-# Covers all these patterns:
-#   "Firstname Lastname - Job Title @ Company"
-#   "Firstname Lastname - Job Title | Company"
-#   "Firstname Lastname, CISA - Job Title"
-#   "Firstname Lastname | SOC Analyst @ Company"
-#   "Firstname Lastname, CISSP, CISM - ..."
-PROFILE_HEADLINE_REGEX = re.compile(
-    r'^[A-Za-z]+ [A-Za-z].{0,30}?'
-    r'(,\s*(CISA|CISM|CISSP|CEH|OSCP|CA|MBA|PhD|CPA|CFE|CDPSE|CRISC|CGEIT|'
-    r'CFA|FRM|CCSP|CCNA|MCSE|AWS|GCP|PMP|ITIL|ISO)\b)?'
-    r'\s*[-|]',
-    re.IGNORECASE
-)
-
-
-def _is_valid_post(title: str, url: str) -> bool:
-    """Return False for login pages, company pages, profile pages, and other garbage."""
-    title_l = title.lower()
-    url_l   = url.lower()
-
-    if any(p in url_l   for p in GARBAGE_URL_PATTERNS):   return False
-    if any(p in title_l for p in GARBAGE_TITLE_PATTERNS): return False
-    if len(title.strip()) < 10:                            return False
-
-    return True
-
-
-def _is_profile_headline(title: str) -> bool:
-    """
-    Return True if the title looks like a LinkedIn profile headline rather
-    than a job posting title. Used as a secondary filter after URL check.
-
-    Examples that return True (profiles — reject these):
-      "Sushmitha Sonkamble - SailPoint IdentityIQ/ISC Certified | IAM"
-      "Ashish Gangavaram, CISA - LinkedIn"
-      "Anand Kumar - Cyber Threat Intelligence @ adidas"
-      "Pranav Taskar - SOC Analyst L1 | SIEM (Splunk/Elastic)"
-      "Dhanushree S O - Security Engineer@Amazon | Masters in CS"
-
-    Examples that return False (job posts — keep these):
-      "We're Hiring! Junior Application Security Analyst"
-      "SOC Analyst L1 | Bangalore | Fresher Welcome"
-      "#Hiring: SIEM Administrator & SOC Analyst (L1)"
-      "Cyber Security Intern at Groww | Paid | Bangalore"
-    """
-    return bool(PROFILE_HEADLINE_REGEX.match(title))
-
-
-def _to_records(df) -> list[dict]:
-    if df is None or df.empty:
-        return []
-    records = []
-    for _, row in df.iterrows():
-        d = row.to_dict()
-        records.append({
-            "title":       str(d.get("title") or ""),
-            "company":     str(d.get("company") or ""),
-            "location":    str(d.get("location") or ""),
-            "job_url":     str(d.get("job_url") or ""),
-            "description": str(d.get("description") or ""),
-            "date_posted": str(d.get("date_posted") or ""),
-            "source":      str(d.get("site") or ""),
-        })
-    return records
-
-
-def _normalize_workday_jobs_url(url: str) -> str:
-    clean = (url or "").strip().rstrip("/")
-    if not clean:
-        raise ValueError("Empty Workday tenant URL")
-    if not clean.endswith("/jobs"):
-        raise ValueError(f"Workday URL must end with /jobs: {url}")
-    return clean
-
-
-def _workday_cxs_api_root(jobs_url: str) -> str:
-    """CXS JSON APIs use .../wday/cxs/{tenant}/{site} — detail lives here, not under .../jobs."""
-    clean = (jobs_url or "").strip().rstrip("/")
-    if clean.endswith("/jobs"):
-        return clean[:-5]
-    return clean
-
-
-def _workday_detail_json_url(jobs_url: str, external_path: str) -> str:
-    """Full URL for GET job detail JSON (ApplyPilot workday_detail)."""
-    root = _workday_cxs_api_root(jobs_url)
-    ext = (external_path or "").strip()
-    if not ext:
-        return ""
-    if ext.startswith("/"):
-        return root + ext
-    return f"{root}/{ext}"
-
-
-def _workday_public_job_url(jobs_url: str, external_path: str) -> str:
-    """Browser careers URL: {origin}/{site_id}{externalPath} (human-readable posting link)."""
-    u = urlparse(jobs_url)
-    parts = u.path.strip("/").split("/")
-    if len(parts) >= 5 and parts[0] == "wday" and parts[1] == "cxs" and parts[-1] == "jobs":
-        site = parts[-2]
-        ext = (external_path or "").strip()
-        if ext and not ext.startswith("/"):
-            ext = "/" + ext
-        return f"{u.scheme}://{u.netloc}/{site}{ext}"
-    return ""
-
-
-def _load_workday_companies() -> list[tuple[str, str]]:
-    """
-    Optional override:
-      WORKDAY_COMPANIES_JSON='[["Name","https://.../jobs"], ...]'
-    """
-    raw = os.environ.get("WORKDAY_COMPANIES_JSON", "").strip()
-    if not raw:
-        return WORKDAY_COMPANIES
-
-    try:
-        parsed = json.loads(raw)
-        companies: list[tuple[str, str]] = []
-        for item in parsed:
-            if not isinstance(item, (list, tuple)) or len(item) != 2:
-                continue
-            name = str(item[0]).strip()
-            url = str(item[1]).strip()
-            if name and url:
-                companies.append((name, url))
-        return companies or WORKDAY_COMPANIES
-    except Exception as exc:
-        logger.warning("Invalid WORKDAY_COMPANIES_JSON, using defaults: %s", exc)
-        return WORKDAY_COMPANIES
-
-
-def _extract_workday_job_id(posting: dict) -> str:
-    if not isinstance(posting, dict):
-        return ""
-
-    bullet = posting.get("bulletFields")
-    bullet_id = ""
-    if isinstance(bullet, list):
-        for item in bullet:
-            if isinstance(item, dict) and item.get("id"):
-                bullet_id = item.get("id")
-                break
-
-    candidates = [
-        bullet_id,
-        posting.get("jobReqId"),
-        posting.get("externalPath"),
-        posting.get("id"),
-    ]
-    for c in candidates:
-        if c:
-            return str(c).strip("/")
-    return ""
-
-
-def _extract_posted_date(posting: dict) -> str:
-    if not isinstance(posting, dict):
-        return ""
-
-    raw = (
-        posting.get("postedOn")
-        or posting.get("postedDate")
-        or posting.get("startDate")
-        or posting.get("timeType")
-        or ""
-    )
-    text = str(raw).strip()
-    if not text:
-        return ""
-    if "T" in text:
-        return text.split("T", 1)[0]
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return text
-
-
-def _extract_detail_description(detail_payload: dict) -> str:
-    if not isinstance(detail_payload, dict):
-        return ""
-    candidates = [
-        detail_payload.get("jobPostingInfo", {}).get("jobDescription"),
-        detail_payload.get("jobDescription"),
-        detail_payload.get("description"),
-        detail_payload.get("jobPostingInfo", {}).get("externalDescription"),
-    ]
-    for c in candidates:
-        if c:
-            return str(c)
-    return ""
-
-
-async def _workday_post_with_retry(
-    client: httpx.AsyncClient,
-    url: str,
-    company_name: str,
-    payload: dict,
-    retries: int = 3,
-    log_client_error: bool = True,
-) -> dict:
-    for attempt in range(1, retries + 1):
-        try:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 429:
-                wait = min(2 ** attempt, 10)
-                logger.warning("%s: rate limited (429), retry %d/%d in %ss",
-                               company_name, attempt, retries, wait)
-                await asyncio.sleep(wait)
-                continue
-            if resp.status_code >= 500:
-                raise httpx.HTTPStatusError(
-                    f"{resp.status_code} server error",
-                    request=resp.request,
-                    response=resp,
-                )
-            if resp.status_code >= 400:
-                # Return client errors so caller can try alternate payloads.
-                log_fn = logger.warning if log_client_error else logger.debug
-                log_fn("%s: Workday returned %s for payload keys=%s",
-                       company_name, resp.status_code, sorted(payload.keys()))
-                return {
-                    "__http_error__": resp.status_code,
-                    "__response_text__": (resp.text or "")[:400],
-                }
-            resp.raise_for_status()
-            return resp.json()
-        except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError) as exc:
-            if attempt >= retries:
-                logger.warning("%s: request failed after %d attempts: %s",
-                               company_name, retries, exc)
-                return {}
-            backoff = min(2 ** attempt, 8)
-            logger.warning("%s: request error (%s), retry %d/%d in %ss",
-                           company_name, exc, attempt, retries, backoff)
-            await asyncio.sleep(backoff)
-    return {}
-
-
-async def _fetch_workday_job_description(
-    client: httpx.AsyncClient,
-    jobs_url: str,
-    company_name: str,
-    posting: dict,
-) -> str:
-    raw_ext = str(posting.get("externalPath") or "").strip()
-    if not raw_ext:
-        return str(posting.get("description") or "")
-
-    # JSON detail is .../cxs/{tenant}/{site}/job/... — never insert .../jobs/ before /job/...
-    detail_url = _workday_detail_json_url(jobs_url, raw_ext)
-    if not detail_url:
-        return str(posting.get("description") or "")
-
-    try:
-        r = await client.get(detail_url)
-        if r.status_code == 200:
-            detail_json = r.json()
-            desc = _extract_detail_description(detail_json)
-            if desc:
-                return desc
-    except Exception:
-        pass
-
-    return str(posting.get("description") or "")
-
-
-def filter_workday_jobs(
-    jobs: list[dict],
-    title_keywords: tuple[str, ...] | list[str] | None = None,
-    allowed_locations: tuple[str, ...] | list[str] | None = None,
-    strict_entry_experience: bool | None = None,
-) -> list[dict]:
-    title_keywords = tuple(k.lower() for k in (title_keywords or ()))
-    allowed_locations = tuple(c.lower() for c in (allowed_locations or ()))
-    strict_xp = _workday_experience_strict_enabled() if strict_entry_experience is None else strict_entry_experience
-
-    filtered = []
-    for job in jobs:
-        title = str(job.get("title") or "").lower()
-        location = str(job.get("location") or "").lower()
-
-        title_ok = True if not title_keywords else any(k in title for k in title_keywords)
         location_ok = True if not allowed_locations else any(c in location for c in allowed_locations)
         if not title_ok or not location_ok:
             continue
@@ -707,123 +158,10 @@ def filter_workday_jobs(
             str(job.get("title") or ""),
             str(job.get("description") or ""),
         ):
-            continue
-        filtered.append(job)
-    return filtered
-
-
-async def _scrape_workday_company(
-    client: httpx.AsyncClient,
-    company_name: str,
-    jobs_url: str,
-    search_queries: list[str],
-    title_keywords: tuple[str, ...] | list[str] | None = None,
-    allowed_locations: tuple[str, ...] | list[str] | None = None,
-) -> list[dict]:
-    jobs_url = _normalize_workday_jobs_url(jobs_url)
-
-    all_postings: list[dict] = []
-    total_results_peak = 0
-    query_list = [q.strip() for q in (search_queries or []) if str(q).strip()]
-    if not query_list:
-        query_list = [""]
-
-    for search_query in query_list:
-        for page_idx in range(WORKDAY_MAX_PAGES):
-            offset = page_idx * WORKDAY_PAGE_SIZE
-            payload_variants = [
-                {
-                    "appliedFacets": {},
-                    "limit": WORKDAY_PAGE_SIZE,
-                    "offset": offset,
-                    "searchText": search_query,
-                },
-                {
-                    "appliedFacets": {},
-                    "limit": WORKDAY_PAGE_SIZE,
-                    "offset": offset,
-                    "searchText": search_query,
-                    "userPreferredLanguage": "en-US",
-                },
-                {
-                    "appliedFacets": [],
-                    "limit": WORKDAY_PAGE_SIZE,
-                    "offset": offset,
-                    "searchText": search_query,
-                },
-            ]
-
-            response_json: dict = {}
-            last_status = None
-            for payload in payload_variants:
-                response_json = await _workday_post_with_retry(
-                    client, jobs_url, company_name, payload, log_client_error=False,
-                )
-                if response_json and not response_json.get("__http_error__"):
-                    break
-                last_status = response_json.get("__http_error__")
-
-            if not response_json or response_json.get("__http_error__"):
-                logger.warning(
-                    "%s: Workday search failed offset=%s query=%r (tried %d payload variants, last HTTP=%s)",
-                    company_name, offset, search_query, len(payload_variants), last_status,
-                )
-                break
-
-            total_results = int(response_json.get("total", 0) or 0)
-            postings = response_json.get("jobPostings", []) or []
-            if not isinstance(postings, list) or not postings:
-                break
-            total_results_peak = max(total_results_peak, total_results)
-            all_postings.extend(postings)
-
-            if len(all_postings) >= WORKDAY_MAX_RESULTS:
-                break
-            if offset + WORKDAY_PAGE_SIZE >= total_results:
-                break
-
-        if len(all_postings) >= WORKDAY_MAX_RESULTS:
-            break
-
-    logger.info("%s: %d total results", company_name, total_results_sum)
-
-    # Dedup by Workday job ID within company response.
-    deduped: list[dict] = []
-    seen_job_ids: set[str] = set()
-    for posting in all_postings[:WORKDAY_MAX_RESULTS]:
-        if not isinstance(posting, dict):
-            continue
-        job_id = _extract_workday_job_id(posting)
-        if job_id and job_id in seen_job_ids:
-            continue
-        if job_id:
-            seen_job_ids.add(job_id)
-        deduped.append(posting)
-
-    records: list[dict] = []
-    for posting in deduped:
-        title = str(posting.get("title") or "").strip()
-        raw_external = str(posting.get("externalPath") or "")
-        ext_path = raw_external.strip("/")
-        location = str(
-            posting.get("locationsText")
-            or posting.get("location")
-            or posting.get("formattedLocation")
-            or ""
-        ).strip()
-        job_id = _extract_workday_job_id(posting) or ext_path
-        external_url = (
-            _workday_public_job_url(jobs_url, raw_external)
-            or _workday_detail_json_url(jobs_url, raw_external)
-            or jobs_url
-        )
-
-        description = await _fetch_workday_job_description(
-            client=client,
-            jobs_url=jobs_url,
             company_name=company_name,
             posting=posting,
         )
+        xp_hint = _workday_experience_hint(title, description)
         records.append({
             "title": title,
             "company": company_name,
@@ -833,6 +171,7 @@ async def _scrape_workday_company(
             "date_posted": _extract_posted_date(posting),
             "source": "workday",
             "job_id": job_id,
+            "experience_required": xp_hint or "",
         })
 
     filtered = filter_workday_jobs(
@@ -854,7 +193,7 @@ async def scrape_workday_jobs(
     if not companies:
         return []
 
-    workers = max(1, min(int(worker_count or 1), 3))
+    workers = max(1, min(int(worker_count or 1), 8))
     sem = asyncio.Semaphore(workers)
     timeout = httpx.Timeout(WORKDAY_TIMEOUT_S)
     headers = {
@@ -1055,7 +394,7 @@ def fetch_linkedin_posts() -> list[dict]:
                 if len(desc.strip()) < 80:
                     continue
 
-              
+
                 # ADDED — 8 lines
                 published = entry.get("published_parsed")
                 if published:
@@ -1066,7 +405,7 @@ def fetch_linkedin_posts() -> list[dict]:
                 # If published_parsed is missing we let it through  
 
 
-              
+
                 # ── All checks passed — keep this entry ──
                 seen.add(link)
                 valid += 1
