@@ -38,7 +38,6 @@ WORKDAY_COMPANIES = [
 ]
 # Intern / entry / junior-oriented queries only — avoid "Senior …" strings that pull mid-career roles.
 WORKDAY_SEARCH_QUERIES = [
-@@ -94,112 +101,7 @@
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
 )
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
