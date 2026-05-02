@@ -6,6 +6,7 @@ import logging
 import requests
 from datetime import datetime, timezone
 from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS, KNOWN_MNCS
+from listing_filters import entry_level_gate_enabled, passes_entry_level_gate
 
 logger = logging.getLogger(__name__)
 
@@ -211,26 +212,32 @@ def is_relevant(listing: dict) -> bool:
     if re.search(r'\b(1[0-9]|20)\+?\s*years?\b', title):
         return False
 
-        # ── Senior/management title filter ────────────────────────────────────────
-    SENIOR_REJECTS = [
-        "lead soc", "lead security", "lead analyst", "lead engineer",
-        "lead service", "lead siem", "lead consultant",
-        " sr. engineer", " sr engineer", "senior engineer",
-        "senior security analyst", "senior soc analyst",
-        "senior operations", "senior specialist",
-        "manager ", "supervisor", "director",
-        "head of", "vice president", " vp ",
-        "ciso", "principal engineer", "principal analyst", "staff engineer",
-    ]
-    SENIOR_EXCEPTIONS = [
-        "senior associate",    # Big 4 entry-level title
-        "sr associate", "sr. associate",
-
-    ]
-    has_senior    = any(p in title for p in SENIOR_REJECTS)
-    has_exception = any(p in title for p in SENIOR_EXCEPTIONS)
-    if has_senior and not has_exception:
-        return False
+    if entry_level_gate_enabled():
+        if not passes_entry_level_gate(
+            sanitize(listing.get("title", "")),
+            sanitize(listing.get("description", "")),
+        ):
+            return False
+    else:
+        # Legacy substring filter when ENTRY_LEVEL_GATE=0
+        SENIOR_REJECTS = [
+            "lead soc", "lead security", "lead analyst", "lead engineer",
+            "lead service", "lead siem", "lead consultant",
+            " sr. engineer", " sr engineer", "senior engineer",
+            "senior security analyst", "senior soc analyst",
+            "senior operations", "senior specialist",
+            "manager ", "supervisor", "director",
+            "head of", "vice president", " vp ",
+            "ciso", "principal engineer", "principal analyst", "staff engineer",
+        ]
+        SENIOR_EXCEPTIONS = [
+            "senior associate",
+            "sr associate", "sr. associate",
+        ]
+        has_senior = any(p in title for p in SENIOR_REJECTS)
+        has_exception = any(p in title for p in SENIOR_EXCEPTIONS)
+        if has_senior and not has_exception:
+            return False
 
     has_role_in_title   = any(r in title for r in TARGET_ROLES)
     has_intern_in_title = any(k in title for k in INTERN_KEYWORDS)
@@ -334,7 +341,15 @@ def call_groq(listing_text: str, retries: int = 4) -> str:
 
             if r.status_code == 429:
                 retry_after = r.headers.get("retry-after") or r.headers.get("x-ratelimit-reset-requests")
-                wait = float(retry_after) + 1 if retry_after else 10 * (2 ** (attempt - 1))
+                wait = 8.0 * (2 ** (attempt - 1))
+                if retry_after:
+                    try:
+                        w = float(retry_after)
+                        if w <= 120:
+                            wait = max(wait, w + 1.0)
+                    except (TypeError, ValueError):
+                        pass
+                wait = min(wait, 90.0)
                 logger.warning("Groq 429 rate limit (attempt %d/%d) — waiting %.0fs",
                                attempt, retries, wait)
                 time.sleep(wait)
@@ -519,7 +534,7 @@ def score_all(listings: list, min_score: int = 4) -> list:
             continue
 
         scored.append(result)
-        time.sleep(3)   # Groq free tier: 30 req/min
+        time.sleep(float(os.environ.get("GROQ_SCORE_DELAY_SEC", "5")))
 
 
 
