@@ -38,8 +38,8 @@ WORKDAY_COMPANIES = [
 ]
 # Intern / entry / junior-oriented queries only — avoid "Senior …" strings that pull mid-career roles.
 WORKDAY_SEARCH_QUERIES = [
-    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
-)
+    ("security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud")
+]
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
 
 # Title-only: mid/senior IC and leadership (Workday gate before AI scoring).
