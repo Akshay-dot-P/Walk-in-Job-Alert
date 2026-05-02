@@ -37,13 +37,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 LOCATION            = "Bengaluru/Bangalore, Karnataka, India"
-HOURS_OLD           = 72
+HOURS_OLD           = 300
 RESULTS_PER_TERM    = 40
 WORKDAY_PAGE_SIZE   = 20
 WORKDAY_MAX_PAGES   = 25
 WORKDAY_MAX_RESULTS = WORKDAY_PAGE_SIZE * WORKDAY_MAX_PAGES
 WORKDAY_TIMEOUT_S   = 30.0
-WORKDAY_WORKERS     = 2
+WORKDAY_WORKERS     = 5
 
 # CXS list URL must be /wday/cxs/{tenant}/{site_id}/jobs (see ApplyPilot employers.yaml).
 WORKDAY_COMPANIES = [
