@@ -223,6 +223,8 @@ SMARTRECRUITERS_COMPANIES = [
     ("Lyft", "lyft"),
     ("Robinhood", "robinhood"),
 ]  
+
+GREENHOUSE_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 ################################]
 
 
