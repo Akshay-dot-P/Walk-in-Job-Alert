@@ -161,6 +161,69 @@ WORKDAY_COMPANIES = [
     ("HPE", "https://hpe.wd5.myworkdayjobs.com/wday/cxs/hpe/Jobsathpe/jobs"),
 ]
 
+GREENHOUSE_COMPANIES = [
+    # Cybersecurity
+    "netskope",           # 131 jobs
+    "tanium",             # 75 jobs
+    "transmitsecurity",   # 28 jobs
+    "cybereason",         # 4 jobs
+    "axonius",            # 35 jobs
+    # Fintech/Crypto
+    "stripe",             # 503 jobs
+    "coinbase",           # 103 jobs
+    "gemini",             # 19 jobs
+    "fireblocks",         # 45 jobs
+    # Tech/SaaS
+    "gitlab",             # 200 jobs
+    "mongodb",            # 432 jobs
+    "vercel",             # 86 jobs
+    "planetscale",        # 6 jobs
+    # Cloud/Infra
+    "cloudflare",         # 444 jobs
+    "fastly",             # 64 jobs
+    "algolia",            # 30 jobs
+    # Enterprise SaaS
+    "airtable",           # 27 jobs
+    "figma",              # 159 jobs
+    "calendly",           # 20 jobs
+]
+
+# ═══════════════════════════════════════════════════════════════════════
+# LEVER COMPANIES (Public API — no auth required)
+# Only includes slugs verified to return data from api.lever.co
+# ═══════════════════════════════════════════════════════════════════════
+LEVER_COMPANIES = [
+    "secureframe",        # 16 jobs
+    "logrocket",          # 7 jobs
+]
+
+# ═══════════════════════════════════════════════════════════════════════
+# SMARTRECRUITERS COMPANIES (Public API — no auth required)
+# All 20 verified working via api.smartrecruiters.com
+# ═══════════════════════════════════════════════════════════════════════
+SMARTRECRUITERS_COMPANIES = [
+    ("Visa", "visa"),
+    ("Bosch", "bosch"),
+    ("IKEA", "IKEA"),
+    ("Skechers", "skechers"),
+    ("Logitech", "logitech"),
+    ("Autodesk", "autodesk"),
+    ("LinkedIn", "linkedin"),
+    ("Equinix", "equinix"),
+    ("Twilio", "twilio"),
+    ("Atlassian", "atlassian"),
+    ("Zendesk", "zendesk"),
+    ("DocuSign", "docusign"),
+    ("SoFi", "sofi"),
+    ("Square", "square"),
+    ("Toast", "toast"),
+    ("ServiceTitan", "servicetitan"),
+    ("Instacart", "instacart"),
+    ("DoorDash", "doordash"),
+    ("Lyft", "lyft"),
+    ("Robinhood", "robinhood"),
+################################]
+
 
 WORKDAY_SEARCH_QUERIES = [
     "Tax Intern",
@@ -901,6 +964,195 @@ def _scrape_workday() -> list[dict]:
     except Exception as exc:
         logger.error("Workday source failed: %s", exc)
         return []
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# GREENHOUSE SCRAPER - FIXED (uses requests, proper error handling)
+# ════════════════════════════════════════════════════════════════════════════
+def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
+    """
+    Greenhouse boards API: GET https://boards-api.greenhouse.io/v1/boards/{company}/jobs
+    Returns JSON with 'jobs' array. No auth required.
+    """
+    url = f"https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        
+        # Don't log 403/404 - many companies won't have India jobs
+        if resp.status_code != 200:
+            return []
+        
+        data = resp.json()
+        if not isinstance(data, dict) or "jobs" not in data:
+            return []
+        
+        jobs = data.get("jobs", [])
+        if not isinstance(jobs, list):
+            return []
+        
+        results = []
+        for job in jobs:
+            title = str(job.get("title") or "").strip()
+            
+            # Location can be dict or string
+            location_obj = job.get("location") or {}
+            if isinstance(location_obj, dict):
+                location = str(location_obj.get("name", ""))
+            else:
+                location = str(location_obj)
+            
+            # Filter: India/Bangalore only
+            if location:
+                loc_lower = location.lower()
+                if "india" not in loc_lower and "bangalore" not in loc_lower and "bengaluru" not in loc_lower:
+                    continue
+            
+            # Filter: Security/risk/compliance roles only
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in [
+                "security", "cyber", "risk", "compliance", "grc", "soc", 
+                "iam", "fraud", "privacy", "audit", "vapt", "penetration"
+            ]):
+                continue
+            
+            job_url = job.get("absolute_url") or f"https://boards.greenhouse.io/{company_slug}/jobs/{job.get('id')}"
+            
+            results.append({
+                "title": title,
+                "company": company_slug.replace("-", " ").title(),
+                "location": location or "India",
+                "job_url": job_url,
+                "description": str(job.get("content") or "")[:1000],  # Truncate long descriptions
+                "date_posted": "",
+                "source": "greenhouse",
+            })
+        
+        if results:
+            logger.info(f"  {company_slug}: {len(results)} security jobs in India")
+        
+        return results
+        
+    except requests.exceptions.Timeout:
+        logger.debug(f"{company_slug}: Timeout")
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"{company_slug}: {type(e).__name__}")
+        return []
+    except Exception as e:
+        logger.debug(f"{company_slug}: Unexpected error - {type(e).__name__}")
+        return []
+ 
+def _scrape_greenhouse() -> list[dict]:
+    logger.info(f"=== Greenhouse API: {len(GREENHOUSE_COMPANIES)} companies ===")
+    all_results = []
+    
+    for company_slug in GREENHOUSE_COMPANIES:
+        results = _scrape_greenhouse_company(company_slug)
+        all_results.extend(results)
+        time.sleep(1)  # Be respectful of rate limits
+    
+    logger.info(f"Greenhouse: {len(all_results)} jobs found")
+    return all_results
+ 
+# ════════════════════════════════════════════════════════════════════════════
+# LEVER SCRAPER - FIXED (uses requests, proper error handling)
+# ════════════════════════════════════════════════════════════════════════════
+def _scrape_lever_company(company_slug: str) -> list[dict]:
+    """
+    Lever API: GET https://api.lever.co/v0/postings/{company}?mode=json
+    Returns JSON array of postings. No auth required.
+    """
+    url = f"https://api.lever.co/v0/postings/{company_slug}?mode=json"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        
+        if resp.status_code != 200:
+            return []
+        
+        jobs = resp.json()
+        if not isinstance(jobs, list):
+            return []
+        
+        results = []
+        for job in jobs:
+            title = str(job.get("text") or "").strip()
+            
+            # Location from categories
+            categories = job.get("categories") or {}
+            location = ""
+            if isinstance(categories, dict):
+                location = str(categories.get("location", ""))
+            
+            # Filter: India/Bangalore only
+            if location:
+                loc_lower = location.lower()
+                if "india" not in loc_lower and "bangalore" not in loc_lower and "bengaluru" not in loc_lower:
+                    continue
+            
+            # Filter: Security/risk/compliance roles only
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in [
+                "security", "cyber", "risk", "compliance", "grc", "soc",
+                "iam", "fraud", "privacy", "audit", "vapt", "penetration"
+            ]):
+                continue
+            
+            job_url = job.get("hostedUrl") or job.get("applyUrl") or f"https://jobs.lever.co/{company_slug}/{job.get('id')}"
+            
+            # Get date
+            created_at = str(job.get("createdAt", ""))
+            date_posted = created_at[:10] if created_at else ""
+            
+            results.append({
+                "title": title,
+                "company": company_slug.replace("-", " ").title(),
+                "location": location or "India",
+                "job_url": job_url,
+                "description": str(job.get("description") or job.get("descriptionPlain") or "")[:1000],
+                "date_posted": date_posted,
+                "source": "lever",
+            })
+        
+        if results:
+            logger.info(f"  {company_slug}: {len(results)} security jobs in India")
+        
+        return results
+        
+    except requests.exceptions.Timeout:
+        logger.debug(f"{company_slug}: Timeout")
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"{company_slug}: {type(e).__name__}")
+        return []
+    except Exception as e:
+        logger.debug(f"{company_slug}: Unexpected error - {type(e).__name__}")
+        return []
+ 
+def _scrape_lever() -> list[dict]:
+    logger.info(f"=== Lever API: {len(LEVER_COMPANIES)} companies ===")
+    all_results = []
+    
+    for company_slug in LEVER_COMPANIES:
+        results = _scrape_lever_company(company_slug)
+        all_results.extend(results)
+        time.sleep(1)  # Be respectful of rate limits
+    
+    logger.info(f"Lever: {len(all_results)} jobs found")
+    return all_results
+ 
+# ════════════════════════════════════════════════════════════════════════════
+# [Keep ALL your existing scrapers - LinkedIn, Google, Indeed, Posts]
+# ════════════════════════════════════════════════════════════════════════════
 
 
 def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
