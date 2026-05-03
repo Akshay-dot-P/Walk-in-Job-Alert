@@ -1352,6 +1352,8 @@ def gather_all_listings() -> list[dict]:
         ("Indeed",         _scrape_indeed),
         ("LinkedIn Posts", fetch_linkedin_posts),
         ("Workday",        _scrape_workday),
+        ("Greenhouse",     _scrape_greenhouse),       # ← ACTIVE
+        ("Lever",          _scrape_lever), 
     ]
 
     counts = {}
