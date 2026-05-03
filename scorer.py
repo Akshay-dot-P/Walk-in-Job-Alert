@@ -499,22 +499,32 @@ def score_all(listings: list, min_score: int = 4) -> list:
 
     def _norm_title(t: str) -> str:
     """Normalize job title for deduplication.
-    Strips leading level tokens (e.g., L1, Junior, Senior), normalizes whitespace, and removes trailing noise.
+    Strips leading level tokens (e.g., L1, Junior, Senior), normalizes whitespace,
+    and removes trailing noise such as location tags or fiscal year markers.
     """
     # Remove leading level prefixes
     t = re.sub(r'^(l\d+\s+|junior\s+|senior\s+|entry\s+level\s+|mid\s+level\s+|associate\s+)', '', t, flags=re.IGNORECASE)
     # Collapse whitespace and punctuation
     t = re.sub(r'[\s\-–_]+', ' ', t.lower()).strip()
-        """Normalize job title for deduplication.
-        Strips leading level tokens (e.g., L1, Junior, Senior), normalizes whitespace, and removes trailing noise.
-        """
-        # Remove leading level prefixes
-        t = re.sub(r'^(l\d+\s+|junior\s+|senior\s+|entry\s+level\s+|mid\s+level\s+|associate\s+)', '', t, flags=re.IGNORECASE)
-        # Collapse whitespace and punctuation
-        t = re.sub(r'[\s\-–_]+', ' ', t.lower()).strip()
-        # Remove common trailing noise tokens (e.g., "- bangalore", "| fy26")
-        t = re.sub(r'[\|\-–]\s*\S.*$', '', t).strip()
-        return t
+    # Remove trailing noise tokens (e.g., "- bangalore", "| fy26")
+    t = re.sub(r'[\|\-–]\s*\S.*$', '', t).strip()
+    return t:
+    """Normalize job title for deduplication.
+    Strips leading level tokens (e.g., L1, Junior, Senior), normalizes whitespace,
+    and removes trailing noise such as location tags or fiscal year markers.
+    """
+    # Remove leading level prefixes
+    t = re.sub(r'^(l\d+\s+|junior\s+|senior\s+|entry\s+level\s+|mid\s+level\s+|associate\s+)', '', t, flags=re.IGNORECASE)
+    # Collapse whitespace and punctuation
+    t = re.sub(r'[\s\-–_]+', ' ', t.lower()).strip()
+    # Remove trailing noise tokens (e.g., "- bangalore", "| fy26")
+    t = re.sub(r'[\|\-–]\s*\S.*$', '', t).strip()
+    return t
+    """Normalize job title for deduplication.
+    Strips leading level tokens (e.g., L1, Junior, Senior), normalizes whitespace, and removes trailing noise.
+    """
+    # Remove leading level prefixes
+
 
     def _norm_company(c: str) -> str:
         """Normalize company name for deduplication.
