@@ -25,6 +25,7 @@ import logging
 import asyncio
 import os
 import json
+import requests
 from datetime import datetime
 from urllib.parse import urlparse
 import feedparser
@@ -224,7 +225,6 @@ SMARTRECRUITERS_COMPANIES = [
     ("Robinhood", "robinhood"),
 ]  
 
-GREENHOUSE_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 ################################]
 
 
@@ -250,6 +250,7 @@ WORKDAY_TITLE_KEYWORDS = (
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
 )
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
+GREENHOUSE_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
