@@ -222,6 +222,7 @@ SMARTRECRUITERS_COMPANIES = [
     ("DoorDash", "doordash"),
     ("Lyft", "lyft"),
     ("Robinhood", "robinhood"),
+]  
 ################################]
 
 
