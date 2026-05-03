@@ -497,29 +497,44 @@ def score_all(listings: list, min_score: int = 4) -> list:
         logger.info("Nothing left after freshness filter")
         return []
 
-    # Dedup before scoring:
-    # 1) Prefer stable identifiers (job_id / URL)
-    # 2) Else fallback to exact company+title
-    # Never dedup by company-only or title-only.
-    seen_key: set[str] = set()
+    # Dedup before scoring — check ALL available keys so the same job
+    # scraped from multiple sources (different URLs) is caught.
+    # Keys registered per listing: job_id, url, normalized company+title.
+    # A listing is a duplicate if ANY of its keys was already seen.
+    seen_keys: set[str] = set()
+
+    def _norm_title(t: str) -> str:
+        """Strip roman numerals suffix, level tags, and extra spaces for fuzzy match."""
+        t = re.sub(r'[\s\-–_]+', ' ', t.lower()).strip()
+        # Remove common noise tokens at the end (e.g. "- bangalore", "| fy26")
+        t = re.sub(r'[\|\-–]\s*\S.*$', '', t).strip()
+        return t
+
     deduped = []
     for l in relevant:
-        job_id = sanitize(str(l.get("job_id", "")).strip()).lower()
-        url = sanitize(str(l.get("job_url") or l.get("url") or "").strip()).lower()
-        title   = sanitize(l.get("title", "")).lower().strip()
+        job_id  = sanitize(str(l.get("job_id", "")).strip()).lower()
+        url     = sanitize(str(l.get("job_url") or l.get("url") or "").strip()).lower()
+        title   = _norm_title(sanitize(l.get("title", "")))
         company = sanitize(l.get("company", "")).lower().strip()
+
+        # Build all candidate keys for this listing
+        candidate_keys: list[str] = []
         if job_id:
-            key = f"jobid:{job_id}"
-        elif url:
-            key = f"url:{url}"
-        elif company and title:
-            key = f"ct:{company}|{title}"
-        else:
-            # Keep ambiguous records instead of aggressively dropping them.
-            key = f"raw:{len(deduped)}:{title}"
-        if key in seen_key:
+            candidate_keys.append(f"jobid:{job_id}")
+        if url:
+            candidate_keys.append(f"url:{url}")
+        if company and title:
+            candidate_keys.append(f"ct:{company}|{title}")
+        if not candidate_keys:
+            # Truly ambiguous — keep but use a unique fallback key
+            candidate_keys.append(f"raw:{len(deduped)}:{title}")
+
+        # If ANY key already seen → duplicate
+        if any(k in seen_keys for k in candidate_keys):
             continue
-        seen_key.add(key)
+
+        # Register all keys for this listing
+        seen_keys.update(candidate_keys)
         deduped.append(l)
 
     logger.info("Pre-score dedup: %d → %d (removed %d duplicates)",
