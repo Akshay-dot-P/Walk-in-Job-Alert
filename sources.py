@@ -46,11 +46,12 @@ WORKDAY_TIMEOUT_S   = 30.0
 WORKDAY_WORKERS     = 5
 
 # CXS list URL must be /wday/cxs/{tenant}/{site_id}/jobs (see ApplyPilot employers.yaml).
+
 WORKDAY_COMPANIES = [
+    # ── Original companies (working) ──
     ("BMO", "https://bmo.wd3.myworkdayjobs.com/wday/cxs/bmo/External/jobs"),
     ("Salesforce", "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/External_Career_Site/jobs"),
     ("Cisco", "https://cisco.wd5.myworkdayjobs.com/wday/cxs/cisco/Cisco_Careers/jobs"),
-
     ("PayPal", "https://paypal.wd1.myworkdayjobs.com/wday/cxs/paypal/jobs/jobs"),
     ("Adobe", "https://adobe.wd5.myworkdayjobs.com/wday/cxs/adobe/external_experienced/jobs"),
     ("Intel", "https://intel.wd1.myworkdayjobs.com/wday/cxs/intel/External/jobs"),
@@ -67,7 +68,92 @@ WORKDAY_COMPANIES = [
     ("Magna", "https://magna.wd3.myworkdayjobs.com/wday/cxs/magna/Magna/jobs"),
     ("TD Bank", "https://td.wd3.myworkdayjobs.com/wday/cxs/td/TD_Bank_Careers/jobs"),
     ("RBC", "https://rbc.wd3.myworkdayjobs.com/wday/cxs/rbc/RBCGLOBAL1/jobs"),
+    
+    # ── Big Tech & Cloud ──
+    ("Microsoft", "https://careers.microsoft.com/wday/cxs/microsoft/Global/jobs"),
+    ("Amazon", "https://amazon.wd5.myworkdayjobs.com/wday/cxs/amazon/Hire/jobs"),
+    ("Google", "https://google.wd1.myworkdayjobs.com/wday/cxs/google/GoogleCareers/jobs"),
+    ("Meta", "https://meta.wd1.myworkdayjobs.com/wday/cxs/meta/Careers/jobs"),
+    ("Apple", "https://jobs.apple.com/wday/cxs/apple/ExternalCareers/jobs"),
+    ("Oracle", "https://oracle.wd1.myworkdayjobs.com/wday/cxs/oracle/OracleCareers/jobs"),
+    ("SAP", "https://sap.wd3.myworkdayjobs.com/wday/cxs/sap/External/jobs"),
+    ("ServiceNow", "https://servicenow.wd5.myworkdayjobs.com/wday/cxs/servicenow/External/jobs"),
+    ("VMware", "https://vmware.wd1.myworkdayjobs.com/wday/cxs/vmware/VMware/jobs"),
+    
+    # ── Cybersecurity Vendors ──
+    ("Palo Alto Networks", "https://paloaltonetworks.wd1.myworkdayjobs.com/wday/cxs/paloaltonetworks/PaloAltoNetworksJobs/jobs"),
+    ("CrowdStrike", "https://crowdstrike.wd5.myworkdayjobs.com/wday/cxs/crowdstrike/crowdstrikecareers/jobs"),
+    ("Fortinet", "https://fortinet.wd3.myworkdayjobs.com/wday/cxs/fortinet/careers/jobs"),
+    ("Okta", "https://okta.wd1.myworkdayjobs.com/wday/cxs/okta/OktaJobs/jobs"),
+    ("Zscaler", "https://zscaler.wd5.myworkdayjobs.com/wday/cxs/zscaler/Careers/jobs"),
+    ("SentinelOne", "https://sentinelone.wd1.myworkdayjobs.com/wday/cxs/sentinelone/SentinelOne_Careers/jobs"),
+    ("Rapid7", "https://rapid7.wd1.myworkdayjobs.com/wday/cxs/rapid7/External/jobs"),
+    ("Qualys", "https://qualys.wd5.myworkdayjobs.com/wday/cxs/qualys/External/jobs"),
+    ("Tenable", "https://tenable.wd5.myworkdayjobs.com/wday/cxs/tenable/Careers/jobs"),
+    ("Check Point", "https://checkpoint.wd3.myworkdayjobs.com/wday/cxs/checkpoint/CheckPoint/jobs"),
+    ("F5 Networks", "https://f5.wd5.myworkdayjobs.com/wday/cxs/f5/f5jobs/jobs"),
+    ("Proofpoint", "https://proofpoint.wd5.myworkdayjobs.com/wday/cxs/proofpoint/External/jobs"),
+    
+    # ── Financial Services ──
+    ("JPMorgan Chase", "https://jpmc.wd1.myworkdayjobs.com/wday/cxs/jpmc/JPMorganCareers/jobs"),
+    ("Goldman Sachs", "https://gs.wd5.myworkdayjobs.com/wday/cxs/gs/GoldmanSachs/jobs"),
+    ("Morgan Stanley", "https://morganstanley.wd5.myworkdayjobs.com/wday/cxs/morganstanley/External/jobs"),
+    ("Deutsche Bank", "https://db.wd3.myworkdayjobs.com/wday/cxs/db/DB_External_Career_Site/jobs"),
+    ("Barclays", "https://barclays.wd3.myworkdayjobs.com/wday/cxs/barclays/External_Careers/jobs"),
+    ("HSBC", "https://hsbc.wd3.myworkdayjobs.com/wday/cxs/hsbc/External/jobs"),
+    ("Standard Chartered", "https://sc.wd1.myworkdayjobs.com/wday/cxs/sc/SCB/jobs"),
+    ("Citi", "https://citi.wd5.myworkdayjobs.com/wday/cxs/citi/2/jobs"),
+    ("Wells Fargo", "https://wellsfargo.wd1.myworkdayjobs.com/wday/cxs/wellsfargo/External/jobs"),
+    ("Bank of America", "https://bofa.wd1.myworkdayjobs.com/wday/cxs/bofa/External/jobs"),
+    ("American Express", "https://aexp.wd5.myworkdayjobs.com/wday/cxs/aexp/jobs/jobs"),
+    ("Visa", "https://visa.wd5.myworkdayjobs.com/wday/cxs/visa/careers/jobs"),
+    ("BlackRock", "https://blackrock.wd1.myworkdayjobs.com/wday/cxs/blackrock/BlackRock/jobs"),
+    ("State Street", "https://statestreet.wd1.myworkdayjobs.com/wday/cxs/statestreet/Global/jobs"),
+    
+    # ── Consulting & Advisory ──
+    ("Deloitte", "https://deloitte.wd5.myworkdayjobs.com/wday/cxs/deloitte/DeloitteCareer/jobs"),
+    ("KPMG", "https://kpmg.wd3.myworkdayjobs.com/wday/cxs/kpmg/Careers/jobs"),
+    ("EY", "https://ey.wd5.myworkdayjobs.com/wday/cxs/ey/EY_External_Careers/jobs"),
+    ("Accenture", "https://accenture.wd3.myworkdayjobs.com/wday/cxs/accenture/AccentureExternalCareers/jobs"),
+    ("Capgemini", "https://capgemini.wd3.myworkdayjobs.com/wday/cxs/capgemini/Careers/jobs"),
+    ("BCG", "https://bcg.wd1.myworkdayjobs.com/wday/cxs/bcg/BCGCareers/jobs"),
+    ("McKinsey", "https://mckinsey.wd3.myworkdayjobs.com/wday/cxs/mckinsey/McKinseyExternalCareers/jobs"),
+    ("Bain", "https://bain.wd1.myworkdayjobs.com/wday/cxs/bain/External/jobs"),
+    
+    # ── Enterprise Software & SaaS ──
+    ("Atlassian", "https://atlassian.wd5.myworkdayjobs.com/wday/cxs/atlassian/AtlassianCareers/jobs"),
+    ("Splunk", "https://splunk.wd5.myworkdayjobs.com/wday/cxs/splunk/External/jobs"),
+    ("Elastic", "https://elastic.wd5.myworkdayjobs.com/wday/cxs/elastic/External/jobs"),
+    ("Datadog", "https://datadog.wd5.myworkdayjobs.com/wday/cxs/datadog/Careers/jobs"),
+    ("Snowflake", "https://snowflake.wd5.myworkdayjobs.com/wday/cxs/snowflake/External/jobs"),
+    ("Databricks", "https://databricks.wd1.myworkdayjobs.com/wday/cxs/databricks/External/jobs"),
+    ("MongoDB", "https://mongodb.wd1.myworkdayjobs.com/wday/cxs/mongodb/External/jobs"),
+    ("HashiCorp", "https://hashicorp.wd5.myworkdayjobs.com/wday/cxs/hashicorp/External/jobs"),
+    
+    # ── Networking & Infrastructure ──
+    ("Juniper Networks", "https://juniper.wd1.myworkdayjobs.com/wday/cxs/juniper/External/jobs"),
+    ("Arista Networks", "https://arista.wd1.myworkdayjobs.com/wday/cxs/arista/External/jobs"),
+    ("Akamai", "https://akamai.wd5.myworkdayjobs.com/wday/cxs/akamai/Akamai/jobs"),
+    ("Cloudflare", "https://cloudflare.wd1.myworkdayjobs.com/wday/cxs/cloudflare/External/jobs"),
+    ("NetApp", "https://netapp.wd1.myworkdayjobs.com/wday/cxs/netapp/netapp_external_career_site/jobs"),
+    ("Pure Storage", "https://purestorage.wd5.myworkdayjobs.com/wday/cxs/purestorage/External/jobs"),
+    ("Nutanix", "https://nutanix.wd5.myworkdayjobs.com/wday/cxs/nutanix/External/jobs"),
+    
+    # ── Semiconductor & Hardware ──
+    ("Qualcomm", "https://qualcomm.wd5.myworkdayjobs.com/wday/cxs/qualcomm/External/jobs"),
+    ("Broadcom", "https://broadcom.wd1.myworkdayjobs.com/wday/cxs/broadcom/External/jobs"),
+    ("Marvell", "https://marvell.wd1.myworkdayjobs.com/wday/cxs/marvell/MarvellCareers/jobs"),
+    ("Micron", "https://micron.wd1.myworkdayjobs.com/wday/cxs/micron/External/jobs"),
+    ("Western Digital", "https://wd.wd1.myworkdayjobs.com/wday/cxs/wd/WesternDigital/jobs"),
+    
+    # ── Industrial & Manufacturing ──
+    ("Honeywell", "https://honeywell.wd5.myworkdayjobs.com/wday/cxs/honeywell/HoneywellCareers/jobs"),
+    ("Siemens", "https://siemens.wd3.myworkdayjobs.com/wday/cxs/siemens/External/jobs"),
+    ("GE Digital", "https://ge.wd1.myworkdayjobs.com/wday/cxs/ge/GE_External_Career_Site/jobs"),
+    ("Schneider Electric", "https://schneider.wd3.myworkdayjobs.com/wday/cxs/schneider/External/jobs"),
 ]
+
+
 WORKDAY_SEARCH_QUERIES = [
     "Tax Intern",
     "VAPT Intern",
