@@ -497,25 +497,51 @@ def score_all(listings: list, min_score: int = 4) -> list:
         logger.info("Nothing left after freshness filter")
         return []
 
-    # Dedup before scoring — check ALL available keys so the same job
-    # scraped from multiple sources (different URLs) is caught.
-    # Keys registered per listing: job_id, url, normalized company+title.
-    # A listing is a duplicate if ANY of its keys was already seen.
-    seen_keys: set[str] = set()
-
     def _norm_title(t: str) -> str:
-        """Strip roman numerals suffix, level tags, and extra spaces for fuzzy match."""
+    """Normalize job title for deduplication.
+    Strips leading level tokens (e.g., L1, Junior, Senior), normalizes whitespace, and removes trailing noise.
+    """
+    # Remove leading level prefixes
+    t = re.sub(r'^(l\d+\s+|junior\s+|senior\s+|entry\s+level\s+|mid\s+level\s+|associate\s+)', '', t, flags=re.IGNORECASE)
+    # Collapse whitespace and punctuation
+    t = re.sub(r'[\s\-–_]+', ' ', t.lower()).strip()
+        """Normalize job title for deduplication.
+        Strips leading level tokens (e.g., L1, Junior, Senior), normalizes whitespace, and removes trailing noise.
+        """
+        # Remove leading level prefixes
+        t = re.sub(r'^(l\d+\s+|junior\s+|senior\s+|entry\s+level\s+|mid\s+level\s+|associate\s+)', '', t, flags=re.IGNORECASE)
+        # Collapse whitespace and punctuation
         t = re.sub(r'[\s\-–_]+', ' ', t.lower()).strip()
-        # Remove common noise tokens at the end (e.g. "- bangalore", "| fy26")
+        # Remove common trailing noise tokens (e.g., "- bangalore", "| fy26")
         t = re.sub(r'[\|\-–]\s*\S.*$', '', t).strip()
         return t
+
+    def _norm_company(c: str) -> str:
+        """Normalize company name for deduplication.
+        Removes legal suffixes, common corporate designators, and parenthetical noise like "(MNC)".
+        """
+        # Lowercase and strip whitespace first
+        c = c.lower().strip()
+        # Remove parenthetical content e.g., (MNC), (India), etc.
+        c = re.sub(r'\s*\([^\)]*\)', '', c)
+        # Remove common suffixes and corporate designators
+        c = re.sub(r'\s+(inc|ltd|pvt|limited|india|solutions|technologies|group|corp|mnc)\.?$', '', c)
+        # Collapse multiple spaces
+        c = re.sub(r'\s+', ' ', c).strip()
+        return c
+
+    # Dedup before scoring — use robust normalized keys
+    # 1) job_id if present
+    # 2) url if present
+    # 3) normalized company + normalized title (strip common suffixes, punctuation, excess whitespace)
+    seen_keys: set[str] = set()
 
     deduped = []
     for l in relevant:
         job_id  = sanitize(str(l.get("job_id", "")).strip()).lower()
         url     = sanitize(str(l.get("job_url") or l.get("url") or "").strip()).lower()
         title   = _norm_title(sanitize(l.get("title", "")))
-        company = sanitize(l.get("company", "")).lower().strip()
+        company = _norm_company(sanitize(l.get("company", "")).lower().strip())
 
         # Build all candidate keys for this listing
         candidate_keys: list[str] = []
