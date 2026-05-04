@@ -1342,6 +1342,368 @@ def fetch_linkedin_posts() -> list[dict]:
     return results
 
 
+
+
+
+"""
+══════════════════════════════════════════════════════════════════════════════
+INSTAHYRE SCRAPER  —  drop-in addition for sources.py
+══════════════════════════════════════════════════════════════════════════════
+
+HOW INSTAHYRE'S API WORKS
+─────────────────────────
+Instahyre is a Django/DRF app.  The public job search page at
+  https://www.instahyre.com/search-jobs/
+renders data via Vue/Angular bindings ([[ opp.job.candidate_title ]]) that
+are populated from a REST endpoint:
+
+  GET https://www.instahyre.com/api/v1/opportunity/
+      ?format=json
+      &location=Bangalore
+      &designation=<keyword>
+      &limit=20
+      &offset=0
+
+  Optional extra filters:
+      &min_experience=0   (years)
+      &max_experience=3
+      &job_type=0         (0 = full-time, 1 = internship)
+
+The endpoint returns a standard DRF paginated envelope:
+  {
+    "count":   245,
+    "next":    "https://www.instahyre.com/api/v1/opportunity/?...&offset=20",
+    "previous": null,
+    "results": [
+      {
+        "id":       99999,
+        "job": {
+          "candidate_title": "Security Analyst",
+          "description":     "<html>...",
+          "job_type":        0,
+          "min_experience":  0,
+          "max_experience":  3,
+          "skills":          ["Python", "SIEM"],
+        },
+        "employer": {
+          "company_name": "Acme Corp",
+          "slug":         "acme-corp",
+          "company_url":  "https://acmecorp.com",
+          "no_of_employees": "51-200",
+        },
+        "location": ["Bangalore"],
+        "created":  "2024-03-15T09:21:00Z",
+        "hr_name":  "Jane Doe",
+      },
+      ...
+    ]
+  }
+
+AUTH SITUATION
+──────────────
+• The /api/v1/opportunity/ listing endpoint works WITHOUT login.
+• A browser session cookie (sessionid) and CSRF token improve reliability and
+  unlock the full description field, but are NOT required for the list.
+• GitHub Actions IPs are NOT currently blocked (unlike Naukri/Glassdoor).
+  If you start seeing HTTP 403 consistently, add a note here like Naukri.
+
+WHAT THIS SCRAPER DOES
+───────────────────────
+1.  Opens a lightweight GET on the Instahyre homepage to collect:
+      - csrftoken cookie
+      - sessionid cookie (anonymous session)
+2.  Iterates over INSTAHYRE_SEARCH_QUERIES (designation keywords) with
+    location locked to Bangalore, paginating until no more results or
+    INSTAHYRE_MAX_RESULTS is reached.
+3.  Filters titles by INSTAHYRE_TITLE_KEYWORDS (same style as Workday).
+4.  Returns records in the same dict schema as all other scrapers.
+
+ADD TO sources.py
+─────────────────
+  Step 1 — copy the constants block and the three functions below into sources.py
+           (anywhere after the imports / before gather_all_listings).
+
+  Step 2 — add one entry to the `sources` list in gather_all_listings():
+
+      ("Instahyre",  _scrape_instahyre),
+
+  Step 3 — no new pip dependencies required (uses `requests`, already imported).
+"""
+
+import re
+import time
+import logging
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INSTAHYRE CONSTANTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+INSTAHYRE_BASE_URL   = "https://www.instahyre.com"
+INSTAHYRE_API_URL    = "https://www.instahyre.com/api/v1/opportunity/"
+INSTAHYRE_LOCATION   = "Bangalore"          # Instahyre uses "Bangalore" not "Bengaluru"
+INSTAHYRE_PAGE_SIZE  = 20                   # Instahyre's default page size
+INSTAHYRE_MAX_PAGES  = 10                   # Max pages per query  → 200 results max per term
+INSTAHYRE_MAX_RESULTS = 500                 # Global cap across all queries
+
+# Keywords to search by designation (Instahyre's ?designation= param).
+# Keep these short — Instahyre's search is an exact prefix/contains match on title.
+INSTAHYRE_SEARCH_QUERIES = [
+    "security analyst",
+    "cybersecurity analyst",
+    "information security",
+    "SOC analyst",
+    "cloud security",
+    "network security",
+    "GRC analyst",
+    "compliance analyst",
+    "risk analyst",
+    "IT audit",
+    "fraud analyst",
+    "KYC analyst",
+    "AML analyst",
+    "IAM analyst",
+    "VAPT",
+    "penetration tester",
+    "DevSecOps",
+    "application security",
+    "data privacy",
+    "incident response",
+    "threat intelligence",
+    "vulnerability",
+    "security engineer",
+    "security intern",
+    "cybersecurity intern",
+]
+
+# Title must contain at least one of these to be kept (same pattern as Workday)
+INSTAHYRE_TITLE_KEYWORDS = (
+    "security", "cyber", "soc", "risk", "compliance", "grc", "iam",
+    "appsec", "cloud", "fraud", "kyc", "aml", "audit", "vapt",
+    "penetration", "devsecops", "privacy", "threat", "vulnerability",
+    "incident", "forensic", "malware",
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _instahyre_session() -> requests.Session:
+    """
+    Creates a requests.Session pre-loaded with Instahyre's CSRF cookie.
+    A lightweight GET on the homepage is all that's needed — no login.
+    """
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept":          "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer":         "https://www.instahyre.com/search-jobs/",
+        "X-Requested-With": "XMLHttpRequest",
+    })
+
+    try:
+        # Hit the homepage to acquire csrftoken + anonymous sessionid cookie
+        resp = session.get(INSTAHYRE_BASE_URL + "/search-jobs/", timeout=15)
+        csrf = resp.cookies.get("csrftoken", "")
+        if csrf:
+            session.headers["X-CSRFToken"] = csrf
+            logger.debug("Instahyre: got CSRF token")
+        else:
+            logger.debug("Instahyre: no CSRF token in homepage response (may still work)")
+    except Exception as exc:
+        logger.warning("Instahyre: homepage request failed: %s", exc)
+
+    return session
+
+
+def _parse_instahyre_record(item: dict) -> dict | None:
+    """
+    Convert one Instahyre API result dict into our standard schema dict.
+    Returns None if the item is malformed.
+    """
+    if not isinstance(item, dict):
+        return None
+
+    job      = item.get("job") or {}
+    employer = item.get("employer") or {}
+
+    title    = str(job.get("candidate_title") or "").strip()
+    company  = str(employer.get("company_name") or "").strip()
+    opp_id   = item.get("id")
+
+    if not title:
+        return None
+
+    # Location: list of city strings e.g. ["Bangalore", "Remote"]
+    raw_locs = item.get("location") or []
+    location = ", ".join(str(l) for l in raw_locs) if raw_locs else INSTAHYRE_LOCATION
+
+    # Job URL — canonical candidate-facing link
+    employer_slug = str(employer.get("slug") or "").strip()
+    if opp_id and employer_slug:
+        job_url = f"{INSTAHYRE_BASE_URL}/candidate/opportunities/{employer_slug}/{opp_id}/"
+    elif opp_id:
+        job_url = f"{INSTAHYRE_BASE_URL}/candidate/opportunities/{opp_id}/"
+    else:
+        job_url = INSTAHYRE_BASE_URL + "/search-jobs/"
+
+    # Description: may be HTML — strip tags for a plain-text snippet
+    raw_desc = str(job.get("description") or "").strip()
+    description = re.sub(r"<[^>]+>", " ", raw_desc)          # strip HTML tags
+    description = re.sub(r"\s+", " ", description).strip()   # normalise whitespace
+    description = description[:1500]                          # truncate
+
+    # Skills list → append to description if present
+    skills = job.get("skills") or []
+    if skills and isinstance(skills, list):
+        skills_str = "Skills: " + ", ".join(str(s) for s in skills)
+        description = (description + "\n" + skills_str).strip()
+
+    # Date posted
+    raw_date  = str(item.get("created") or "").strip()
+    date_posted = raw_date[:10] if raw_date else ""   # keep YYYY-MM-DD part
+
+    return {
+        "title":       title,
+        "company":     company,
+        "location":    location,
+        "job_url":     job_url,
+        "description": description,
+        "date_posted": date_posted,
+        "source":      "instahyre",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN SCRAPER FUNCTION  (drop into sources.py as-is)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _scrape_instahyre() -> list[dict]:
+    """
+    Scrape Instahyre's public opportunity API for cybersec/GRC/risk roles
+    in Bangalore.  No login required.
+
+    Add to gather_all_listings() sources list:
+        ("Instahyre", _scrape_instahyre),
+    """
+    logger.info("=== Instahyre API: %d queries ===", len(INSTAHYRE_SEARCH_QUERIES))
+
+    session  = _instahyre_session()
+    all_jobs: list[dict] = []
+    seen_ids: set        = set()
+
+    for q_idx, designation in enumerate(INSTAHYRE_SEARCH_QUERIES):
+        logger.info("  [%d/%d] Instahyre query: %r",
+                    q_idx + 1, len(INSTAHYRE_SEARCH_QUERIES), designation)
+
+        for page in range(INSTAHYRE_MAX_PAGES):
+            offset = page * INSTAHYRE_PAGE_SIZE
+            params = {
+                "format":      "json",
+                "location":    INSTAHYRE_LOCATION,
+                "designation": designation,
+                "limit":       INSTAHYRE_PAGE_SIZE,
+                "offset":      offset,
+            }
+
+            try:
+                resp = session.get(
+                    INSTAHYRE_API_URL,
+                    params=params,
+                    timeout=15,
+                )
+            except requests.exceptions.Timeout:
+                logger.warning("  Instahyre: timeout on %r page %d", designation, page)
+                break
+            except requests.exceptions.RequestException as exc:
+                logger.warning("  Instahyre: request error: %s", exc)
+                break
+
+            # ── HTTP error handling ──────────────────────────────────────────
+            if resp.status_code == 403:
+                # GitHub Actions IPs not currently blocked, but if it starts
+                # happening add: "INSTAHYRE: permanently removed — 403 blocked"
+                logger.warning("  Instahyre: 403 Forbidden — may need session cookies")
+                break
+            if resp.status_code == 429:
+                logger.warning("  Instahyre: 429 rate-limited, sleeping 30s")
+                time.sleep(30)
+                continue
+            if resp.status_code != 200:
+                logger.warning("  Instahyre: HTTP %s for %r", resp.status_code, designation)
+                break
+
+            # ── Parse JSON ───────────────────────────────────────────────────
+            try:
+                data = resp.json()
+            except Exception:
+                logger.warning("  Instahyre: non-JSON response for %r", designation)
+                break
+
+            if not isinstance(data, dict):
+                break
+
+            total   = int(data.get("count") or 0)
+            results = data.get("results") or []
+            if not isinstance(results, list) or not results:
+                break
+
+            # ── Parse each listing ───────────────────────────────────────────
+            new_this_page = 0
+            for item in results:
+                opp_id = item.get("id")
+                if opp_id and opp_id in seen_ids:
+                    continue
+
+                record = _parse_instahyre_record(item)
+                if record is None:
+                    continue
+
+                # Title keyword filter (same logic as Workday/Greenhouse)
+                title_lower = record["title"].lower()
+                if not any(kw in title_lower for kw in INSTAHYRE_TITLE_KEYWORDS):
+                    continue
+
+                if opp_id:
+                    seen_ids.add(opp_id)
+
+                all_jobs.append(record)
+                new_this_page += 1
+
+            logger.debug("  Instahyre: %r page %d → %d new (total so far: %d / %d)",
+                         designation, page, new_this_page, len(all_jobs), total)
+
+            # Stop if we've exhausted this query's results
+            if offset + INSTAHYRE_PAGE_SIZE >= total:
+                break
+
+            # Global cap guard
+            if len(all_jobs) >= INSTAHYRE_MAX_RESULTS:
+                logger.info("  Instahyre: hit global cap (%d)", INSTAHYRE_MAX_RESULTS)
+                break
+
+            time.sleep(1.5)   # be respectful between pages
+
+        if len(all_jobs) >= INSTAHYRE_MAX_RESULTS:
+            break
+
+        time.sleep(2)   # pause between search terms
+
+    logger.info("Instahyre: %d unique security jobs found", len(all_jobs))
+    return all_jobs
+
+
+
+
 def gather_all_listings() -> list[dict]:
     all_results = []
     seen: set   = set()
@@ -1354,6 +1716,8 @@ def gather_all_listings() -> list[dict]:
         ("Workday",        _scrape_workday),
         ("Greenhouse",     _scrape_greenhouse),       # ← ACTIVE
         ("Lever",          _scrape_lever), 
+        ("Instahyre",      _scrape_instahyre),
+      
     ]
 
     counts = {}
@@ -1380,3 +1744,4 @@ def gather_all_listings() -> list[dict]:
                 len(all_results),
                 " | ".join(f"{k}={v}" for k, v in counts.items()))
     return all_results
+
