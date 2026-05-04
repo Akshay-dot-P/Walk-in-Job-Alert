@@ -444,6 +444,29 @@ LINKEDIN_POST_QUERIES = [
     "site:instahyre.com threat intelligence incident response bangalore",
     "site:instahyre.com security intern internship bangalore",
     "site:instahyre.com soc intern internship bangalore",
+
+   "site:iimjobs.com risk analyst compliance bangalore",
+   "site:iimjobs.com GRC IT audit bangalore",
+   "site:iimjobs.com KYC AML fraud analyst bangalore",
+   "site:iimjobs.com information security compliance bangalore",
+   "site:internshala.com cybersecurity internship bangalore",
+   "site:internshala.com information security internship bangalore",
+   "site:internshala.com SOC intern bangalore",
+   "site:internshala.com GRC compliance internship bangalore",
+   "site:internshala.com cloud security internship bangalore",
+   "site:internshala.com ethical hacking VAPT internship bangalore",
+   "site:internshala.com network security internship bangalore",
+   "site:internshala.com risk compliance internship bangalore",
+   "site:naukri.com cybersecurity analyst bangalore fresher",
+   "site:naukri.com SOC analyst bangalore 0-2 years",
+   "site:naukri.com GRC compliance analyst bangalore entry level",
+   "site:naukri.com information security analyst bangalore junior",
+   "site:naukri.com cloud security engineer bangalore fresher",
+   "site:naukri.com VAPT penetration tester bangalore",
+   "site:naukri.com KYC AML fraud analyst bangalore fresher",
+   "site:naukri.com IT audit risk analyst bangalore",
+   "site:naukri.com cybersecurity intern bangalore stipend",
+   "site:naukri.com security engineer bangalore 0-3 years",
 ]
 
 
@@ -1380,7 +1403,6 @@ def gather_all_listings() -> list[dict]:
         ("Workday",        _scrape_workday),
         ("Greenhouse",     _scrape_greenhouse),       # ← ACTIVE
         ("Lever",          _scrape_lever), 
-        ("Instahyre",      _scrape_instahyre),
       
     ]
 
