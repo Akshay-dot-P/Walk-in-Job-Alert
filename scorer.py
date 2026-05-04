@@ -15,9 +15,7 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 SYSTEM_PROMPT = (
     "You output only raw valid JSON. "
     "No markdown. No explanation. No preamble. No code fences."
-
 )
-
 
 USER_PROMPT_PREFIX = (
     "You are an expert analyst of the Indian job market, "
@@ -117,7 +115,7 @@ def sanitize(text: str) -> str:
 
 
 # =============================================================================
-# PRE-FILTER  (unchanged from original)
+# PRE-FILTER
 # =============================================================================
 
 REJECT_PATTERNS = [
@@ -159,7 +157,6 @@ REJECT_PATTERNS = [
 REJECT_REGEX = [
     r'^\d[\d,]+\+?\s+\w',
     r'^\d+\s+\w+.*jobs in',
-
 ]
 
 
@@ -227,7 +224,6 @@ def is_relevant(listing: dict) -> bool:
         ):
             return False
     else:
-        # Legacy substring filter when ENTRY_LEVEL_GATE=0
         SENIOR_REJECTS = [
             "lead soc", "lead security", "lead analyst", "lead engineer",
             "lead service", "lead siem", "lead consultant",
@@ -269,7 +265,6 @@ def _parse_date_yyyy_mm_dd(value: str) -> datetime | None:
     s = (value or "").strip()
     if not s:
         return None
-    # Common forms we see in this repo: "YYYY-MM-DD" or ISO-like "YYYY-MM-DDTHH:MM:SS"
     if "T" in s:
         s = s.split("T", 1)[0]
     try:
@@ -279,10 +274,6 @@ def _parse_date_yyyy_mm_dd(value: str) -> datetime | None:
 
 
 def freshness_filter(listings: list[dict], max_age_days: int) -> list[dict]:
-    """
-    Drop listings older than max_age_days if they have a parseable date.
-    If date is missing/unparseable, keep the listing (conservative).
-    """
     if not max_age_days or max_age_days <= 0:
         return listings
 
@@ -306,9 +297,177 @@ def freshness_filter(listings: list[dict], max_age_days: int) -> list[dict]:
     return kept
 
 
+# =============================================================================
+# AGGRESSIVE DEDUPLICATION - NEW
+# =============================================================================
+
+def _normalize_company_aggressive(company: str) -> str:
+    """
+    Aggressively normalize company name to catch variations:
+    'Verint Financial Compliance' → 'verint'
+    'Deloitte USI' → 'deloitte'
+    'Accenture (India)' → 'accenture'
+    """
+    if not company:
+        return ""
+    
+    c = sanitize(company).lower().strip()
+    
+    # Remove common suffixes
+    COMPANY_NOISE = [
+        r'\s*\(.*?\)',          # Remove anything in parentheses: (India), (MNC), (mid-tier)
+        r'\s+india.*$',         # 'Accenture India Pvt Ltd' → 'accenture'
+        r'\s+pvt\.?\s*ltd.*$',  # 'XYZ Pvt Ltd' → 'xyz'
+        r'\s+limited.*$',       # 'ABC Limited' → 'abc'
+        r'\s+inc\.?$',          # 'Microsoft Inc' → 'microsoft'
+        r'\s+corp\.?$',         # 'Oracle Corp' → 'oracle'
+        r'\s+technologies.*$',  # 'Wipro Technologies' → 'wipro'
+        r'\s+solutions.*$',     # 'TCS Solutions' → 'tcs'
+        r'\s+services.*$',      # 'Infosys Services' → 'infosys'
+        r'\s+consulting.*$',    # 'Deloitte Consulting' → 'deloitte'
+        r'\s+usi$',             # 'Deloitte USI' → 'deloitte'
+        r'\s+acceleration.*$',  # 'PwC Acceleration Center' → 'pwc'
+        r'\s+financial.*$',     # 'Verint Financial Compliance' → 'verint'
+    ]
+    
+    for pattern in COMPANY_NOISE:
+        c = re.sub(pattern, '', c).strip()
+    
+    # Remove all punctuation and extra spaces
+    c = re.sub(r'[^\w\s]', ' ', c)
+    c = re.sub(r'\s+', ' ', c).strip()
+    
+    # Take first significant word if multi-word (helps catch "Big 4" variations)
+    # 'pwc acceleration center india' → 'pwc'
+    words = c.split()
+    if words:
+        # Common case: take first word unless it's generic
+        if words[0] not in ('the', 'a', 'an'):
+            return words[0]
+    
+    return c
+
+
+def _normalize_title_aggressive(title: str) -> str:
+    """
+    Aggressively normalize title to catch fuzzy duplicates:
+    'SOC L1 Analyst' → 'soc analyst'
+    'USI-FY26-Cyber-Detect & Respond-SSA-SIEM' → 'cyber detect respond siem'
+    'Security Operations Center Analyst' → 'soc analyst'
+    """
+    if not title:
+        return ""
+    
+    t = sanitize(title).lower().strip()
+    
+    # Remove year/FY tags
+    t = re.sub(r'\b(fy|year|yr)\s*-?\s*\d{2,4}\b', '', t)  # FY26, FY2026, year2024
+    t = re.sub(r'\b20\d{2}\b', '', t)  # 2024, 2025, 2026
+    
+    # Remove location mentions
+    t = re.sub(r'\b(bangalore|bengaluru|india|karnataka|blr)\b', '', t)
+    
+    # Remove level/tier indicators (these make same role look different)
+    t = re.sub(r'\b(l1|l2|l3|l4|l-1|l-2|tier\s*[1-4]|level\s*[1-4])\b', '', t)
+    
+    # Remove grade/band indicators
+    t = re.sub(r'\b(ssa|lsa|sa|associate|sr\.|sr|senior|junior|jr)\b', '', t)
+    
+    # Remove common acronyms that add noise
+    t = re.sub(r'\busi\b', '', t)  # USI-FY26 style prefixes
+    
+    # Expand common abbreviations to match full forms
+    EXPANSIONS = {
+        r'\bsoc\b': 'security operations center',
+        r'\bgrc\b': 'governance risk compliance',
+        r'\biam\b': 'identity access management',
+        r'\bpam\b': 'privileged access management',
+        r'\bvapt\b': 'vulnerability assessment penetration testing',
+        r'\bdfir\b': 'digital forensics incident response',
+    }
+    for abbr, full in EXPANSIONS.items():
+        t = re.sub(abbr, full, t)
+    
+    # Remove all punctuation
+    t = re.sub(r'[^\w\s]', ' ', t)
+    
+    # Remove extra whitespace
+    t = re.sub(r'\s+', ' ', t).strip()
+    
+    # Sort words alphabetically (so "Analyst SOC" matches "SOC Analyst")
+    words = sorted(t.split())
+    
+    # Remove duplicates and common noise words
+    NOISE_WORDS = {
+        'the', 'a', 'an', 'and', 'or', 'for', 'in', 'at', 'to', 'of', 'with',
+        'position', 'role', 'job', 'opening', 'opportunity', 'hiring', 'seeking'
+    }
+    words = [w for w in words if w not in NOISE_WORDS and len(w) > 1]
+    
+    return ' '.join(words)
+
+
+def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
+    """
+    AGGRESSIVE deduplication BEFORE scoring.
+    Catches:
+    - Same job from multiple sources (different URLs)
+    - Company name variations ('Verint' vs 'Verint Financial Compliance')
+    - Title variations ('SOC L1 Analyst' vs 'Security Operations Center Analyst - L1')
+    - Year/FY variations ('USI-FY26-Cyber-SSA' vs 'USI-FY25-Cyber-LSA' for same underlying role)
+    """
+    seen_keys: set[str] = set()
+    deduped = []
+    
+    for l in listings:
+        # Extract and normalize
+        job_id_raw = str(l.get("job_id", "")).strip()
+        url_raw = str(l.get("job_url") or l.get("url") or "").strip()
+        title_raw = str(l.get("title", "")).strip()
+        company_raw = str(l.get("company", "")).strip()
+        
+        job_id = sanitize(job_id_raw).lower()
+        url = sanitize(url_raw).lower()
+        title_norm = _normalize_title_aggressive(title_raw)
+        company_norm = _normalize_company_aggressive(company_raw)
+        
+        # Build candidate keys
+        candidate_keys: list[str] = []
+        
+        # Key 1: Exact job_id (if present - Workday etc)
+        if job_id:
+            candidate_keys.append(f"id:{job_id}")
+        
+        # Key 2: Exact URL (catches reposts at same link)
+        if url:
+            candidate_keys.append(f"url:{url}")
+        
+        # Key 3: Company + normalized title (FUZZY - main dedup logic)
+        if company_norm and title_norm:
+            candidate_keys.append(f"ct:{company_norm}:{title_norm}")
+        
+        # Key 4: Just normalized title if company unknown (risky but catches more)
+        # Only use if title is specific enough (>= 3 words after normalization)
+        if title_norm and len(title_norm.split()) >= 3:
+            candidate_keys.append(f"t:{title_norm}")
+        
+        # Check if any key was seen before
+        if any(k in seen_keys for k in candidate_keys):
+            continue  # Duplicate - skip
+        
+        # Register all keys and keep this listing
+        seen_keys.update(candidate_keys)
+        deduped.append(l)
+    
+    removed = len(listings) - len(deduped)
+    logger.info("AGGRESSIVE dedup: %d → %d (removed %d duplicates)",
+                len(listings), len(deduped), removed)
+    
+    return deduped
+
 
 # =============================================================================
-# GROQ CALL  (unchanged from original — uses retry-after header)
+# GROQ CALL
 # =============================================================================
 
 def call_groq(listing_text: str, retries: int = 4) -> str:
@@ -328,19 +487,10 @@ def call_groq(listing_text: str, retries: int = 4) -> str:
         "max_tokens":  600,
     }
 
-
-
-
-
-
-
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type":  "application/json",
-
     }
-
-
 
     for attempt in range(1, retries + 1):
         try:
@@ -376,17 +526,12 @@ def call_groq(listing_text: str, retries: int = 4) -> str:
             if attempt < retries:
                 time.sleep(5 * attempt)
 
-
-
-
     raise RuntimeError(f"Groq failed after {retries} attempts")
 
 
 # =============================================================================
 # HELPERS
 # =============================================================================
-
-
 
 def _resolve_tier(company: str, ai_tier: str) -> str:
     """Override to MNC if company is in known list."""
@@ -395,14 +540,10 @@ def _resolve_tier(company: str, ai_tier: str) -> str:
     return ai_tier if ai_tier in ("MNC", "mid-tier", "startup") else "unknown"
 
 
-
-
 def _merge_company(name: str, tier: str) -> str:
     """'Accenture' + 'MNC' → 'Accenture (MNC)'"""
     name = (name or "").strip() or "Unknown"
     return f"{name} ({tier})"
-
-
 
 
 def _skills_to_str(skills) -> str:
@@ -410,8 +551,6 @@ def _skills_to_str(skills) -> str:
     if isinstance(skills, list):
         return ", ".join(str(s).strip() for s in skills if s)
     return str(skills or "").strip()
-
-
 
 
 # =============================================================================
@@ -442,14 +581,13 @@ def score_listing(listing: dict) -> dict | None:
         ai_name = d.get("company") or listing.get("company", "")
         ai_tier = _resolve_tier(ai_name, d.get("company_tier", "unknown"))
 
-        # ── Build result dict — keys match SHEET_COLUMNS exactly ──────────────
         result = {
             "scraped_at":           datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "job_title":            d.get("job_title")  or listing.get("title", ""),
             "company":              _merge_company(ai_name, ai_tier),
             "domain":               d.get("domain", "General"),
             "legitimacy_score":     int(d.get("legitimacy_score", 1)),
-            "red_flags":            d.get("red_flags", []),   # stored as list; _save_listing converts
+            "red_flags":            d.get("red_flags", []),
             "summary":              d.get("summary", ""),
             "is_intern":            bool(d.get("is_intern", False)),
             "experience_required":  d.get("experience_required") or "",
@@ -482,88 +620,41 @@ def score_listing(listing: dict) -> dict | None:
 
 
 # =============================================================================
-# SCORE ALL
+# SCORE ALL - WITH AGGRESSIVE DEDUP
 # =============================================================================
 
 def score_all(listings: list, min_score: int = 4) -> list:
+    """
+    Main entry point. Scoring pipeline:
+    1. Pre-filter (relevance check)
+    2. Freshness filter (age check)
+    3. AGGRESSIVE deduplication ← NEW - BEFORE scoring
+    4. Score each unique listing
+    5. Filter by min_score
+    """
+    # Step 1: Pre-filter
     relevant = pre_filter(listings)
     if not relevant:
         logger.info("Nothing relevant after pre-filter")
         return []
 
+    # Step 2: Freshness filter
     max_age_days = int(os.environ.get("MAX_POST_AGE_DAYS", "21"))
     relevant = freshness_filter(relevant, max_age_days=max_age_days)
     if not relevant:
         logger.info("Nothing left after freshness filter")
         return []
 
-    def _norm_title(t: str) -> str:
-        """Normalize job title for deduplication.
-        Strips leading level tokens (e.g., L1, Junior, Senior), normalizes whitespace,
-        and removes trailing noise such as location tags or fiscal year markers.
-        """
-        # Remove leading level prefixes
-        t = re.sub(r'^(l\d+\s+|junior\s+|senior\s+|entry\s+level\s+|mid\s+level\s+|associate\s+)', '', t, flags=re.IGNORECASE)
-        # Collapse whitespace and punctuation
-        t = re.sub(r'[\s\-–_]+', ' ', t.lower()).strip()
-        # Remove trailing noise tokens (e.g., "- bangalore", "| fy26")
-        t = re.sub(r'[\|\-–]\s*\S.*$', '', t).strip()
-        return t
+    # Step 3: AGGRESSIVE DEDUPLICATION - NEW
+    # This is the key fix - happens BEFORE scoring to avoid wasting API calls
+    deduped = aggressive_deduplicate(relevant)
+    if not deduped:
+        logger.info("Nothing left after deduplication")
+        return []
 
-
-    def _norm_company(c: str) -> str:
-        """Normalize company name for deduplication.
-        Removes legal suffixes, common corporate designators, and parenthetical noise like "(MNC)".
-        """
-        # Lowercase and strip whitespace first
-        c = c.lower().strip()
-        # Remove parenthetical content e.g., (MNC), (India), etc.
-        c = re.sub(r'\s*\([^\)]*\)', '', c)
-        # Remove common suffixes and corporate designators
-        c = re.sub(r'\s+(inc|ltd|pvt|limited|india|solutions|technologies|group|corp|mnc)\.?$', '', c)
-        # Collapse multiple spaces
-        c = re.sub(r'\s+', ' ', c).strip()
-        return c
-
-    # Dedup before scoring — use robust normalized keys
-    # 1) job_id if present
-    # 2) url if present
-    # 3) normalized company + normalized title (strip common suffixes, punctuation, excess whitespace)
-    seen_keys: set[str] = set()
-
-    deduped = []
-    for l in relevant:
-        job_id  = sanitize(str(l.get("job_id", "")).strip()).lower()
-        url     = sanitize(str(l.get("job_url") or l.get("url") or "").strip()).lower()
-        title   = _norm_title(sanitize(l.get("title", "")))
-        company = _norm_company(sanitize(l.get("company", "")).lower().strip())
-
-        # Build all candidate keys for this listing
-        candidate_keys: list[str] = []
-        if job_id:
-            candidate_keys.append(f"jobid:{job_id}")
-        if url:
-            candidate_keys.append(f"url:{url}")
-        if company and title:
-            candidate_keys.append(f"ct:{company}|{title}")
-        if not candidate_keys:
-            # Truly ambiguous — keep but use a unique fallback key
-            candidate_keys.append(f"raw:{len(deduped)}:{title}")
-
-        # If ANY key already seen → duplicate
-        if any(k in seen_keys for k in candidate_keys):
-            continue
-
-        # Register all keys for this listing
-        seen_keys.update(candidate_keys)
-        deduped.append(l)
-
-    logger.info("Pre-score dedup: %d → %d (removed %d duplicates)",
-                len(relevant), len(deduped), len(relevant) - len(deduped))
-
+    # Step 4: Score each unique listing
     scored = []
-    logger.info("Scoring %d listings via Groq...", len(deduped))
-
+    logger.info("Scoring %d unique listings via Groq...", len(deduped))
 
     for i, listing in enumerate(deduped):
         logger.info("Scoring %d/%d: %s",
@@ -579,8 +670,6 @@ def score_all(listings: list, min_score: int = 4) -> list:
 
         scored.append(result)
         time.sleep(float(os.environ.get("GROQ_SCORE_DELAY_SEC", "5")))
-
-
 
     logger.info("Done: %d/%d passed", len(scored), len(deduped))
     return scored
