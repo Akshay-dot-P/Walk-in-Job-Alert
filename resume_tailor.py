@@ -173,14 +173,31 @@ def apply_synonyms(text: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # FEATURE 1: KEYWORD EXTRACTION
 # ─────────────────────────────────────────────────────────────────────────────
-def extract_keywords(jd_text: str) -> dict:
-    """
-    Extract top 10-15 JD keywords structured by type.
-    Returns: {"tools": [...], "concepts": [...], "actions": [...], "ranked": [...]}
-    """
-    if not jd_text or len(jd_text.strip()) < 30:
-        return {"tools": [], "concepts": [], "actions": [], "ranked": []}
+_CYBER_STOPWORDS = {
+    "experience", "knowledge", "understanding", "ability", "skill", "skills",
+    "work", "working", "team", "role", "position", "candidate", "required",
+    "preferred", "good", "strong", "excellent", "must", "will", "well",
+    "including", "following", "responsible", "responsibilities", "etc",
+    "years", "year", "day", "days", "time", "using", "used", "use",
+    "help", "ensure", "support", "provide", "manage", "develop", "maintain",
+}
 
+_CANDIDATE_PROFILE = """
+alert triage incident investigation log analysis threat detection escalation
+false positive analysis root cause analysis audit documentation compliance tracking
+policy enforcement anomaly detection pattern recognition evidence documentation
+corrective actions seller claims reimbursement cases severity classification
+splunk spl siem sigma rules soar python bash mitre attack ttp ioc virustotal
+osint enrichment phishing typosquatting whois dns ssl abuseipdb urlscan
+nessus openvas cvss epss nvd owasp sqli patch management cron api boto3 aws
+iam cloudtrail guardduty cloud misconfiguration nist csf iso 27001 pci-dss
+gdpr sox itgc risk assessment vendor risk transaction monitoring aml kyc
+sanctions screening wireshark nmap tcp ip firewall ids ips endpoint security
+windows linux active directory powershell cyber kill chain
+"""
+
+
+def _extract_keywords_groq_fallback(jd_text: str) -> dict:
     system = "You are an ATS keyword analyst. Return ONLY valid JSON. No markdown."
     user = (
         f"Extract the top 10-15 most important keywords from this job description.\n"
@@ -192,13 +209,96 @@ def extract_keywords(jd_text: str) -> dict:
         '"ranked":["highest_priority",...up_to_15]}'
     )
     try:
-        raw  = _call_groq(system, user, GROQ_GEN_MODEL, max_tokens=300)
-        data = json.loads(_repair_json(raw))
-        logger.info("  Keywords extracted — top 5: %s", data.get("ranked", [])[:5])
-        return data
+        raw = _call_groq(system, user, GROQ_GEN_MODEL, max_tokens=300)
+        return json.loads(_repair_json(raw))
     except Exception as exc:
-        logger.warning("  Keyword extraction failed: %s", exc)
+        logger.warning("  Keyword extraction fallback failed: %s", exc)
         return {"tools": [], "concepts": [], "actions": [], "ranked": []}
+
+
+def extract_keywords(jd_text: str) -> dict:
+    """Semantic JD keyword extraction with Groq fallback."""
+    if not jd_text or len(jd_text.strip()) < 30:
+        return {"tools": [], "concepts": [], "actions": [], "ranked": []}
+
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        import numpy as np
+    except ImportError:
+        logger.warning("  sklearn not installed — using Groq keyword fallback")
+        return _extract_keywords_groq_fallback(jd_text)
+
+    vectorizer = TfidfVectorizer(
+        ngram_range=(1, 2),
+        max_features=200,
+        stop_words="english",
+        token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z0-9\+\#\-\.]{1,}\b",
+        sublinear_tf=True,
+    )
+    docs = [jd_text.lower(), _CANDIDATE_PROFILE.lower()]
+    try:
+        tfidf_matrix = vectorizer.fit_transform(docs)
+    except ValueError:
+        return {"tools": [], "concepts": [], "actions": [], "ranked": []}
+
+    feature_names = vectorizer.get_feature_names_out()
+    jd_arr = tfidf_matrix[0].toarray()[0]
+    cand_arr = tfidf_matrix[1].toarray()[0]
+    scores = jd_arr * cand_arr
+
+    ranked_terms = []
+    for idx in np.argsort(scores)[::-1]:
+        term = feature_names[idx]
+        score = scores[idx]
+        if score < 0.001:
+            break
+        words = term.split()
+        if any(w in _CYBER_STOPWORDS for w in words):
+            continue
+        if len(term) < 3:
+            continue
+        ranked_terms.append(term)
+        if len(ranked_terms) >= 15:
+            break
+
+    tool_signals = {
+        "splunk", "siem", "nessus", "openvas", "wireshark", "nmap",
+        "python", "bash", "sigma", "soar", "virustotal", "abuseipdb",
+        "urlscan", "aws", "boto3", "cloudtrail", "guardduty", "elastic",
+        "qradar", "sentinel", "crowdstrike", "defender", "sysmon",
+    }
+    action_signals = {
+        "triage", "investigate", "analyze", "detect", "monitor",
+        "escalat", "assess", "audit", "document", "enrich", "scan",
+        "hunt", "respond", "remediat", "prioriti",
+    }
+    concept_signals = {
+        "threat", "intelligence", "compliance", "risk", "incident",
+        "vulnerability", "framework", "policy", "control", "audit",
+        "mitre", "attack", "kill chain", "ttp", "ioc", "cvss", "epss",
+        "owasp", "nist", "iso", "pci", "gdpr", "aml", "kyc",
+    }
+
+    tools, actions, concepts = [], [], []
+    for term in ranked_terms:
+        tl = term.lower()
+        if any(s in tl for s in tool_signals):
+            tools.append(term)
+        elif any(s in tl for s in action_signals):
+            actions.append(term)
+        elif any(s in tl for s in concept_signals):
+            concepts.append(term)
+
+    logger.info(
+        "  Semantic keywords — top 5: %s | tools: %s | actions: %s",
+        ranked_terms[:5], tools[:3], actions[:3],
+    )
+    return {
+        "tools": tools[:6],
+        "concepts": concepts[:6],
+        "actions": actions[:6],
+        "ranked": ranked_terms[:15],
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -651,6 +751,39 @@ AMAZON_ACTION_VERBS = (
     "Conducted", "Maintained", "Spotted",
 )
 AMAZON_MAX_CHARS = 230
+AMAZON_MIN_CHARS = 95
+AMAZON_DETAIL_TOKENS = (
+    "50+ weekly", "200+ weekly", "severity", "escalat", "root cause",
+    "audit-ready", "corrective action", "evidence", "policy", "anomal",
+    "risk", "reviewer",
+)
+
+PURPOSE_CLAUSE_RE = re.compile(
+    r"\b(to (?:improve|optimize|enhance|ensure|streamline|boost|strengthen|"
+    r"increase|reduce|maximize|support|drive|achieve|facilitate|accelerate|"
+    r"promote|enable|allow|help|assist|maintain)\b"
+    r"|in order to\b"
+    r"|for (?:better|improved|enhanced|optimal|greater|effective)\b"
+    r"|so (?:as to|that (?:we|the team|the org))\b)",
+    re.IGNORECASE,
+)
+
+
+def _has_purpose_clause(bullet: str) -> bool:
+    if not bullet:
+        return False
+    tail = bullet[-80:]
+    return bool(PURPOSE_CLAUSE_RE.search(tail))
+
+
+def _strip_purpose_clause(bullet: str) -> str:
+    tail_start = max(0, len(bullet) - 80)
+    match = PURPOSE_CLAUSE_RE.search(bullet, tail_start)
+    if match:
+        truncated = bullet[:match.start()].rstrip(" ,;—–-").rstrip()
+        if len(truncated) >= 60:
+            return truncated
+    return bullet
 
 AMAZON_ROLE_FOCUS = {
     "soc": "SOC ROLES: prioritize alert triage, incident investigation, escalation workflows, and pattern analysis.",
@@ -858,6 +991,41 @@ AMAZON_FOCUS_PATTERNS = [
     ("cybersecurity_analyst", r"\b(cybersecurity analyst|cyber security analyst|security analyst|information security|infosec|cyber analyst)\b"),
 ]
 
+THREE_LENS_FRAMES = {
+    "SOC": ("TRIAGE DISCIPLINE", "PATTERN DETECTION",
+            "alert triage, escalation logic, severity classification, incident prioritization, case handoff"),
+    "VAPT": ("PATTERN DETECTION", "TRIAGE DISCIPLINE",
+             "vulnerability prioritization, severity scoring, risk-based triage, CVSS classification, remediation tracking"),
+    "Network": ("TRIAGE DISCIPLINE", "PATTERN DETECTION",
+                "alert escalation, monitoring prioritization, anomaly signal triage, incident routing"),
+    "GRC": ("AUDIT TRAIL", "PATTERN DETECTION",
+            "audit-ready documentation, control validation, compliance tracking, evidence completeness"),
+    "Risk": ("AUDIT TRAIL", "PATTERN DETECTION",
+             "risk identification, control gap analysis, escalation priorities, policy-based risk triage"),
+    "Fraud-AML": ("PATTERN DETECTION", "AUDIT TRAIL",
+                  "fraud typology recognition, suspicious activity indicators, anomaly detection, KYC evidence review"),
+    "CloudSec": ("TRIAGE DISCIPLINE", "AUDIT TRAIL",
+                 "access review discipline, policy exception triage, IAM risk signals, audit-ready access records"),
+    "IAM": ("AUDIT TRAIL", "TRIAGE DISCIPLINE",
+            "eligibility validation, access review discipline, policy exception handling, governance documentation"),
+    "Forensics": ("AUDIT TRAIL", "PATTERN DETECTION",
+                  "evidence packaging, incident timeline reconstruction, root cause isolation, PICERL handoff"),
+    "General": ("TRIAGE DISCIPLINE", "AUDIT TRAIL",
+                "structured escalation, severity-based prioritization, audit documentation, pattern recognition"),
+}
+
+THREE_LENS_DESCRIPTIONS = {
+    "TRIAGE DISCIPLINE": (
+        "Frame as severity classification, routing logic, escalation discipline, and SLA adherence."
+    ),
+    "PATTERN DETECTION": (
+        "Frame as anomaly detection at scale, pattern recognition, repeat-issue flagging, and early escalation."
+    ),
+    "AUDIT TRAIL": (
+        "Frame as audit evidence creation: decision trails, evidence notes, corrective actions, and documentation completeness."
+    ),
+}
+
 AMAZON_WEIGHTED_CONTEXT = {
     "soc": ("structured alert triage and escalation workflows", "incident review and escalation handoffs", "fraud and anomaly patterns"),
     "security_operations": ("security monitoring and escalation workflows", "security operations handoffs", "operational risk and anomaly patterns"),
@@ -886,28 +1054,164 @@ AMAZON_WEIGHTED_CONTEXT = {
 
 
 def get_weighted_amazon_fallback(focus_key: str) -> dict:
-    """Build substantial but factual fallback bullets matching the desired weight."""
+    """Build outcome-first fallback bullets without purpose-clause endings."""
+    return _build_outcome_fallbacks(focus_key)
+
+
+def _build_outcome_fallbacks(focus_key: str) -> dict:
     triage, documentation, patterns = AMAZON_WEIGHTED_CONTEXT.get(
         focus_key, AMAZON_WEIGHTED_CONTEXT["general"]
     )
     return {
         "AMZ_B1": (
-            "Triaged 50+ weekly inventory reimbursement cases by severity and "
-            f"policy eligibility, applying {triage}."
+            "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, "
+            f"applying {triage}, with zero missed escalations across reviewed queues."
         ),
         "AMZ_B2": (
-            "Conducted root cause analysis on seller claims, identifying policy "
-            "violations and anomalous patterns; escalated findings to senior reviewers."
+            "Conducted root cause analysis on seller claims, identifying policy violations and "
+            "anomalous patterns; escalated findings to senior reviewers without re-investigation loops."
         ),
         "AMZ_B3": (
-            "Maintained audit-ready case documentation, recording findings, decisions, "
-            f"corrective actions, and evidence notes for {documentation}."
+            "Maintained audit-ready case documentation, recording findings, decisions, corrective actions, "
+            f"and evidence notes for {documentation}, with no documentation gaps flagged."
         ),
         "AMZ_B4": (
-            f"Spotted recurring {patterns} across 200+ weekly cases and flagged them "
-            "early, reducing repeat-issue investigation time before escalation."
+            f"Spotted recurring {patterns} across 200+ weekly cases and flagged them early, "
+            "cutting repeat-issue investigation cycles before escalation."
         ),
     }
+
+
+def build_three_lens_context(domain: str, jd_text: str) -> str:
+    primary, secondary, vocab = THREE_LENS_FRAMES.get(domain, THREE_LENS_FRAMES["General"])
+    primary_desc = THREE_LENS_DESCRIPTIONS[primary]
+    secondary_desc = THREE_LENS_DESCRIPTIONS[secondary]
+    return f"""
+THREE-LENS CAREER PIVOT FRAMING:
+PRIMARY LENS [{primary}]: {primary_desc}
+SECONDARY LENS [{secondary}]: {secondary_desc}
+Domain vocabulary to weave naturally (1-2 per bullet): {vocab}
+LENS DISTRIBUTION:
+- Bullet 1: PRIMARY lens
+- Bullet 2: PATTERN DETECTION
+- Bullet 3: AUDIT TRAIL
+- Bullet 4: SECONDARY lens
+END RULE: every bullet must end with an outcome, metric, or result.
+"""
+
+
+AMAZON_RAW_FACTS = [
+    "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility.",
+    "Conducted root cause analysis on seller claims, identified policy violations and anomalous patterns.",
+    "Maintained audit-ready case documentation: investigation findings, decisions, evidence notes, corrective actions.",
+    "Spotted recurring fraud patterns across 200+ weekly cases and flagged them early, reducing repeat-issue investigation time.",
+]
+
+
+def generate_amazon_bullets_dynamic(job: dict, jd_keywords: dict) -> dict:
+    domain = str(job.get("domain", "General")).strip()
+    jd_text = f"{job.get('skills', '')} {job.get('summary', '')} {job.get('job_title', '')}"
+    ranked_kw = jd_keywords.get("ranked", [])
+    lens_context = build_three_lens_context(domain, jd_text)
+    kw_hint = (
+        f"\nTop JD keywords to weave in (1-2 per bullet): {', '.join(ranked_kw[:8])}\n"
+        if ranked_kw else ""
+    )
+    facts_block = "\n".join(f"{i+1}. {fact}" for i, fact in enumerate(AMAZON_RAW_FACTS))
+    system = (
+        "You are a career-pivot resume specialist. Reframe operations experience for cybersecurity roles. "
+        "Return ONLY valid JSON. Write and not &. Escape internal quotes."
+    )
+    user = f"""
+Job: {job.get('job_title', 'Role')} at {job.get('company', 'Company')}
+Domain: {domain}
+JD skills: {jd_text[:500]}
+{kw_hint}
+{lens_context}
+
+RAW EXPERIENCE FACTS (do not invent beyond these):
+{facts_block}
+
+Generate 4 bullets in fact order.
+Rules:
+- max 230 chars
+- starts with {', '.join(AMAZON_ACTION_VERBS)}
+- include 1-2 domain keywords
+- end with outcome/metric/result (never purpose-clause ending)
+- do not mention Amazon operations
+- keep 50+ weekly / 200+ weekly / senior reviewer details grounded
+
+Return only:
+{{"AMZ_B1":"...","AMZ_B2":"...","AMZ_B3":"...","AMZ_B4":"..."}}
+"""
+    try:
+        raw = _call_groq(system, user, GROQ_GEN_MODEL, max_tokens=600)
+        bullets = json.loads(_repair_json(raw))
+        validated = {}
+        for key in AMAZON_KEYS:
+            b = re.sub(r"\s+", " ", str(bullets.get(key, ""))).strip().replace(" & ", " and ")
+            if _has_purpose_clause(b):
+                b = _strip_purpose_clause(b)
+            valid = (
+                b
+                and len(b) <= AMAZON_MAX_CHARS
+                and b.startswith(AMAZON_ACTION_VERBS)
+                and not _has_purpose_clause(b)
+            )
+            validated[key] = b if valid else None
+        focus_key = get_amazon_focus_key(job)
+        fallbacks = _build_outcome_fallbacks(focus_key)
+        for key in AMAZON_KEYS:
+            if not validated.get(key):
+                validated[key] = fallbacks[key]
+        logger.info("  Dynamic Amazon bullets generated (domain=%s)", domain)
+        return validated
+    except Exception as exc:
+        logger.warning("  Dynamic Amazon generation failed: %s", exc)
+        return _build_outcome_fallbacks(get_amazon_focus_key(job))
+
+
+_CANDIDATE_CAN_MEET = {
+    "triage", "escalat", "prioriti", "case management", "queue", "severity", "sla", "workflow",
+    "investig", "root cause", "anomaly", "pattern", "analysis", "document", "audit", "evidence",
+    "record", "report", "trail", "compliance", "policy", "control", "fraud", "risk", "exception",
+    "violation", "transaction", "monitoring", "splunk", "siem", "python", "bash", "nessus",
+    "openvas", "virustotal", "osint", "phishing", "cvss", "epss", "owasp", "mitre", "sigma",
+    "wireshark", "nmap", "aws", "boto3",
+}
+
+_CANDIDATE_CANNOT_MEET = {
+    "pentest", "penetration test", "exploit", "metasploit", "burp", "malware analysis",
+    "reverse engineer", "assembly", "fuzzing", "red team", "5 years", "7 years", "10 years",
+    "senior", "lead", "manager", "cissp", "cisa", "ceh", "oscp", "giac",
+}
+
+
+def jd_gap_analysis(jd_text: str, jd_keywords: dict) -> dict:
+    jd_lower = jd_text.lower()
+    ranked = jd_keywords.get("ranked", [])
+    can_frame, cannot_meet = [], []
+    for kw in ranked[:12]:
+        kl = kw.lower()
+        if any(signal in kl for signal in _CANDIDATE_CANNOT_MEET):
+            cannot_meet.append(kw)
+        elif any(signal in kl for signal in _CANDIDATE_CAN_MEET):
+            can_frame.append(kw)
+    for hard in _CANDIDATE_CANNOT_MEET:
+        if re.search(rf"\b{re.escape(hard)}\b", jd_lower) and hard not in cannot_meet:
+            cannot_meet.append(hard)
+    gap_instruction = ""
+    if cannot_meet:
+        gap_instruction = (
+            f"GAPS (do not fake these): {', '.join(cannot_meet[:5])}. "
+            "Skip them and frame around transferable strengths."
+        )
+    if can_frame:
+        gap_instruction += (
+            f"\nSTRONG FRAMES: {', '.join(can_frame[:8])}. "
+            "Weight bullets toward these."
+        )
+    return {"can_frame": can_frame, "cannot_meet": cannot_meet, "gap_instruction": gap_instruction}
 
 
 AMAZON_FALLBACK_BULLETS = {
@@ -947,12 +1251,24 @@ def sanitize_amazon_bullets(content: dict, job: dict) -> dict:
     for key in AMAZON_KEYS:
         bullet = re.sub(r"\s+", " ", str(content.get(key, ""))).strip()
         bullet = bullet.replace(" & ", " and ")
+
+        if _has_purpose_clause(bullet):
+            stripped = _strip_purpose_clause(bullet)
+            if len(stripped) >= 60 and not _has_purpose_clause(stripped):
+                bullet = stripped
+
+        lowered = bullet.lower()
+        weak_density = len(bullet) < AMAZON_MIN_CHARS
+        weak_detail = not any(token in lowered for token in AMAZON_DETAIL_TOKENS)
         invalid = (
             not bullet
             or len(bullet) > AMAZON_MAX_CHARS
-            or "amazon operations" in bullet.lower()
+            or "amazon operations" in lowered
             or explicit_comparison.search(bullet) is not None
             or not bullet.startswith(AMAZON_ACTION_VERBS)
+            or weak_density
+            or weak_detail
+            or _has_purpose_clause(bullet)
         )
         content[key] = fallback[key] if invalid else bullet
     return content
@@ -1129,6 +1445,11 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
                      intel: dict | None, scraped_ctx: str,
                      p1_tools: list, p2_tools: list,
                      jd_keywords: dict) -> dict:
+    amazon_bullets = generate_amazon_bullets_dynamic(job, jd_keywords)
+    jd_text_for_gap = f"{job.get('skills', '')} {job.get('summary', '')}"
+    gap = jd_gap_analysis(jd_text_for_gap, jd_keywords)
+    lens_ctx = build_three_lens_context(job.get("domain", "General"), jd_text_for_gap)
+
     p1 = PROJECTS[p1_key]
     p2 = PROJECTS[p2_key]
 
@@ -1153,6 +1474,9 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
         "You are a senior cybersecurity resume writer for the Indian job market. "
         "Bullets must be factual — never fabricate tools or experience. "
         "ALWAYS write 'and' not '&' in bullet text (except MITRE ATT&CK which is a proper noun). "
+        "BULLET END RULE: every bullet must end with an outcome or metric. "
+        "NEVER end with 'to improve X', 'to optimize Y', 'to ensure Z', "
+        "'to streamline X', 'to strengthen X', or 'in order to X'. "
         "Return ONLY a valid JSON object. Internal double-quotes escaped as \\\". "
         "No markdown fences. No comments. No trailing commas."
     )
@@ -1185,6 +1509,8 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
     else:
         diff_instruction = ""
 
+    gap_ctx = gap.get("gap_instruction", "")
+
     user = f"""JOB:
   Title:   {job['job_title']}
   Company: {job['company']}
@@ -1192,40 +1518,13 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
   Summary: {job['summary']}
   Skills:  {job['skills']}
 {co_ctx}{kw_hint}
-AMAZON EXPERIENCE REFRAMING:
-CANDIDATE BACKGROUND (REAL EXPERIENCE):
-{amazon_context}
-
-ROLE FOCUS:
-{amazon_role_focus}
-
-TASK FOR AMZ_B1-AMZ_B4:
-Generate 4 strong, ATS-optimized experience bullets by reframing the same real
-Amazon experience for this role. This is a career transition, so adapt the same
-experience differently based on role focus. Do NOT invent new work, tools, or systems.
-
-STRICT AMZ RULES:
-- Each AMZ bullet max {AMAZON_MAX_CHARS} characters.
-- Each AMZ bullet starts with one of: {', '.join(AMAZON_ACTION_VERBS)}.
-- Each AMZ bullet includes 1-2 relevant keywords from ROLE FOCUS.
-- Prefer one grounded detail or metric: 50+ weekly, 200+ weekly, severity, senior reviewer escalation, audit-ready notes, corrective actions.
-- Keep bullets concrete and substantial; avoid thin generic phrasing.
-- Do NOT mention "Amazon operations".
-- Do NOT explicitly compare the work to security/audit roles.
-
-STYLE TARGET FOR AMZ WEIGHT:
-- Similar density to: "Conducted root cause analysis on seller claims, identifying policy violations and anomalous patterns; escalated findings to senior reviewers."
-- Similar density to: "Maintained audit-ready case documentation, recording findings, decisions, corrective actions, and evidence notes."
+{lens_ctx}
+{gap_ctx}
 
 SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
 {diff_instruction}
-Return JSON with EXACTLY 13 keys:
+Return JSON with EXACTLY 10 keys:
 {{
-  "AMZ_B1": "Role-focused bullet from CANDIDATE BACKGROUND item 1; follow all STRICT AMZ RULES.",
-  "AMZ_B2": "Role-focused bullet from CANDIDATE BACKGROUND item 2; follow all STRICT AMZ RULES.",
-  "AMZ_B3": "Role-focused bullet from CANDIDATE BACKGROUND item 3; follow all STRICT AMZ RULES.",
-  "AMZ_B4": "Role-focused bullet from CANDIDATE BACKGROUND item 4; follow all STRICT AMZ RULES.",
-
   "P1_TITLE": "{p1['title']}",
   "P1_TECH":  "{', '.join(p1_tools)}",
   "P1_B1": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][0]}",
@@ -1237,7 +1536,7 @@ Return JSON with EXACTLY 13 keys:
   "P2_B2": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][1]}",
   "P2_B3": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][2]}"
 }}
-Rules: action verb start | 'and' not '&' | escape internal quotes | each project uses ONLY its own technical details"""
+Rules: 'and' not '&' | outcome ending | escape internal quotes | each project uses ONLY its own technical details"""
 
     raw = _call_groq(system, user, GROQ_GEN_MODEL)
     raw = _repair_json(raw)
@@ -1246,14 +1545,13 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | each project
     except json.JSONDecodeError as exc:
         logger.warning("  JSON parse failed (%s) — repairing...", exc)
         fixed = re.sub(
-            r'("(?:AMZ_B\d|P[12]_(?:TITLE|TECH|B\d))":\s*)"(.*?)"(?=\s*[,}])',
+            r'("(?:P[12]_(?:TITLE|TECH|B\d))":\s*)"(.*?)"(?=\s*[,}])',
             lambda m: m.group(1)+'"'+m.group(2).replace('"','\\"')+'"',
             raw, flags=re.DOTALL
         )
         content = json.loads(fixed)
 
-    expected = ["AMZ_B1","AMZ_B2","AMZ_B3", "AMZ_B4",
-                "P1_TITLE","P1_TECH","P1_B1","P1_B2","P1_B3",
+    expected = ["P1_TITLE","P1_TECH","P1_B1","P1_B2","P1_B3",
                 "P2_TITLE","P2_TECH","P2_B1","P2_B2","P2_B3"]
     missing = [k for k in expected if k not in content]
     if missing:
@@ -1268,6 +1566,7 @@ Rules: action verb start | 'and' not '&' | escape internal quotes | each project
         if content.get(k):
             content[k] = apply_synonyms(content[k])
 
+    content.update(amazon_bullets)
     content = sanitize_amazon_bullets(content, job)
 
     return content
