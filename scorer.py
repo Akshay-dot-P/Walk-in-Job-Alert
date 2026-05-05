@@ -350,31 +350,41 @@ def _normalize_company_aggressive(company: str) -> str:
 
 def _normalize_title_aggressive(title: str) -> str:
     """
-    Aggressively normalize title to catch fuzzy duplicates:
-    'SOC L1 Analyst' → 'soc analyst'
-    'USI-FY26-Cyber-Detect & Respond-SSA-SIEM' → 'cyber detect respond siem'
-    'Security Operations Center Analyst' → 'soc analyst'
+    ULTRA-AGGRESSIVE title normalization to catch ALL fuzzy duplicates:
+    'SOC L1 Analyst' → 'analyst center operations security'
+    'USI-FY26-Cyber-Detect & Respond-SSA-SIEM' → 'cyber detect engineer respond siem'
+    'Security Operations Center Analyst - L1' → 'analyst center operations security'
+    'Cyber Operate-Detect & Respond-SA-SIEM Engineer' → 'cyber detect engineer respond siem'
     """
     if not title:
         return ""
     
     t = sanitize(title).lower().strip()
     
-    # Remove year/FY tags
-    t = re.sub(r'\b(fy|year|yr)\s*-?\s*\d{2,4}\b', '', t)  # FY26, FY2026, year2024
-    t = re.sub(r'\b20\d{2}\b', '', t)  # 2024, 2025, 2026
+    # Remove year/FY tags FIRST (before other processing)
+    t = re.sub(r'\b(fy|year|yr)\s*-?\s*\d{2,4}\b', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\b20\d{2}\b', '', t)
     
     # Remove location mentions
-    t = re.sub(r'\b(bangalore|bengaluru|india|karnataka|blr)\b', '', t)
+    t = re.sub(r'\b(bangalore|bengaluru|india|karnataka|blr|aus|australia|usa|uk)\b', '', t, flags=re.IGNORECASE)
     
-    # Remove level/tier indicators (these make same role look different)
-    t = re.sub(r'\b(l1|l2|l3|l4|l-1|l-2|tier\s*[1-4]|level\s*[1-4])\b', '', t)
+    # Remove level/tier indicators AGGRESSIVELY
+    t = re.sub(r'\b(l\d+|l-\d+|tier\s*\d+|level\s*\d+)\b', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\b(i|ii|iii|iv|v)\b', '', t)  # Roman numerals
     
-    # Remove grade/band indicators
-    t = re.sub(r'\b(ssa|lsa|sa|associate|sr\.|sr|senior|junior|jr)\b', '', t)
+    # Remove grade/band/seniority indicators AGGRESSIVELY
+    # This is the KEY fix for Deloitte jobs
+    t = re.sub(r'\b(ssa|lsa|sa|tsa|asa|msa)\b', '', t, flags=re.IGNORECASE)  # All "SA" variants
+    t = re.sub(r'\b(associate|sr\.?|senior|junior|jr\.?|lead|principal|staff)\b', '', t, flags=re.IGNORECASE)
     
-    # Remove common acronyms that add noise
-    t = re.sub(r'\busi\b', '', t)  # USI-FY26 style prefixes
+    # Remove company-specific prefixes
+    t = re.sub(r'\busi\b', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\bin_\b', '', t, flags=re.IGNORECASE)  # IN_Associate style
+    
+    # Remove duplicate words that appear due to formatting
+    # "Cyber-Cyber Operate" → "Cyber Operate"
+    # "CyberOperate" → "Cyber Operate" (add space before capital letters)
+    t = re.sub(r'([a-z])([A-Z])', r'\1 \2', t)
     
     # Expand common abbreviations to match full forms
     EXPANSIONS = {
@@ -384,27 +394,38 @@ def _normalize_title_aggressive(title: str) -> str:
         r'\bpam\b': 'privileged access management',
         r'\bvapt\b': 'vulnerability assessment penetration testing',
         r'\bdfir\b': 'digital forensics incident response',
+        r'\bappsec\b': 'application security',
+        r'\bdevsecops\b': 'development security operations',
     }
     for abbr, full in EXPANSIONS.items():
-        t = re.sub(abbr, full, t)
+        t = re.sub(abbr, full, t, flags=re.IGNORECASE)
     
-    # Remove all punctuation
+    # Remove ALL punctuation and special characters
     t = re.sub(r'[^\w\s]', ' ', t)
     
-    # Remove extra whitespace
+    # Collapse multiple spaces
     t = re.sub(r'\s+', ' ', t).strip()
     
-    # Sort words alphabetically (so "Analyst SOC" matches "SOC Analyst")
-    words = sorted(t.split())
-    
-    # Remove duplicates and common noise words
+    # Remove common noise words BEFORE sorting
     NOISE_WORDS = {
         'the', 'a', 'an', 'and', 'or', 'for', 'in', 'at', 'to', 'of', 'with',
-        'position', 'role', 'job', 'opening', 'opportunity', 'hiring', 'seeking'
+        'position', 'role', 'job', 'opening', 'opportunity', 'hiring', 'seeking',
+        'new', 'urgent', 'immediate', 'apply', 'now'
     }
-    words = [w for w in words if w not in NOISE_WORDS and len(w) > 1]
+    words = [w for w in t.split() if w not in NOISE_WORDS and len(w) > 1]
     
-    return ' '.join(words)
+    # Remove duplicate words (e.g., "cyber cyber" → "cyber")
+    seen = set()
+    unique_words = []
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            unique_words.append(w)
+    
+    # Sort alphabetically (so "Analyst SOC" matches "SOC Analyst")
+    unique_words.sort()
+    
+    return ' '.join(unique_words)
 
 
 def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
