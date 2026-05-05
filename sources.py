@@ -467,6 +467,14 @@ LINKEDIN_POST_QUERIES = [
    "site:naukri.com IT audit risk analyst bangalore",
    "site:naukri.com cybersecurity intern bangalore stipend",
    "site:naukri.com security engineer bangalore 0-3 years",
+
+  # ── Indian startup hiring posts ──
+   "site:linkedin.com hiring bangalore razorpay OR groww OR browserstack security",
+    "site:linkedin.com hiring bangalore fintech security fraud risk analyst",
+    "site:linkedin.com hiring bangalore startup security engineer fresher",
+    "site:linkedin.com security engineer bangalore YC startup hiring",
+    "site:linkedin.com GRC compliance analyst bangalore fintech startup",
+    "site:linkedin.com fraud analyst bangalore neobank fintech hiring",
 ]
 
 
@@ -1194,10 +1202,185 @@ def _scrape_lever() -> list[dict]:
     
     logger.info(f"Lever: {len(all_results)} jobs found")
     return all_results
- 
+
+
+
+
+
+
+
+
+# ════════════════════════════════════════════════════════════════
+# HN WHO'S HIRING — Firebase API (works from GH Actions, no auth)
+#
+# Monthly thread posted first business day. Firebase CDN is not
+# in any WAF blocklist. Covers YC companies + funded startups that
+# never post on LinkedIn. Many India / remote roles.
+#
+# Thread IDs: update HN_HIRING_THREAD_IDS monthly.
+# Find current thread: https://news.ycombinator.com/submitted?id=whoishiring
+# ════════════════════════════════════════════════════════════════
+
+HN_HIRING_THREAD_IDS = [
+    43543518,   # May 2025
+    42919245,   # Apr 2025
+    42297316,   # Mar 2025
+]
+
+HN_FIREBASE_BASE = "https://hacker-news.firebaseio.com/v0/item/{}.json"
+
+HN_SECURITY_KEYWORDS = (
+    "security", "cyber", "soc", "grc", "risk", "compliance",
+    "iam", "appsec", "vapt", "pentest", "fraud", "infosec",
+    "cloud security", "devsecops", "threat", "vulnerability",
+)
+
+HN_INDIA_KEYWORDS = (
+    "india", "bangalore", "bengaluru", "remote", "anywhere",
+    "worldwide", "global",
+)
+
+# Companies known to post India roles on HN (used to boost confidence)
+HN_INDIA_COMPANIES = {
+    "razorpay", "groww", "zepto", "browserstack", "postman",
+    "hasura", "setu", "niyo", "open financial", "m2p",
+    "signzy", "leegality", "zoho", "freshworks", "chargebee",
+    "capillary", "mindtickle", "darwinbox", "locus", "keka",
+    "smallcase", "zetwerk", "shiprocket", "delhivery", "meesho",
+    "dunzo", "slice", "jupiter", "fi money", "salt",
+    "hyperface", "zolve", "freo", "epifi", "navi",
+    "simpl", "kredivo", "axio", "perfios", "karza",
+    "bureau", "seon", "sardine",                          # fraud/risk startups
+    "safe security", "sequretek", "sectona", "sattrix",   # Indian cybersec
+    "lucideus", "appknox", "we45", "mwrinfosecurity",
+}
+
+
+def _hn_parse_comment(comment_text: str, comment_id: int) -> dict | None:
+    """
+    Parse a single HN Who's Hiring comment into a job record.
+    Comments follow loose convention: "Company | Role | Location | ..."
+    Returns None if comment doesn't match India + security criteria.
+    """
+    if not comment_text or len(comment_text.strip()) < 40:
+        return None
+
+    text_lower = comment_text.lower()
+
+    # Must mention India / remote
+    if not any(kw in text_lower for kw in HN_INDIA_KEYWORDS):
+        return None
+
+    # Must mention security / relevant domain
+    if not any(kw in text_lower for kw in HN_SECURITY_KEYWORDS):
+        return None
+
+    # Parse first line: usually "Company | Role | Location | ..."
+    first_line = comment_text.strip().split("\n")[0].strip()
+    parts = [p.strip() for p in re.split(r"\s*[|/]\s*", first_line)]
+
+    company = parts[0] if parts else "Unknown"
+    title   = parts[1] if len(parts) > 1 else first_line[:80]
+    location = parts[2] if len(parts) > 2 else "Remote / India"
+
+    # Clean HTML tags that sometimes appear
+    company = re.sub(r"<[^>]+>", "", company).strip()
+    title   = re.sub(r"<[^>]+>", "", title).strip()
+
+    if not title or len(title) < 3:
+        title = first_line[:100]
+
+    return {
+        "title":       title[:120],
+        "company":     company[:80],
+        "location":    location[:80],
+        "job_url":     f"https://news.ycombinator.com/item?id={comment_id}",
+        "description": re.sub(r"<[^>]+>", " ", comment_text)[:1200],
+        "date_posted": "",
+        "source":      "hn_hiring",
+    }
+
+
+def _scrape_hn_hiring() -> list[dict]:
+    """
+    Fetch HN Who's Hiring threads via Firebase API.
+    Each thread has 200-800 top-level comments, each = one job post.
+    """
+    logger.info("=== HN Who's Hiring: %d threads ===", len(HN_HIRING_THREAD_IDS))
+    results: list[dict] = []
+    seen_ids: set[int] = set()
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    })
+
+    for thread_id in HN_HIRING_THREAD_IDS:
+        try:
+            # Fetch thread metadata to get top-level comment IDs
+            thread_url = HN_FIREBASE_BASE.format(thread_id)
+            r = session.get(thread_url, timeout=15)
+            if r.status_code != 200:
+                logger.warning("HN thread %d: HTTP %s", thread_id, r.status_code)
+                continue
+
+            thread_data = r.json()
+            kids = thread_data.get("kids", [])  # top-level comment IDs
+            logger.info("  Thread %d: %d top-level comments", thread_id, len(kids))
+
+            found = 0
+            for comment_id in kids[:600]:    # cap at 600 comments per thread
+                if comment_id in seen_ids:
+                    continue
+                seen_ids.add(comment_id)
+
+                try:
+                    cr = session.get(HN_FIREBASE_BASE.format(comment_id), timeout=10)
+                    if cr.status_code != 200:
+                        continue
+                    comment_data = cr.json()
+                    if not isinstance(comment_data, dict):
+                        continue
+                    # Skip deleted/dead comments
+                    if comment_data.get("deleted") or comment_data.get("dead"):
+                        continue
+
+                    text = comment_data.get("text", "")
+                    record = _hn_parse_comment(text, comment_id)
+                    if record:
+                        results.append(record)
+                        found += 1
+
+                    time.sleep(0.05)   # 50ms between comment fetches — polite
+
+                except Exception:
+                    continue
+
+            logger.info("  Thread %d: %d matching jobs", thread_id, found)
+            time.sleep(2)
+
+        except Exception as exc:
+            logger.error("HN thread %d failed: %s", thread_id, exc)
+            continue
+
+    logger.info("HN Who's Hiring: %d total jobs", len(results))
+    return results
+
+
+
+
+
+
+
+
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # [Keep ALL your existing scrapers - LinkedIn, Google, Indeed, Posts]
 # ════════════════════════════════════════════════════════════════════════════
+
+
 
 
 def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
@@ -1245,6 +1428,7 @@ def _scrape_google_jobs() -> list[dict]:
     seen: set = set()
     results = []
     terms = [
+        # Existing terms
         qa('"SOC analyst" OR "security analyst" OR "cybersecurity analyst"'),
         qa('"GRC analyst" OR "compliance analyst" OR "IT audit analyst"'),
         qa('"risk analyst" OR "KYC analyst" OR "AML analyst" OR "fraud analyst"'),
@@ -1255,6 +1439,30 @@ def _scrape_google_jobs() -> list[dict]:
         qa('"DevSecOps engineer" OR "vulnerability analyst"'),
         qi('"cybersecurity intern" OR "security intern" OR "SOC intern"'),
         qi('"GRC intern" OR "compliance intern" OR "risk intern"'),
+
+        # ── NEW: Google crawls startup ATS pages — reaches companies blocked via direct API ──
+        # Startup-specific signals
+        qf('"security engineer" OR "security analyst" Bangalore "Series A" OR "Series B" OR "funded"'),
+        qf('"security" Bangalore "YC" OR "Y Combinator" OR "startup"'),
+
+        # Indian company names that don't show on LinkedIn but post on Google Jobs
+        qf('"security analyst" OR "security engineer" "Razorpay" OR "Groww" OR "BrowserStack"'),
+        qf('"security" "Zepto" OR "Swiggy" OR "Zomato" OR "Meesho" OR "Flipkart"'),
+        qf('"security analyst" OR "risk analyst" "Cred" OR "PhonePe" OR "Paytm" OR "Juspay"'),
+        qf('"security" "Freshworks" OR "Zoho" OR "Chargebee" OR "Postman" OR "Hasura"'),
+        qf('"security" OR "fraud" OR "risk" "Perfios" OR "Karza" OR "Bureau" OR "Signzy"'),
+        qf('"security" "Darwinbox" OR "Keka" OR "Leegality" OR "Locus" OR "Zetwerk"'),
+
+        # BFSI startups specifically — GRC/fraud/risk roles
+        qf('"fraud analyst" OR "AML analyst" OR "KYC analyst" "fintech" Bangalore'),
+        qf('"risk analyst" OR "compliance analyst" "NBFC" OR "neo bank" OR "neobank" Bangalore'),
+
+        # Wellfound/AngelList via Google (reaches it without direct API)
+        f'site:wellfound.com security analyst OR security engineer Bangalore {FQ_ALL}',
+        f'site:wellfound.com fraud risk compliance Bangalore',
+
+        # Cutshort via Google
+        f'site:cutshort.io "security" OR "cyber" OR "risk" Bangalore',
     ]
     for i, term in enumerate(terms):
         batch = _run_scrape(["google"], term)
@@ -1403,6 +1611,7 @@ def gather_all_listings() -> list[dict]:
         ("Workday",        _scrape_workday),
         ("Greenhouse",     _scrape_greenhouse),       # ← ACTIVE
         ("Lever",          _scrape_lever), 
+        ("HN Hiring",      _scrape_hn_hiring),
       
     ]
 
