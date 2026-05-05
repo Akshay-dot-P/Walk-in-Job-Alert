@@ -1538,24 +1538,45 @@ Return JSON with EXACTLY 10 keys:
 }}
 Rules: 'and' not '&' | outcome ending | escape internal quotes | each project uses ONLY its own technical details"""
 
-    raw = _call_groq(system, user, GROQ_GEN_MODEL)
-    raw = _repair_json(raw)
+    p1_seed_bullets = get_project_bullets(p1_key, job.get("domain", "General"))
+    p2_seed_bullets = get_project_bullets(p2_key, job.get("domain", "General"))
+    fallback_content = {
+        "P1_TITLE": p1["title"],
+        "P1_TECH": ", ".join(p1_tools),
+        "P1_B1": p1_seed_bullets[0],
+        "P1_B2": p1_seed_bullets[1],
+        "P1_B3": p1_seed_bullets[2],
+        "P2_TITLE": p2["title"],
+        "P2_TECH": ", ".join(p2_tools),
+        "P2_B1": p2_seed_bullets[0],
+        "P2_B2": p2_seed_bullets[1],
+        "P2_B3": p2_seed_bullets[2],
+    }
+
     try:
-        content = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.warning("  JSON parse failed (%s) — repairing...", exc)
-        fixed = re.sub(
-            r'("(?:P[12]_(?:TITLE|TECH|B\d))":\s*)"(.*?)"(?=\s*[,}])',
-            lambda m: m.group(1)+'"'+m.group(2).replace('"','\\"')+'"',
-            raw, flags=re.DOTALL
-        )
-        content = json.loads(fixed)
+        raw = _call_groq(system, user, GROQ_GEN_MODEL)
+        raw = _repair_json(raw)
+        try:
+            content = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.warning("  JSON parse failed (%s) — repairing...", exc)
+            fixed = re.sub(
+                r'("(?:P[12]_(?:TITLE|TECH|B\d))":\s*)"(.*?)"(?=\s*[,}])',
+                lambda m: m.group(1)+'"'+m.group(2).replace('"','\\"')+'"',
+                raw, flags=re.DOTALL
+            )
+            content = json.loads(fixed)
+    except Exception as exc:
+        logger.warning("  Project bullet generation failed — using deterministic fallback: %s", exc)
+        content = dict(fallback_content)
 
     expected = ["P1_TITLE","P1_TECH","P1_B1","P1_B2","P1_B3",
                 "P2_TITLE","P2_TECH","P2_B1","P2_B2","P2_B3"]
     missing = [k for k in expected if k not in content]
     if missing:
-        raise ValueError(f"LLM missing keys: {missing}")
+        logger.warning("  Missing keys from generation (%s) — filling from fallback", missing)
+        for key, value in fallback_content.items():
+            content.setdefault(key, value)
 
     # Merge skill profile + dynamic augmentation (FEATURE 4)
     base_skills = compute_skills(job["domain"])
