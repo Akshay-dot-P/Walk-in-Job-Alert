@@ -59,6 +59,7 @@ USER_PROMPT_PREFIX = (
     "- Posted >30 days ago\n"
     "- Title: Senior (except 'Senior Associate'), Lead, Principal, Staff, Manager, Director, VP, CISO, Chief\n"
     "- Title: II, III, IV, V, 2, 3, 4, 5 (except 'I' or '1' is OK)\n"
+    "- Title: L2, L3, L4, L5 (e.g., 'L2 SOC Analyst')\n"
     "- Experience: 5+ years\n"
     "- Mid-level/midlevel in title\n\n"
     "SCORE 2 (SCAM) if ANY:\n"
