@@ -453,13 +453,14 @@ def compute_metrics(content: dict, jd_keywords: dict, ats_score) -> dict:
                ["AMZ_B1","AMZ_B2","AMZ_B3","AMZ_B4", "P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]]
     all_text = " ".join(bullets).lower()
 
+    hits = 0
     coverage = 0
     if ranked:
         hits = sum(
            1 for kw in ranked[:10]
            if re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", all_text, re.IGNORECASE)
-        )        
-    coverage = round(hits / min(len(ranked),10) * 100)
+        )
+        coverage = round(hits / min(len(ranked),10) * 100)
 
     nonempty = [b for b in bullets if b.strip()]
     density  = 0.0
@@ -579,14 +580,14 @@ PROJECTS = {
         },
         "bullets": [
             "Deployed Splunk SIEM with SPL correlation searches for brute-force detection (index=* failed | stats count by src_ip), lateral movement, and privilege escalation; mapped TTPs to MITRE ATT&CK (T1110, T1078, T1059) and wrote PICERL incident report.",
-            "Built automated SOAR-style detection pipeline: Python script ingests Splunk alerts, runs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification — reducing mean time to triage by automating repetitive L1 tasks.",
+            "Built automated SOAR-style detection pipeline: Python script ingests Splunk alerts, runs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification.",
             "Converted detection logic to Sigma rules (vendor-neutral format used by enterprise SOCs); performed TCP/IP analysis in Wireshark to detect SYN scans, DNS tunnelling, and plaintext credential exposure on unencrypted sessions.",
         ],
     },
     "vuln_scanner": {
         "title": "Vulnerability Scanner and Patch Prioritization Engine",
         "github": "https://github.com/Akshay-dot-P/vuln-scanner",
-        "tech_base": ["Python","Bash","Nessus","OpenVAS","NVD API","CVSS/EPSS scoring"],
+        "tech_base": ["Python","Bash","Nessus","OpenVAS","NVD API","CVSS/EPSS context"],
         "tech_swappable": {
             r"qualys":                            ["Qualys"],
             r"tenable":                           ["Tenable.io"],
@@ -597,9 +598,9 @@ PROJECTS = {
             r"container|docker|trivy|kubernetes": ["Trivy container scanner"],
         },
         "bullets": [
-            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS REST APIs in Python; generates CVE reports classified by CVSS severity; implemented EPSS scoring from FIRST.org API to prioritise by actual exploit probability — a metric rarely used by freshers.",
+            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS REST APIs in Python; generated CVE reports classified by CVSS severity and EPSS context from the FIRST.org API.",
             "Developed OWASP Top 10 automated web checker that sends crafted HTTP requests to detect injection, broken auth, and SSRF vulnerabilities; documented SQL injection exploit and parameterised query remediation.",
-            "Automated scan scheduling via Bash and cron; built delta-scan logic to flag newly discovered CVEs and calculate remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) for patch compliance tracking.",
+            "Automated scan scheduling via Bash and cron; built delta-scan logic to flag newly discovered CVEs and organize patch compliance tracking evidence.",
         ],
     },
     "phishing_osint": {
@@ -616,8 +617,8 @@ PROJECTS = {
             r"email|spf|dkim|dmarc":               ["email header analyser"],
         },
         "bullets": [
-            "Built multi-API threat intelligence pipeline: submits suspicious URLs/IPs to VirusTotal, AbuseIPDB, and URLScan.io simultaneously; cross-references WHOIS registration age, DNS records, and SSL details to produce a unified phishing probability score.",
-            "Implemented typosquatting domain detector generating character-substitution variants of brand domains and checking live DNS resolution — catches brand-impersonation attacks before they reach threat feeds.",
+            "Built multi-API threat intelligence pipeline: submits suspicious URLs/IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL details for phishing analysis.",
+            "Implemented typosquatting domain detector generating character-substitution variants of brand domains and checking live DNS resolution for brand-impersonation analysis.",
             "Deployed Telegram bot interface enabling analysts to submit URLs for live IOC enrichment; supports bulk CSV input/output for incident response workflows and includes OSINT enrichment via theHarvester for domain profiling.",
         ],
     },
@@ -671,8 +672,8 @@ CONCEPT_SWAPPABLE = {
     },
     "vuln_scanner": {
         r"grc|compliance|audit|iso\s*27001|nist|pci|sox": [
-            "vulnerability risk scoring mapped to compliance framework controls (PCI-DSS, NIST)",
-            "audit-ready remediation tracking with SLA compliance evidence",
+            "vulnerability findings mapped to compliance framework controls (PCI-DSS, NIST)",
+            "audit-ready remediation tracking and compliance evidence organization",
         ],
         r"devsecops|appsec|ci/?cd|sdlc|secure.?cod|sast|dast": [
             "application security testing integrated with development release cycles",
@@ -683,14 +684,14 @@ CONCEPT_SWAPPABLE = {
             "continuous security scanning for cloud-deployed services and endpoints",
         ],
         r"fraud|aml|risk|financial": [
-            "risk-quantified vulnerability prioritization using exploit probability metrics",
-            "remediation deadline enforcement aligned with regulatory compliance windows",
+            "risk-informed vulnerability prioritization using CVE and EPSS context",
+            "remediation tracking aligned with regulatory compliance workflows",
         ],
     },
     "phishing_osint": {
         r"grc|compliance|audit|vendor.?risk|third.?party|due.?diligence": [
-            "domain reputation scoring for third-party vendor risk assessment",
-            "quantitative risk evidence generation from multi-source OSINT intelligence",
+            "domain reputation review for third-party vendor risk assessment",
+            "risk evidence organization from multi-source OSINT intelligence",
         ],
         r"fraud|aml|kyc|transaction|financial.?crime|sanctions": [
             "KYC domain-verification workflow: WHOIS age, registrar, DNS, and SSL cross-check",
@@ -702,7 +703,7 @@ CONCEPT_SWAPPABLE = {
         ],
         r"risk|assessment|scoring": [
             "automated risk indicator enrichment for entity due diligence workflows",
-            "domain and IP reputation scoring for risk quantification documentation",
+            "domain and IP reputation review for risk documentation",
         ],
     },
 }
@@ -718,7 +719,7 @@ BULLET_VARIANTS = {
     "soc_auto": {
         "cloud_iam": [
             "Deployed Splunk SIEM with SPL correlation searches to monitor IAM anomalies including unauthorized privilege escalation (T1078) and suspicious cross-account access patterns; mapped cloud-relevant TTPs to MITRE ATT&CK and wrote PICERL incident report.",
-            "Built automated cloud security detection pipeline: Python script ingests Splunk alerts for IAM policy violations, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification — enabling rapid response to identity-based threats.",
+            "Built automated cloud security detection pipeline: Python script ingests Splunk alerts for IAM policy violations, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification.",
             "Developed Sigma-compatible detection rules for cloud-specific TTPs including credential abuse and lateral movement; performed network analysis in Wireshark to identify anomalous authentication and DNS traffic patterns in cloud environments.",
         ],
         "dfir_forensics": [
@@ -728,41 +729,41 @@ BULLET_VARIANTS = {
         ],
         "network_ids": [
             "Deployed Splunk SIEM with SPL correlation searches for network intrusion detection — brute-force detection (index=* failed | stats count by src_ip), lateral movement, and privilege escalation alerts mapped to MITRE ATT&CK (T1110, T1078, T1059) with PICERL reporting.",
-            "Built automated network alert triage pipeline: Python script ingests Splunk IDS alerts, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification — reducing mean time to detect network-based threats.",
+            "Built automated network alert triage pipeline: Python script ingests Splunk IDS alerts, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification.",
             "Wrote Sigma rules (vendor-neutral IDS detection format) for enterprise network security; performed TCP/IP deep packet analysis in Wireshark to detect SYN scans, DNS tunnelling, port sweeps, and plaintext credential exposure across network segments.",
         ],
     },
     "vuln_scanner": {
         "devsecops_appsec": [
-            "Built automated application security testing pipeline integrating Nessus and OpenVAS APIs in Python; generates vulnerability reports classified by CVSS severity with EPSS exploit probability scoring from FIRST.org API for risk-based prioritization in development workflows.",
+            "Built automated application security testing pipeline integrating Nessus and OpenVAS APIs in Python; generated vulnerability reports classified by CVSS severity with EPSS context from the FIRST.org API.",
             "Developed OWASP Top 10 automated application security checker detecting injection, broken authentication, SSRF, and XSS vulnerabilities; documented SQL injection exploit-to-remediation workflow with parameterised query fixes for secure development guidance.",
-            "Automated security scan scheduling via Bash and cron integrated with development cycles; built delta-scan logic to flag newly introduced CVEs per release and enforce remediation SLA deadlines (Critical=24hrs, High=7 days) for secure development lifecycle compliance.",
+            "Automated security scan scheduling via Bash and cron integrated with development cycles; built delta-scan logic to flag newly introduced CVEs for secure development lifecycle tracking.",
         ],
         "cloud_security": [
-            "Built automated cloud infrastructure vulnerability assessment pipeline using Nessus and OpenVAS APIs in Python; generates CVE reports classified by CVSS severity with EPSS scoring from FIRST.org API to prioritize cloud misconfiguration risks by exploit probability.",
+            "Built automated cloud infrastructure vulnerability assessment pipeline using Nessus and OpenVAS APIs in Python; generated CVE reports classified by CVSS severity with EPSS context from the FIRST.org API.",
             "Developed automated security checker for cloud-hosted applications testing OWASP Top 10 vulnerabilities including injection, broken authentication, and SSRF; documented remediation workflows for cloud service misconfigurations and exposed endpoints.",
-            "Automated vulnerability scan scheduling via Bash and cron for continuous cloud security monitoring; built delta-scan logic to detect newly exposed CVEs and calculate remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) for cloud compliance.",
+            "Automated vulnerability scan scheduling via Bash and cron for cloud security monitoring; built delta-scan logic to detect newly exposed CVEs and organize cloud compliance evidence.",
         ],
         "compliance_audit": [
-            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS APIs in Python; generates audit-ready CVE reports classified by CVSS severity with EPSS scoring from FIRST.org API — providing quantitative risk evidence for compliance documentation.",
+            "Built automated vulnerability assessment pipeline integrating Nessus and OpenVAS APIs in Python; generated audit-ready CVE reports classified by CVSS severity with EPSS context from the FIRST.org API.",
             "Developed OWASP Top 10 automated compliance checker validating web application security controls against regulatory requirements; documented vulnerability-to-remediation audit trails including SQL injection evidence and parameterised query fixes.",
-            "Automated compliance scan scheduling via Bash and cron; built delta-scan logic to track remediation progress against SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days) — generating audit evidence for patch compliance and control effectiveness reporting.",
+            "Automated compliance scan scheduling via Bash and cron; built delta-scan logic to track remediation progress and organize audit evidence for patch compliance review.",
         ],
     },
     "phishing_osint": {
         "grc_risk_audit": [
-            "Built multi-source risk assessment pipeline: submits vendor domains and IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL certificate details to produce quantitative risk scores for third-party due diligence.",
-            "Implemented domain reputation assessment tool generating typosquatting variants of monitored domains and checking live DNS resolution — provides early warning for brand-impersonation risks in vendor and partner ecosystems.",
+            "Built multi-source risk assessment pipeline: submits vendor domains and IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL certificate details for third-party due diligence.",
+            "Implemented domain reputation assessment tool generating typosquatting variants of monitored domains and checking live DNS resolution for vendor and partner ecosystem review.",
             "Deployed automated risk assessment interface via Telegram bot enabling analysts to submit domains for enrichment; supports bulk CSV input/output for vendor risk assessment workflows and includes OSINT enrichment via theHarvester for comprehensive domain profiling.",
         ],
         "fraud_aml": [
-            "Built multi-API fraud intelligence pipeline: submits suspicious domains and IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL details as part of KYC domain-verification workflow to produce fraud probability scores.",
-            "Implemented typosquatting domain detector generating character-substitution variants of legitimate business domains and checking live DNS resolution — identifies brand-impersonation infrastructure used in financial fraud schemes before reaching threat feeds.",
+            "Built multi-API fraud intelligence pipeline: submits suspicious domains and IPs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration age, DNS records, and SSL details for KYC domain-verification workflows.",
+            "Implemented typosquatting domain detector generating character-substitution variants of legitimate business domains and checking live DNS resolution for financial fraud infrastructure review.",
             "Deployed Telegram bot interface for live suspicious entity enrichment supporting bulk CSV input/output for investigation workflows; includes OSINT enrichment via theHarvester for domain profiling to support suspicious transaction report (STR) documentation.",
         ],
         "cti_threat_intel": [
-            "Built multi-API cyber threat intelligence pipeline: submits IOCs to VirusTotal, AbuseIPDB, and URLScan.io simultaneously; cross-references WHOIS registration data, DNS records, and SSL certificate details to produce unified threat confidence scores for intelligence products.",
-            "Implemented typosquatting domain detector generating character-substitution variants of tracked infrastructure and checking live DNS resolution — provides proactive threat detection capability for infrastructure-based threat hunting.",
+            "Built multi-API cyber threat intelligence pipeline: submits IOCs to VirusTotal, AbuseIPDB, and URLScan.io; cross-references WHOIS registration data, DNS records, and SSL certificate details for intelligence products.",
+            "Implemented typosquatting domain detector generating character-substitution variants of tracked infrastructure and checking live DNS resolution for infrastructure-based threat hunting.",
             "Deployed Telegram bot interface for real-time IOC enrichment enabling analysts to process indicators at scale; supports bulk CSV input/output for threat intelligence workflows and includes OSINT enrichment via theHarvester for comprehensive domain attribution.",
         ],
     },
@@ -1338,6 +1339,35 @@ def sanitize_amazon_bullets(content: dict, job: dict,
             or _has_purpose_clause(bullet)
         )
         content[key] = fallback[key] if invalid else bullet
+    return content
+
+
+PROJECT_METRIC_PATTERNS = [
+    (re.compile(r"\s*[—–-]\s*(?:reducing|reduced|improving|improved|increasing|increased|enabling|providing|cutting)\b.*$", re.IGNORECASE), ""),
+    (re.compile(r"\b(?:reducing|reduced|improving|improved|increasing|increased|cutting)\b[^.;]*[.;]?", re.IGNORECASE), ""),
+    (re.compile(r"\b(?:mean time|MTTR|MTTD|SLA deadlines?|Critical\s*=\s*24\s*hrs?|High\s*=\s*7\s*days?|Medium\s*=\s*30\s*days?)\b[^.;]*[.;]?", re.IGNORECASE), ""),
+    (re.compile(r"\b(?:probability|confidence|quantitative|quantified|risk scores?|phishing probability score|fraud probability scores?)\b", re.IGNORECASE), "analysis"),
+    (re.compile(r"\b(?:rarely used by freshers|faster|before reaching threat feeds)\b", re.IGNORECASE), ""),
+]
+
+
+def sanitize_project_bullets(content: dict) -> dict:
+    """
+    Remove metric/impact claims from project bullets. Personal lab projects
+    should read as concrete build evidence, not performance claims.
+    """
+    for key in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
+        bullet = re.sub(r"\s+", " ", str(content.get(key, ""))).strip()
+        if not bullet:
+            continue
+        for pattern, replacement in PROJECT_METRIC_PATTERNS:
+            bullet = pattern.sub(replacement, bullet)
+        bullet = re.sub(r"\s+([.;,])", r"\1", bullet)
+        bullet = re.sub(r"\b(?:and|with|for|to|by)\s*[.;,]*$", "", bullet, flags=re.IGNORECASE)
+        bullet = re.sub(r"\s{2,}", " ", bullet).strip(" ;,-")
+        if bullet and bullet[-1] not in ".!?":
+            bullet += "."
+        content[key] = bullet
     return content
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2040,7 +2070,7 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
         "You are a senior cybersecurity resume writer for the Indian job market. "
         "Bullets must be factual — never fabricate tools or experience. "
         "ALWAYS write 'and' not '&' in bullet text (except MITRE ATT&CK which is a proper noun). "
-        "BULLET END RULE: every bullet must end with an outcome or metric. "
+        "BULLET END RULE: every bullet must end with a concrete technical artifact, workflow, or finding. "
         "NEVER end with 'to improve X', 'to optimize Y', 'to ensure Z', "
         "'to streamline X', 'to strengthen X', or 'in order to X'. "
         "Return ONLY a valid JSON object. Internal double-quotes escaped as \\\". "
@@ -2054,9 +2084,9 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
         "soc_auto":       ["SPL query syntax (index=* failed | stats)",
                            "MITRE TTP numbers (T1110/T1078/T1059)",
                            "SOAR pipeline detail"],
-        "vuln_scanner":   ["EPSS scoring", "FIRST.org API mention",
+        "vuln_scanner":   ["EPSS context", "FIRST.org API mention",
                            "CVSS severity classification",
-                           "remediation SLA deadlines (Critical=24hrs, High=7 days, Medium=30 days)"],
+                           "remediation tracking evidence"],
         "phishing_osint": ["typosquatting detection detail",
                            "multi-API cross-referencing (VirusTotal, AbuseIPDB, URLScan.io)",
                            "WHOIS/DNS/SSL analysis detail"],
@@ -2090,6 +2120,9 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
 
 SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
 {diff_instruction}
+PROJECT METRIC BAN:
+- Do not write project metrics, project impact claims, percentages, time savings, MTTR/MTTD, SLA deadlines, or "reduced/improved/increased" claims.
+- Project bullets should show what was built, configured, analyzed, documented, or mapped.
 Return JSON with EXACTLY 10 keys:
 {{
   "P1_TITLE": "{p1['title']}",
@@ -2103,7 +2136,7 @@ Return JSON with EXACTLY 10 keys:
   "P2_B2": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][1]}",
   "P2_B3": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][2]}"
 }}
-Rules: 'and' not '&' | outcome ending | escape internal quotes | each project uses ONLY its own technical details | benchmark sources are style signals, not new facts"""
+Rules: 'and' not '&' | no project metrics or impact claims | escape internal quotes | each project uses ONLY its own technical details | benchmark sources are style signals, not new facts"""
 
     p1_seed_bullets = get_project_bullets(p1_key, job.get("domain", "General"))
     p2_seed_bullets = get_project_bullets(p2_key, job.get("domain", "General"))
@@ -2153,6 +2186,7 @@ Rules: 'and' not '&' | outcome ending | escape internal quotes | each project us
     for k in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
         if content.get(k):
             content[k] = apply_synonyms(content[k])
+    content = sanitize_project_bullets(content)
 
     content.update(amazon_bullets)
     content = sanitize_amazon_bullets(content, job, experience_research)
@@ -2333,7 +2367,7 @@ def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
         return bullet_text
     system = (
         "You are a resume bullet editor. Shorten the bullet to under "
-        f"{target_chars} characters. PRESERVE: EPSS scoring, SPL query syntax, "
+        f"{target_chars} characters. PRESERVE: EPSS context, SPL query syntax, "
         "MITRE TTP numbers (T1110/T1078/T1059), SOAR detail, FIRST.org mention. "
         "Use 'and' not '&'. Return ONLY the shortened bullet, no quotes, no explanation."
     )
