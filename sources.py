@@ -163,30 +163,65 @@ WORKDAY_COMPANIES = [
 ]
 
 GREENHOUSE_COMPANIES = [
-    # Cybersecurity
-    "netskope",           # 131 jobs
-    "tanium",             # 75 jobs
-    "transmitsecurity",   # 28 jobs
-    "cybereason",         # 4 jobs
-    "axonius",            # 35 jobs
-    # Fintech/Crypto
-    "stripe",             # 503 jobs
-    "coinbase",           # 103 jobs
-    "gemini",             # 19 jobs
-    "fireblocks",         # 45 jobs
-    # Tech/SaaS
-    "gitlab",             # 200 jobs
-    "mongodb",            # 432 jobs
-    "vercel",             # 86 jobs
-    "planetscale",        # 6 jobs
-    # Cloud/Infra
-    "cloudflare",         # 444 jobs
-    "fastly",             # 64 jobs
-    "algolia",            # 30 jobs
-    # Enterprise SaaS
-    "airtable",           # 27 jobs
-    "figma",              # 159 jobs
-    "calendly",           # 20 jobs
+    # ── Cybersecurity (original) ──
+    "netskope",           # CASB / cloud security
+    "tanium",             # endpoint security
+    "transmitsecurity",   # identity fraud
+    "cybereason",         # EDR
+    "axonius",            # asset management
+ 
+    # ── Cybersecurity (new additions) ──
+    "hackerone",          # bug bounty / vuln disclosure — confirmed India security analyst role
+    "bugcrowd",           # bug bounty platform
+    "synack",             # crowdsourced security
+    "netspi",             # offensive security / pentest
+    "secureworks",        # MDR / SOC-as-a-service
+    "deepwatch",          # MDR
+    "huntress",           # SMB security platform
+    "lumu",               # network detection
+    "vectra",             # AI threat detection (vectra-ai slug)
+    "exabeam",            # SIEM / UEBA
+    "cyware",             # threat intel / SOAR — India-founded
+    "sequretek",          # India cybersec company
+    "seclore",            # data-centric security — India-founded
+ 
+    # ── Fintech / Crypto (original + new) ──
+    "stripe",             # payments
+    "coinbase",           # crypto
+    "gemini",             # crypto exchange
+    "fireblocks",         # crypto infra
+    "plaid",              # fintech data
+    "brex",               # fintech
+    "mercury",            # fintech banking
+ 
+    # ── Tech / SaaS (original + new) ──
+    "gitlab",             # DevSecOps
+    "mongodb",            # database
+    "vercel",             # cloud
+    "planetscale",        # database
+    "1password",          # password manager / IAM
+    "beyond-identity",    # passwordless IAM
+ 
+    # ── Cloud / Infra (original + new) ──
+    "cloudflare",         # CDN / zero trust
+    "fastly",             # edge cloud
+    "algolia",            # search
+    "hashicorp",          # infra security / secrets
+    "teleport",           # infrastructure access
+ 
+    # ── Enterprise SaaS (original) ──
+    "airtable",
+    "figma",
+    "calendly",
+ 
+    # ── GRC / Compliance (new) ──
+    "drata",              # compliance automation
+    "hyperproof",         # GRC platform
+    "secureframe",        # compliance automation
+    "anecdotes",          # GRC automation
+    "oneleet",            # compliance + security
+    "sprinto",            # India-founded GRC / compliance SaaS
+    "scrut",              # India-founded GRC automation
 ]
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -194,9 +229,145 @@ GREENHOUSE_COMPANIES = [
 # Only includes slugs verified to return data from api.lever.co
 # ═══════════════════════════════════════════════════════════════════════
 LEVER_COMPANIES = [
-    "secureframe",        # 16 jobs
-    "logrocket",          # 7 jobs
+    # original
+    "secureframe",        # compliance automation
+    "logrocket",          # session replay / observability
+ 
+    # new cybersecurity additions
+    "detectify",          # web app security scanner
+    "intigriti",          # bug bounty / ethical hacking
+    "hadrian",            # attack surface mgmt
+    "nagomi-security",    # exposure management
+    "torq",               # security automation / SOAR
+    "anvilogic",          # SOC modernization / SIEM
+    "panther",            # cloud SIEM (panther-labs)
+    "hunter-io",          # OSINT / email intelligence (hunter)
+    "recorded-future",    # threat intelligence
+ 
+    # India-relevant fintech / GRC
+    "razorpay",           # India payments — may use Lever
+    "m2p",                # India fintech
+    "signzy",             # India digital KYC
+    "bureau",             # India fraud/identity platform
+    "sift",               # fraud detection
+    "unit21",             # fraud/AML
+    "hummingbird",        # AML / compliance
+    "flagright",          # AML compliance — India presence
+    "complyadvantage",    # financial crime intelligence
+    "behaviosec",         # behavioral biometrics
 ]
+
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# ③ ADD — ASHBY_COMPANIES  (new source)
+# Public API: GET https://api.ashbyhq.com/posting-api/job-board/{slug}
+# No auth needed. Returns {"jobs": [{title, location, jobUrl, publishedAt, ...}]}
+# Docs: https://developers.ashbyhq.com/docs/public-job-posting-api
+# Confirmed via: github.com/outscal/OpenJobs (multi-ATS harvester)
+# ═══════════════════════════════════════════════════════════════════════
+ 
+ASHBY_COMPANIES = [
+    # ── Confirmed India / security roles on Ashby ──
+    "hackerone",            # bug bounty — confirmed India senior security analyst role
+    "socure",               # identity fraud detection — confirmed India presence
+ 
+    # ── Cloud Security ──
+    "wiz",                  # cloud security (Google acquisition, still posts separately)
+    "orca-security",        # cloud security CNAPP
+    "lacework",             # cloud security posture
+    "sysdig",               # cloud/container security
+    "chainguard",           # software supply chain security
+    "cycode",               # application security posture
+ 
+    # ── AppSec / DevSecOps ──
+    "snyk",                 # DevSecOps / AppSec — India engineering hub
+    "semgrep",              # SAST / code security
+    "checkmarx",            # SAST/DAST
+    "endor-labs",           # software supply chain
+    "apiiro",               # code risk platform
+    "armorcode",            # AppSec posture mgmt — India co-founded
+ 
+    # ── GRC / Compliance ──
+    "vanta",                # GRC / compliance automation — large Ashby customer
+    "drata",                # SOC2 / ISO 27001 automation
+    "thoropass",            # compliance (formerly laika)
+ 
+    # ── Identity / IAM / Zero Trust ──
+    "opal",                 # IAM access mgmt
+    "strata-identity",      # identity orchestration
+    "saviynt",              # cloud IGA / PAM — India HQ (Bengaluru)
+    "delinea",              # PAM (formerly Centrify + Thycotic)
+    "hypr",                 # passwordless MFA
+ 
+    # ── Threat Detection / SIEM / SOAR ──
+    "abnormal-security",    # AI email security — India engineering
+    "elevate-security",     # human risk mgmt
+    "stellar-cyber",        # open XDR
+ 
+    # ── Fraud / AML / FinCrime ──
+    "sardine",              # fraud / AML — India team confirmed
+    "inscribe",             # fraud document detection
+    "alloy",                # identity / fraud decisioning
+ 
+    # ── Fintech with strong India GCC / engineering hubs ──
+    "brex",                 # fintech — Bengaluru engineering hub
+    "rippling",             # HR/IAM platform — India engineering (Bengaluru)
+    "deel",                 # global payroll / compliance — India remote roles
+    "remote",               # global HR / compliance
+    "plaid",                # open banking / fintech
+    "payhawk",              # spend management
+ 
+    # ── Data Privacy / DLP ──
+    "mine",                 # data privacy automation
+    "osano",                # data privacy mgmt
+    "securiti",             # data security (India office)
+]
+ 
+ 
+# ═══════════════════════════════════════════════════════════════════════
+# ④ ADD — WORKABLE_COMPANIES  (new source)
+# Public API: GET https://www.workable.com/api/accounts/{subdomain}?details=true
+# No auth needed. Returns {"jobs": [{title, location, url, description, created_at}]}
+# Docs: https://help.workable.com/hc/en-us/articles/4903195036183
+# ═══════════════════════════════════════════════════════════════════════
+ 
+WORKABLE_COMPANIES = [
+    # Format: (display_name, subdomain)
+    # subdomain = the first part of <subdomain>.workable.com
+ 
+    # ── Cybersecurity / Pentest firms that use Workable ──
+    ("Appknox", "appknox"),           # India mobile app security testing — verified Workable user
+    ("Coda Security", "codasecurity"), # cloud security services
+    ("Encode", "encode"),             # cybersecurity consultancy
+    ("Hadrian", "hadrian"),           # attack surface mgmt
+    ("Outpost24", "outpost24"),       # external attack surface / EASM
+    ("Pentera", "pentera"),           # automated pentest — India team
+    ("RiskRecon", "riskrecon"),       # third-party risk / TPRM
+    ("CyberSmart", "cybersmart"),     # cyber risk rating
+ 
+    # ── GRC / Compliance tools ──
+    ("Splashtop", "splashtop"),       # remote access / security
+    ("Protera", "protera"),           # SAP cloud security — confirmed Workable
+    ("CimTrak", "cimtrak"),          # file integrity / compliance
+ 
+    # ── Fraud / AML / FinCrime ──
+    ("Featurespace", "featurespace"), # ML fraud detection — India team
+    ("Hawk", "hawk-ai"),             # AML / transaction monitoring
+    ("Salv", "salv"),                # AML platform
+    ("Napier", "napier"),            # AML compliance
+ 
+    # ── Identity / IAM ──
+    ("IS Decisions", "isdecisions"),  # access control / MFA
+    ("Strivacity", "strivacity"),     # CIAM
+ 
+    # ── India cybersec / IT companies ──
+    ("Securonix", "securonix"),       # cloud SIEM — India team (Hyderabad GCC)
+    ("Seclore", "seclore"),          # data-centric security — India-founded
+    ("CrowdSec", "crowdsec"),         # collaborative security
+    ("Darktrace", "darktrace"),       # AI cybersecurity — India office
+]
+ 
 
 # ═══════════════════════════════════════════════════════════════════════
 # SMARTRECRUITERS COMPANIES (Public API — no auth required)
@@ -1593,7 +1764,233 @@ def fetch_linkedin_posts() -> list[dict]:
 
 
 
-
+# ═══════════════════════════════════════════════════════════════════════
+# ⑤ ADD — Ashby scraper functions
+# Paste these BEFORE the gather_all_listings() function
+# ═══════════════════════════════════════════════════════════════════════
+ 
+ASHBY_TITLE_KEYWORDS = (
+    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec",
+    "cloud", "fraud", "privacy", "audit", "vapt", "penetration", "devsecops",
+    "threat", "vulnerability", "identity", "cryptography", "forensic",
+)
+ASHBY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore", "remote", "worldwide", "global", "anywhere")
+ 
+ 
+def _scrape_ashby_company(company_slug: str) -> list[dict]:
+    """
+    Ashby public job board API — no authentication required.
+    GET https://api.ashbyhq.com/posting-api/job-board/{slug}
+    Returns JSON: {"jobs": [{"title", "location", "jobUrl", "publishedAt",
+                              "descriptionPlain", "isRemote", "department"}]}
+    Docs: https://developers.ashbyhq.com/docs/public-job-posting-api
+    """
+    url = f"https://api.ashbyhq.com/posting-api/job-board/{company_slug}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+ 
+    try:
+        resp = requests.get(url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            return []
+ 
+        data = resp.json()
+        if not isinstance(data, dict):
+            return []
+ 
+        jobs = data.get("jobs", [])
+        if not isinstance(jobs, list):
+            return []
+ 
+        results = []
+        for job in jobs:
+            title = str(job.get("title") or "").strip()
+ 
+            # Location — Ashby nests it
+            location_obj = job.get("location") or {}
+            if isinstance(location_obj, dict):
+                location = str(location_obj.get("city") or location_obj.get("name") or "")
+            else:
+                location = str(location_obj)
+ 
+            # Also check secondaryLocations and isRemote
+            is_remote = bool(job.get("isRemote"))
+            if not location and is_remote:
+                location = "Remote"
+ 
+            # Location filter: India / Bangalore / Remote
+            loc_lower = location.lower()
+            if not is_remote and location:
+                if not any(kw in loc_lower for kw in ASHBY_ALLOWED_LOCATIONS):
+                    continue
+ 
+            # Title keyword filter
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in ASHBY_TITLE_KEYWORDS):
+                continue
+ 
+            job_url = str(job.get("jobUrl") or "").strip()
+            if not job_url:
+                job_url = f"https://jobs.ashbyhq.com/{company_slug}"
+ 
+            published_at = str(job.get("publishedAt") or "").strip()
+            date_posted = published_at[:10] if published_at else ""
+ 
+            description = str(
+                job.get("descriptionPlain")
+                or job.get("descriptionHtml")
+                or ""
+            )[:1200]
+ 
+            results.append({
+                "title": title,
+                "company": company_slug.replace("-", " ").title(),
+                "location": location or ("Remote" if is_remote else "India"),
+                "job_url": job_url,
+                "description": description,
+                "date_posted": date_posted,
+                "source": "ashby",
+            })
+ 
+        if results:
+            logger.info("  ashby/%s: %d security jobs", company_slug, len(results))
+        return results
+ 
+    except requests.exceptions.Timeout:
+        logger.debug("ashby/%s: Timeout", company_slug)
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.debug("ashby/%s: %s", company_slug, type(e).__name__)
+        return []
+    except Exception as e:
+        logger.debug("ashby/%s: unexpected %s", company_slug, type(e).__name__)
+        return []
+ 
+ 
+def _scrape_ashby() -> list[dict]:
+    logger.info("=== Ashby API: %d companies ===", len(ASHBY_COMPANIES))
+    all_results = []
+ 
+    for slug in ASHBY_COMPANIES:
+        results = _scrape_ashby_company(slug)
+        all_results.extend(results)
+        time.sleep(1)  # polite rate limit
+ 
+    logger.info("Ashby: %d jobs found", len(all_results))
+    return all_results
+ 
+ 
+# ═══════════════════════════════════════════════════════════════════════
+# ⑥ ADD — Workable scraper functions
+# Paste these AFTER the Ashby functions and BEFORE gather_all_listings()
+# ═══════════════════════════════════════════════════════════════════════
+ 
+WORKABLE_TITLE_KEYWORDS = ASHBY_TITLE_KEYWORDS  # reuse same set
+WORKABLE_ALLOWED_LOCATIONS = ASHBY_ALLOWED_LOCATIONS
+ 
+ 
+def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
+    """
+    Workable public job listing API — no authentication required.
+    GET https://www.workable.com/api/accounts/{subdomain}?details=true
+    Returns JSON: {"jobs": [{"title", "location", "url", "created_at", "description"}]}
+    Docs: https://help.workable.com/hc/en-us/articles/4903195036183
+    """
+    url = f"https://www.workable.com/api/accounts/{subdomain}?details=true"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+ 
+    try:
+        resp = requests.get(url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            return []
+ 
+        data = resp.json()
+        if not isinstance(data, dict):
+            return []
+ 
+        jobs = data.get("jobs", [])
+        if not isinstance(jobs, list):
+            return []
+ 
+        results = []
+        for job in jobs:
+            title = str(job.get("title") or "").strip()
+ 
+            # Location — Workable flat string or nested dict
+            location_obj = job.get("location") or {}
+            if isinstance(location_obj, dict):
+                city    = str(location_obj.get("city") or "")
+                country = str(location_obj.get("country") or "")
+                region  = str(location_obj.get("region") or "")
+                telecommuting = bool(location_obj.get("telecommuting"))
+                location = ", ".join(filter(None, [city, region, country]))
+            else:
+                location = str(location_obj)
+                telecommuting = False
+ 
+            loc_lower = location.lower()
+ 
+            # Location filter
+            if location and not telecommuting:
+                if not any(kw in loc_lower for kw in WORKABLE_ALLOWED_LOCATIONS):
+                    continue
+ 
+            # Title keyword filter
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in WORKABLE_TITLE_KEYWORDS):
+                continue
+ 
+            job_url = str(job.get("url") or job.get("application_url") or job.get("shortlink") or "").strip()
+            if not job_url:
+                job_url = f"https://{subdomain}.workable.com"
+ 
+            created_at = str(job.get("created_at") or "").strip()
+            date_posted = created_at[:10] if created_at else ""
+ 
+            description = str(job.get("description") or job.get("full_description") or "")[:1200]
+ 
+            results.append({
+                "title": title,
+                "company": company_name,
+                "location": location or ("Remote" if telecommuting else "India"),
+                "job_url": job_url,
+                "description": description,
+                "date_posted": date_posted,
+                "source": "workable",
+            })
+ 
+        if results:
+            logger.info("  workable/%s: %d security jobs", subdomain, len(results))
+        return results
+ 
+    except requests.exceptions.Timeout:
+        logger.debug("workable/%s: Timeout", subdomain)
+        return []
+    except requests.exceptions.RequestException as e:
+        logger.debug("workable/%s: %s", subdomain, type(e).__name__)
+        return []
+    except Exception as e:
+        logger.debug("workable/%s: unexpected %s", subdomain, type(e).__name__)
+        return []
+ 
+ 
+def _scrape_workable() -> list[dict]:
+    logger.info("=== Workable API: %d companies ===", len(WORKABLE_COMPANIES))
+    all_results = []
+ 
+    for company_name, subdomain in WORKABLE_COMPANIES:
+        results = _scrape_workable_company(company_name, subdomain)
+        all_results.extend(results)
+        time.sleep(1)
+ 
+    logger.info("Workable: %d jobs found", len(all_results))
+    return all_results
+ 
 
 
 
@@ -1612,6 +2009,8 @@ def gather_all_listings() -> list[dict]:
         ("Greenhouse",     _scrape_greenhouse),       # ← ACTIVE
         ("Lever",          _scrape_lever), 
         ("HN Hiring",      _scrape_hn_hiring),
+        ("Ashby",          _scrape_ashby),       # ← NEW: Ashby public API
+        ("Workable",       _scrape_workable),
       
     ]
 
