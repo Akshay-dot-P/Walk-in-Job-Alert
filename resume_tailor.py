@@ -579,7 +579,7 @@ PROJECTS = {
             r"sysmon|evtx":                                ["Sysmon"],
         },
         "bullets": [
-            "Deployed Splunk SIEM with SPL correlation searches for brute-force detection (index=* failed | stats count by src_ip), lateral movement, and privilege escalation; mapped TTPs to MITRE ATT&CK (T1110, T1078, T1059) and wrote PICERL incident report.",
+            "Deployed Splunk SIEM with SPL correlation searches for brute-force detection, lateral movement, and privilege escalation; mapped TTPs to MITRE ATT&CK and wrote PICERL incident report.",
             "Built automated SOAR-style detection pipeline: Python script ingests Splunk alerts, runs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification.",
             "Converted detection logic to Sigma rules (vendor-neutral format used by enterprise SOCs); performed TCP/IP analysis in Wireshark to detect SYN scans, DNS tunnelling, and plaintext credential exposure on unencrypted sessions.",
         ],
@@ -718,17 +718,17 @@ CONCEPT_SWAPPABLE = {
 BULLET_VARIANTS = {
     "soc_auto": {
         "cloud_iam": [
-            "Deployed Splunk SIEM with SPL correlation searches to monitor IAM anomalies including unauthorized privilege escalation (T1078) and suspicious cross-account access patterns; mapped cloud-relevant TTPs to MITRE ATT&CK and wrote PICERL incident report.",
+            "Deployed Splunk SIEM with SPL correlation searches to monitor IAM anomalies including unauthorized privilege escalation and suspicious cross-account access patterns; mapped cloud-relevant TTPs to MITRE ATT&CK and wrote PICERL incident report.",
             "Built automated cloud security detection pipeline: Python script ingests Splunk alerts for IAM policy violations, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification.",
             "Developed Sigma-compatible detection rules for cloud-specific TTPs including credential abuse and lateral movement; performed network analysis in Wireshark to identify anomalous authentication and DNS traffic patterns in cloud environments.",
         ],
         "dfir_forensics": [
-            "Deployed Splunk SIEM with SPL correlation searches for forensic event timeline reconstruction — tracked brute-force attempts (T1110), credential misuse (T1078), and script-based execution (T1059) across host and network logs with full MITRE ATT&CK TTP mapping.",
+            "Deployed Splunk SIEM with SPL correlation searches for forensic event timeline reconstruction; tracked brute-force attempts, credential misuse, and script-based execution across host and network logs with MITRE ATT&CK TTP mapping.",
             "Built automated evidence collection pipeline: Python script ingests Splunk alerts, performs IOC enrichment via VirusTotal API, and generates severity-classified incident packages with chain-of-custody documentation for forensic investigation handoff.",
             "Converted detection logic to Sigma rules for cross-SIEM forensic portability; performed deep packet inspection in Wireshark to reconstruct attack sequences including SYN scans, DNS tunnelling, and credential exposure — documenting artifacts per PICERL framework.",
         ],
         "network_ids": [
-            "Deployed Splunk SIEM with SPL correlation searches for network intrusion detection — brute-force detection (index=* failed | stats count by src_ip), lateral movement, and privilege escalation alerts mapped to MITRE ATT&CK (T1110, T1078, T1059) with PICERL reporting.",
+            "Deployed Splunk SIEM with SPL correlation searches for network intrusion detection; mapped brute-force, lateral movement, and privilege escalation alerts to MITRE ATT&CK with PICERL reporting.",
             "Built automated network alert triage pipeline: Python script ingests Splunk IDS alerts, performs IOC enrichment via VirusTotal API, and dispatches Telegram notifications with severity classification.",
             "Wrote Sigma rules (vendor-neutral IDS detection format) for enterprise network security; performed TCP/IP deep packet analysis in Wireshark to detect SYN scans, DNS tunnelling, port sweeps, and plaintext credential exposure across network segments.",
         ],
@@ -1343,6 +1343,11 @@ def sanitize_amazon_bullets(content: dict, job: dict,
 
 
 PROJECT_METRIC_PATTERNS = [
+    (re.compile(r"\b(?:used|using)?\s*P[12]_TECH\s+tools?\s*(?:with|to|and)?\s*", re.IGNORECASE), ""),
+    (re.compile(r"\bP[12]_TECH\b", re.IGNORECASE), "project tools"),
+    (re.compile(r"\bP[12]\s+project\b", re.IGNORECASE), "project"),
+    (re.compile(r"\s*\([^)]*(?:index=\*|stats\s+count\s+by\s+src_ip|T1110|T1078|T1059)[^)]*\)", re.IGNORECASE), ""),
+    (re.compile(r"\bT(?:1110|1078|1059)\b(?:\s*,\s*T(?:1110|1078|1059)\b)*", re.IGNORECASE), ""),
     (re.compile(r"\s*[—–-]\s*(?:reducing|reduced|improving|improved|increasing|increased|enabling|providing|cutting)\b.*$", re.IGNORECASE), ""),
     (re.compile(r"\b(?:reducing|reduced|improving|improved|increasing|increased|cutting)\b[^.;]*[.;]?", re.IGNORECASE), ""),
     (re.compile(r"\b(?:mean time|MTTR|MTTD|SLA deadlines?|Critical\s*=\s*24\s*hrs?|High\s*=\s*7\s*days?|Medium\s*=\s*30\s*days?)\b[^.;]*[.;]?", re.IGNORECASE), ""),
@@ -1364,7 +1369,10 @@ def sanitize_project_bullets(content: dict) -> dict:
             bullet = pattern.sub(replacement, bullet)
         bullet = re.sub(r"\s+([.;,])", r"\1", bullet)
         bullet = re.sub(r"\b(?:and|with|for|to|by)\s*[.;,]*$", "", bullet, flags=re.IGNORECASE)
+        bullet = re.sub(r"^(?:helped|using|used)\b\s*", "", bullet, flags=re.IGNORECASE)
         bullet = re.sub(r"\s{2,}", " ", bullet).strip(" ;,-")
+        if not bullet:
+            bullet = " "
         if bullet and bullet[-1] not in ".!?":
             bullet += "."
         content[key] = bullet
@@ -2081,8 +2089,8 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
     # Build project-specific differentiator preservation list
     # Only include TTPs/syntax that belong to the actually selected projects
     _PROJ_DIFFERENTIATORS = {
-        "soc_auto":       ["SPL query syntax (index=* failed | stats)",
-                           "MITRE TTP numbers (T1110/T1078/T1059)",
+        "soc_auto":       ["SPL correlation searches",
+                           "MITRE ATT&CK mapping",
                            "SOAR pipeline detail"],
         "vuln_scanner":   ["EPSS context", "FIRST.org API mention",
                            "CVSS severity classification",
@@ -2123,18 +2131,21 @@ SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
 PROJECT METRIC BAN:
 - Do not write project metrics, project impact claims, percentages, time savings, MTTR/MTTD, SLA deadlines, or "reduced/improved/increased" claims.
 - Project bullets should show what was built, configured, analyzed, documented, or mapped.
+PLACEHOLDER BAN:
+- Never write placeholder names such as P1_TECH, P2_TECH, P1 project, or P2 project in the final bullets.
+- Do not include raw SPL query syntax or MITRE technique IDs; write those concepts in plain English.
 Return JSON with EXACTLY 10 keys:
 {{
   "P1_TITLE": "{p1['title']}",
   "P1_TECH":  "{', '.join(p1_tools)}",
-  "P1_B1": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][0]}",
-  "P1_B2": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][1]}",
-  "P1_B3": "Rewrite using ONLY P1_TECH tools and details from P1 project, preserve technical detail, use 'and' not '&': {p1['bullets'][2]}",
+  "P1_B1": "Rewrite this project bullet using the P1 tool list and source details only; preserve technical detail, use 'and' not '&': {p1['bullets'][0]}",
+  "P1_B2": "Rewrite this project bullet using the P1 tool list and source details only; preserve technical detail, use 'and' not '&': {p1['bullets'][1]}",
+  "P1_B3": "Rewrite this project bullet using the P1 tool list and source details only; preserve technical detail, use 'and' not '&': {p1['bullets'][2]}",
   "P2_TITLE": "{p2['title']}",
   "P2_TECH":  "{', '.join(p2_tools)}",
-  "P2_B1": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][0]}",
-  "P2_B2": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][1]}",
-  "P2_B3": "Rewrite using ONLY P2_TECH tools and details from P2 project, preserve technical detail, use 'and' not '&': {p2['bullets'][2]}"
+  "P2_B1": "Rewrite this project bullet using the P2 tool list and source details only; preserve technical detail, use 'and' not '&': {p2['bullets'][0]}",
+  "P2_B2": "Rewrite this project bullet using the P2 tool list and source details only; preserve technical detail, use 'and' not '&': {p2['bullets'][1]}",
+  "P2_B3": "Rewrite this project bullet using the P2 tool list and source details only; preserve technical detail, use 'and' not '&': {p2['bullets'][2]}"
 }}
 Rules: 'and' not '&' | no project metrics or impact claims | escape internal quotes | each project uses ONLY its own technical details | benchmark sources are style signals, not new facts"""
 
@@ -2360,15 +2371,15 @@ def _score_bullet_relevancy(bullet_text: str, ranked_keywords: list) -> int:
 def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
     """
     Use Groq to compress a bullet to ~target_chars while preserving
-    differentiators (EPSS, SPL syntax, MITRE TTPs, FIRST.org, SOAR).
+    differentiators (EPSS context, MITRE mapping, FIRST.org, SOAR).
     Falls back to original text on failure.
     """
     if not bullet_text or len(bullet_text) <= target_chars:
         return bullet_text
     system = (
         "You are a resume bullet editor. Shorten the bullet to under "
-        f"{target_chars} characters. PRESERVE: EPSS context, SPL query syntax, "
-        "MITRE TTP numbers (T1110/T1078/T1059), SOAR detail, FIRST.org mention. "
+        f"{target_chars} characters. PRESERVE: EPSS context, MITRE mapping, "
+        "SOAR detail, FIRST.org mention. "
         "Use 'and' not '&'. Return ONLY the shortened bullet, no quotes, no explanation."
     )
     user = f"Shorten this resume bullet to ~{target_chars} chars:\n{bullet_text}"
