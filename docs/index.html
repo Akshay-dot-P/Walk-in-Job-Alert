@@ -305,7 +305,7 @@ const JOBS = [{"job_title": "SOC Analyst", "company": "BitGo (MNC)", "domain": "
 
 const APPLIED_STORE_KEY = 'cyberjobs-applied-v1';
 const SHEET_SYNC_URL_STORE_KEY = 'cyberjobs-sheet-sync-url';
-const SHEETS_MARK_APPLIED_URL = ''; // Paste your deployed Google Apps Script Web App URL here, or use the Sheet sync button on the page.
+const SHEETS_MARK_APPLIED_URL = 'https://script.google.com/macros/s/AKfycbyuS_0duwwxnL4J2RcorwfpQ3eQUBZJcIqha4lP8yLSf-acsjb7KOODnWXzfFKrVjAn/exec'; // Paste your deployed Google Apps Script Web App URL here, or use the Sheet sync button on the page.
 
 function loadAppliedKeys(){
   try{ return new Set(JSON.parse(localStorage.getItem(APPLIED_STORE_KEY) || '[]')); }
