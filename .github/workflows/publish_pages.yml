@@ -1,0 +1,59 @@
+name: Publish Job Board to GitHub Pages
+
+on:
+  # Run after the main scanner finishes (adjust workflow name if yours differs)
+  workflow_run:
+    workflows: ["Walk-In Job Scanner"]
+    types: [completed]
+
+  # Also allow manual trigger
+  workflow_dispatch:
+
+  # Or run on a schedule independently (every 6 hours)
+  # schedule:
+  #   - cron: '0 */6 * * *'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas openpyxl gspread google-auth
+
+      - name: Pull latest data from Google Sheets and generate HTML
+        env:
+          GOOGLE_CREDS_JSON: ${{ secrets.GOOGLE_CREDS_JSON }}
+        run: |
+          python generate_html.py \
+            --source sheets \
+            --template docs/index.html \
+            --out docs/index.html
+
+      - name: Commit updated HTML to docs/
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          git diff --cached --quiet || git commit -m "chore: refresh job board [skip ci]"
+          git push
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
