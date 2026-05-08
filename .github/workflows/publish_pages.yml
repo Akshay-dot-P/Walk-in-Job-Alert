@@ -1,12 +1,13 @@
 name: Publish Job Board to GitHub Pages
 
+# ── RUNS LAST ─────────────────────────────────────────────────────────────────
+# Triggered automatically when Resume Tailor finishes successfully.
+# At this point the Google Sheet has BOTH job data AND resume links,
+# so the generated HTML is complete.
+
 on:
-  schedule:
-    - cron: "30 2 * * *"   # 07:00 IST — morning run
-    - cron: "30 7 * * *"   # 13:00 IST — afternoon run
-    - cron: "30 13 * * *"  # 19:00 IST — evening run
   workflow_run:
-    workflows: ["Walk-In Job Scanner"]
+    workflows: ["Resume Tailor"]
     types: [completed]
   workflow_dispatch:
 
@@ -18,9 +19,9 @@ permissions:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+
     if: |
       github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
       github.event.workflow_run.conclusion == 'success'
 
     environment:
