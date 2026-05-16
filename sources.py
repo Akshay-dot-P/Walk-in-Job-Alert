@@ -222,6 +222,16 @@ GREENHOUSE_COMPANIES = [
     "oneleet",            # compliance + security
     "sprinto",            # India-founded GRC / compliance SaaS
     "scrut",              # India-founded GRC automation
+
+    "razorpay",       # razorpay.com/jobs → boards.greenhouse.io/razorpay
+    "browserstack",   # browserstack.com/careers → boards.greenhouse.io/browserstack
+    "chargebee",      # chargebee.com/careers → boards.greenhouse.io/chargebee
+    "postman",        # postman.com/company/careers
+    "moengage",       # moengage.com/careers
+    "clevertap",      # clevertap.com/company/careers
+    "hasura",         # hasura.io/careers
+    "meesho",         # meesho.io/careers (large Bangalore tech company)
+    "sprinklr",       # sprinklr.com/careers (large Bangalore office)
 ]
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -255,6 +265,14 @@ LEVER_COMPANIES = [
     "flagright",          # AML compliance — India presence
     "complyadvantage",    # financial crime intelligence
     "behaviosec",         # behavioral biometrics
+
+    "cred",           # jobs.lever.co/cred — large security team (fraud, GRC, AppSec)
+    "fi",             # jobs.lever.co/fi — Fi Money neobank, security/compliance roles
+    "smallcase",      # jobs.lever.co/smallcase — fintech, compliance roles
+    "zepto",          # jobs.lever.co/zepto — q-commerce, growing security practice
+    "zetwerk",        # jobs.lever.co/zetwerk — manufacturing tech, infosec roles
+    "meesho",         # jobs.lever.co/meesho (also on Greenhouse)
+    "juspay",         # jobs.lever.co/juspay — payments infra, strong security team
 ]
 
 
@@ -322,6 +340,8 @@ ASHBY_COMPANIES = [
     "mine",                 # data privacy automation
     "osano",                # data privacy mgmt
     "securiti",             # data security (India office)
+
+    "kreditbee",      # kreditbee.in — lending fintech, compliance/risk roles
 ]
  
  
@@ -1231,10 +1251,10 @@ def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
                 location = str(location_obj)
             
             # Filter: India/Bangalore only
-            if location:
-                loc_lower = location.lower()
-                if "india" not in loc_lower and "bangalore" not in loc_lower and "bengaluru" not in loc_lower:
-                    continue
+            GREENHOUSE_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore", "remote", "hybrid", "")
+# Then:
+            if location and not any(kw in location.lower() for kw in GREENHOUSE_ALLOWED_LOCATIONS):
+                continue
             
             # Filter: Security/risk/compliance roles only
             title_lower = title.lower()
