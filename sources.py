@@ -713,6 +713,40 @@ PROFILE_HEADLINE_REGEX = re.compile(
 )
 
 
+# ═══════════════════════════════════════════════════════════
+# SHARED FILTER HELPERS  — used by Greenhouse, Lever, Ashby,
+#                          Workable, SmartRecruiters
+# ═══════════════════════════════════════════════════════════
+
+_SECURITY_KW = (
+    "security", "cyber", "soc", "risk", "compliance", "grc", "iam",
+    "appsec", "cloud", "fraud", "privacy", "audit", "vapt", "pentest",
+    "penetration", "devsecops", "threat", "vulnerability", "identity",
+    "forensic", "infosec", "krypto", "cryptography", "dlp", "edr", "siem",
+)
+
+_INDIA_LOC_KW = (
+    "india", "bengaluru", "bangalore", "remote", "worldwide",
+    "global", "anywhere", "hybrid", "",   # empty = pass through
+)
+
+def _is_security_role(title: str) -> bool:
+    t = title.lower()
+    return any(kw in t for kw in _SECURITY_KW)
+
+def _is_india_eligible(location: str, title: str, description: str = "") -> bool:
+    loc = location.lower().strip()
+    if not loc:                                          # empty location → pass through
+        return True
+    if any(kw in loc for kw in _INDIA_LOC_KW if kw):
+        return True
+    # Some companies bury location in the description
+    desc_snippet = description.lower()[:600]
+    return any(kw in desc_snippet for kw in ("india", "bengaluru", "bangalore"))
+
+
+
+
 def _is_valid_post(title: str, url: str) -> bool:
     """Return False for login pages, company pages, profile pages, and other garbage."""
     title_l = title.lower()
@@ -1403,15 +1437,21 @@ def _scrape_lever() -> list[dict]:
 # ════════════════════════════════════════════════════════════════
 
 def _get_hn_thread_ids(max_threads: int = 2) -> list[int]:
-    """Auto-fetch current HN hiring thread IDs via Algolia. Falls back to hardcoded."""
-    FALLBACK = [43900000, 43543518]
+    """Auto-fetch CURRENT month's HN hiring thread IDs via Algolia."""
+    import time as _t, urllib.request as _ur
+    FALLBACK = [43543518]   # May 2025 — update if Algolia keeps failing
     try:
-        import urllib.request as _ur
-        req = _ur.Request(
-            "https://hn.algolia.com/api/v1/search?query=Ask+HN:+Who+is+hiring"
-            "&tags=story,ask_hn&hitsPerPage=10&attributesToRetrieve=objectID,title",
-            headers={"User-Agent": "Mozilla/5.0 (compatible; job-scanner/1.0)"},
+        # Only look at threads created in the last 45 days
+        min_ts = int(_t.time()) - (45 * 86400)
+        url = (
+            "https://hn.algolia.com/api/v1/search"
+            "?query=Ask+HN%3A+Who+is+hiring"
+            "&tags=story,ask_hn"
+            f"&numericFilters=created_at_i%3E{min_ts}"
+            "&hitsPerPage=5"
+            "&attributesToRetrieve=objectID,title,created_at_i"
         )
+        req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with _ur.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
         ids = []
@@ -1423,10 +1463,10 @@ def _get_hn_thread_ids(max_threads: int = 2) -> list[int]:
                 if len(ids) >= max_threads:
                     break
         if ids:
-            logger.info("HN thread IDs auto-fetched: %s", ids)
+            logger.info("HN thread IDs (current): %s", ids)
             return ids
     except Exception as exc:
-        logger.warning("HN auto-fetch failed (%s) — using fallback", exc)
+        logger.warning("HN auto-fetch failed (%s) — fallback", exc)
     return FALLBACK[:max_threads]
 
 HN_HIRING_THREAD_IDS = _get_hn_thread_ids(max_threads=2)
