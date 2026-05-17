@@ -18,6 +18,7 @@ FIXES in this version:
   - Profile regex catches Name - Title @ Company AND Name - Title | Company formats
   - GARBAGE_URL_PATTERNS now includes linkedin.com/in/ as permanent catch-all
 """
+#new code
 
 import re
 import time
@@ -723,27 +724,55 @@ _SECURITY_KW = (
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam",
     "appsec", "cloud", "fraud", "privacy", "audit", "vapt", "pentest",
     "penetration", "devsecops", "threat", "vulnerability", "identity",
-    "forensic", "infosec", "krypto", "cryptography", "dlp", "edr", "siem",
+    "forensic", "infosec", "cryptography", "dlp", "edr", "siem",
 )
 
-_INDIA_LOC_KW = (
-    "india", "bengaluru", "bangalore", "remote", "worldwide",
-    "global", "anywhere", "hybrid", "",   # empty = pass through
-)
+_NON_INDIA = frozenset([
+    "austin", "texas", "san francisco", "new york", "seattle", "chicago",
+    "london", "luxembourg", "singapore", "toronto", "amsterdam", "berlin",
+    "paris", "sydney", "melbourne", "dublin", "boston", "los angeles",
+    "denver", "atlanta", "miami", "phoenix", "portland", "washington",
+    "united states", "usa", "u.s.", "canada", "uk", "united kingdom",
+    "europe", "germany", "france", "netherlands", "australia",
+    "bellevue", "durham", "emeryville", "addison",
+    " wa ", " tx ", " nc ", " ca ", " wa,", " tx,", " nc,", " ca,",
+])
+
+_INDIA = frozenset([
+    "india", "bengaluru", "bangalore", "hyderabad", "mumbai", "pune",
+    "chennai", "delhi", "noida", "gurgaon", "gurugram", "kolkata",
+    "remote", "worldwide", "global", "anywhere",
+    # "hybrid" REMOVED — work mode, not a location
+    # "" REMOVED — empty string is substring of everything → always True
+])
 
 def _is_security_role(title: str) -> bool:
     t = title.lower()
     return any(kw in t for kw in _SECURITY_KW)
 
 def _is_india_eligible(location: str, title: str, description: str = "") -> bool:
-    loc = location.lower().strip()
-    if not loc:                                          # empty location → pass through
-        return True
-    if any(kw in loc for kw in _INDIA_LOC_KW if kw):
-        return True
-    # Some companies bury location in the description
-    desc_snippet = description.lower()[:600]
-    return any(kw in desc_snippet for kw in ("india", "bengaluru", "bangalore"))
+    loc     = (location    or "").lower().strip()
+    title_l = (title       or "").lower()
+    desc_l  = (description or "").lower()[:1500]
+
+    # Layer 1 — explicit non-India in location OR title → hard reject
+    if any(kw in loc     for kw in _NON_INDIA): return False
+    if any(kw in title_l for kw in _NON_INDIA): return False
+
+    # Layer 2 — explicit India/remote in location → accept
+    if loc and any(kw in loc for kw in _INDIA): return True
+
+    # Layer 3 — empty/vague location → scan title + description
+    combined = f"{title_l} {desc_l}"
+    if any(kw in combined for kw in [
+        "india", "bangalore", "bengaluru", "hyderabad", "mumbai",
+        "pune", "chennai", "remote", "worldwide", "anywhere", "global",
+    ]): return True
+
+    # Layer 4 — no signal → reject
+    return False
+
+
 
 
 
