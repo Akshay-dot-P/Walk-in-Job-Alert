@@ -1238,6 +1238,69 @@ def sanitize_project_bullets(content: dict) -> dict:
     return content
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DYNAMIC PROJECT SELECTION
+# Replaces static DOMAIN_TO_PROJECTS lookup with keyword-signal scoring.
+# All 3 projects are scored against ranked JD keywords; top 2 are selected.
+# Falls back to DOMAIN_TO_PROJECTS if all scores are zero (sparse JD).
+# ─────────────────────────────────────────────────────────────────────────────
+_PROJECT_SIGNALS = {
+    "soc_auto": {
+        "splunk", "siem", "sigma", "soar", "alert triage", "incident",
+        "detection", "mitre", "brute force", "lateral movement", "blue team",
+        "soc", "monitoring", "edr", "correlation", "log analysis",
+        "threat hunting", "playbook", "picerl",
+    },
+    "vuln_scanner": {
+        "vulnerability", "cvss", "epss", "nessus", "openvas", "patch",
+        "cve", "nvd", "owasp", "appsec", "vapt", "remediation", "scanning",
+        "pentest", "sqli", "injection", "sast", "dast", "devsecops",
+        "trivy", "qualys", "tenable",
+    },
+    "phishing_osint": {
+        "osint", "phishing", "threat intel", "ioc", "virustotal", "abuseipdb",
+        "domain", "whois", "dns", "typosquat", "fraud", "aml", "kyc",
+        "brand", "urlscan", "enrichment", "dark web", "cti", "indicator",
+        "sanctions", "transaction monitoring",
+    },
+}
+
+
+def select_projects_for_job(domain: str, jd_keywords: dict) -> tuple[str, str]:
+    """
+    Score all 3 projects against JD keywords and return the top 2.
+    Scoring: each JD keyword that overlaps with a project's signal set adds 1 point.
+    Overlap is checked bidirectionally (kw in signal OR signal in kw) to handle
+    partial matches like 'alert triage' matching 'triage'.
+    """
+    ranked = [kw.lower() for kw in jd_keywords.get("ranked", [])]
+    tools  = [kw.lower() for kw in jd_keywords.get("tools",  [])]
+    all_kw = set(ranked + tools)
+
+    scores: dict[str, int] = {}
+    for proj_key, signals in _PROJECT_SIGNALS.items():
+        score = sum(
+            1 for kw in all_kw
+            if any(sig in kw or kw in sig for sig in signals)
+        )
+        scores[proj_key] = score
+
+    logger.info("  Project keyword scores: %s", scores)
+
+    sorted_projects = sorted(scores, key=lambda k: scores[k], reverse=True)
+    p1, p2 = sorted_projects[0], sorted_projects[1]
+
+    # All scores zero = JD was too sparse to signal anything; use domain default
+    if scores[p1] == 0:
+        fallback = DOMAIN_TO_PROJECTS.get(domain, ("soc_auto", "vuln_scanner"))
+        logger.info("  Project selection: zero scores — fallback to domain default %s", fallback)
+        return fallback
+
+    logger.info("  Project selection: %s (score=%d) + %s (score=%d)",
+                p1, scores[p1], p2, scores[p2])
+    return p1, p2
+
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPANY INTELLIGENCE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2629,7 +2692,7 @@ def main():
             jd_keywords        = all_keywords[job['row_num']]
             experience_research = all_research.get(job['row_num'], {})
 
-            p1_key, p2_key = DOMAIN_TO_PROJECTS.get(job["domain"], ("soc_auto","vuln_scanner"))
+            p1_key, p2_key = select_projects_for_job(job["domain"], jd_keywords)
             p1_tools       = select_tools(p1_key, jd_text)
             p2_tools       = select_tools(p2_key, jd_text)
             logger.info("  Projects: %s + %s | P1 tools: %s", p1_key, p2_key, p1_tools[:3])
