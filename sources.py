@@ -394,27 +394,19 @@ WORKABLE_COMPANIES = [
 # All 20 verified working via api.smartrecruiters.com
 # ═══════════════════════════════════════════════════════════════════════
 SMARTRECRUITERS_COMPANIES = [
-    ("Visa", "visa"),
-    ("Bosch", "bosch"),
-    ("IKEA", "IKEA"),
-    ("Skechers", "skechers"),
-    ("Logitech", "logitech"),
-    ("Autodesk", "autodesk"),
-    ("LinkedIn", "linkedin"),
-    ("Equinix", "equinix"),
-    ("Twilio", "twilio"),
-    ("Atlassian", "atlassian"),
-    ("Zendesk", "zendesk"),
-    ("DocuSign", "docusign"),
-    ("SoFi", "sofi"),
-    ("Square", "square"),
-    ("Toast", "toast"),
-    ("ServiceTitan", "servicetitan"),
-    ("Instacart", "instacart"),
-    ("DoorDash", "doordash"),
-    ("Lyft", "lyft"),
-    ("Robinhood", "robinhood"),
-]  
+    ("Visa",      "visa"),       # large Bangalore GCC, security roles
+    ("Bosch",     "bosch"),      # Bangalore engineering hub
+    ("Logitech",  "logitech"),   # India office
+    ("Autodesk",  "autodesk"),   # Hyderabad + Bangalore presence
+    ("LinkedIn",  "linkedin"),   # Bangalore office, security team
+    ("Equinix",   "equinix"),    # India data centers, security ops
+    ("Twilio",    "twilio"),     # Bangalore engineering
+    ("Atlassian", "atlassian"),  # large Bangalore office
+    ("Zendesk",   "zendesk"),    # Bangalore engineering
+    ("DocuSign",  "docusign"),   # India office
+    ("Square",    "square"),     # Block Inc, India presence
+    ("Robinhood", "robinhood"),  # India engineering hub
+]
 
 ################################]
 
@@ -1251,17 +1243,17 @@ def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
                 location = str(location_obj)
             
             # Filter: India/Bangalore only
-            GREENHOUSE_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore", "remote", "hybrid", "")
-# Then:
-            if location and not any(kw in location.lower() for kw in GREENHOUSE_ALLOWED_LOCATIONS):
+            if not _is_security_role(title):
                 continue
             
-            # Filter: Security/risk/compliance roles only
-            title_lower = title.lower()
-            if not any(kw in title_lower for kw in [
-                "security", "cyber", "risk", "compliance", "grc", "soc", 
-                "iam", "fraud", "privacy", "audit", "vapt", "penetration"
-            ]):
+            offices = job.get("offices") or []
+            office_loc = " ".join(str(o.get("name") or "") for o in offices if isinstance(o, dict)).strip()
+            effective_location = location or office_loc
+            
+            import re as _re
+            description_text = _re.sub(r"<[^>]+>", " ", str(job.get("content") or ""))[:2000]
+            
+            if not _is_india_eligible(effective_location, title, description_text):
                 continue
             
             job_url = job.get("absolute_url") or f"https://boards.greenhouse.io/{company_slug}/jobs/{job.get('id')}"
@@ -1338,17 +1330,15 @@ def _scrape_lever_company(company_slug: str) -> list[dict]:
                 location = str(categories.get("location", ""))
             
             # Filter: India/Bangalore only
-            if location:
-                loc_lower = location.lower()
-                if "india" not in loc_lower and "bangalore" not in loc_lower and "bengaluru" not in loc_lower:
-                    continue
+            if not _is_security_role(title):
+                continue
             
-            # Filter: Security/risk/compliance roles only
-            title_lower = title.lower()
-            if not any(kw in title_lower for kw in [
-                "security", "cyber", "risk", "compliance", "grc", "soc",
-                "iam", "fraud", "privacy", "audit", "vapt", "penetration"
-            ]):
+            workplace = str(job.get("workplaceType") or "").lower()
+            if workplace == "remote" and not location:
+                location = "Remote"
+            
+            description_raw = str(job.get("description") or job.get("descriptionPlain") or "")
+            if not _is_india_eligible(location, title, description_raw):
                 continue
             
             job_url = job.get("hostedUrl") or job.get("applyUrl") or f"https://jobs.lever.co/{company_slug}/{job.get('id')}"
@@ -1412,11 +1402,34 @@ def _scrape_lever() -> list[dict]:
 # Find current thread: https://news.ycombinator.com/submitted?id=whoishiring
 # ════════════════════════════════════════════════════════════════
 
-HN_HIRING_THREAD_IDS = [
-    43543518,   # May 2025
-    42919245,   # Apr 2025
-    42297316,   # Mar 2025
-]
+def _get_hn_thread_ids(max_threads: int = 2) -> list[int]:
+    """Auto-fetch current HN hiring thread IDs via Algolia. Falls back to hardcoded."""
+    FALLBACK = [43900000, 43543518]
+    try:
+        import urllib.request as _ur
+        req = _ur.Request(
+            "https://hn.algolia.com/api/v1/search?query=Ask+HN:+Who+is+hiring"
+            "&tags=story,ask_hn&hitsPerPage=10&attributesToRetrieve=objectID,title",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; job-scanner/1.0)"},
+        )
+        with _ur.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        ids = []
+        for hit in data.get("hits", []):
+            t = hit.get("title", "").lower()
+            oid = hit.get("objectID", "")
+            if "who is hiring" in t and "hired" not in t and oid:
+                ids.append(int(oid))
+                if len(ids) >= max_threads:
+                    break
+        if ids:
+            logger.info("HN thread IDs auto-fetched: %s", ids)
+            return ids
+    except Exception as exc:
+        logger.warning("HN auto-fetch failed (%s) — using fallback", exc)
+    return FALLBACK[:max_threads]
+
+HN_HIRING_THREAD_IDS = _get_hn_thread_ids(max_threads=2)
 
 HN_FIREBASE_BASE = "https://hacker-news.firebaseio.com/v0/item/{}.json"
 
@@ -1653,7 +1666,6 @@ def _scrape_google_jobs() -> list[dict]:
         f'site:wellfound.com fraud risk compliance Bangalore',
 
         # Cutshort via Google
-        f'site:cutshort.io "security" OR "cyber" OR "risk" Bangalore',
     ]
     for i, term in enumerate(terms):
         batch = _run_scrape(["google"], term)
@@ -1841,14 +1853,11 @@ def _scrape_ashby_company(company_slug: str) -> list[dict]:
                 location = "Remote"
  
             # Location filter: India / Bangalore / Remote
-            loc_lower = location.lower()
-            if not is_remote and location:
-                if not any(kw in loc_lower for kw in ASHBY_ALLOWED_LOCATIONS):
-                    continue
- 
-            # Title keyword filter
-            title_lower = title.lower()
-            if not any(kw in title_lower for kw in ASHBY_TITLE_KEYWORDS):
+            if not _is_security_role(title):
+                continue
+            
+            description_for_loc = str(job.get("descriptionPlain") or job.get("descriptionHtml") or "")
+            if not _is_india_eligible(location, title, description_for_loc):
                 continue
  
             job_url = str(job.get("jobUrl") or "").strip()
@@ -1955,14 +1964,11 @@ def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
  
             loc_lower = location.lower()
  
-            # Location filter
-            if location and not telecommuting:
-                if not any(kw in loc_lower for kw in WORKABLE_ALLOWED_LOCATIONS):
-                    continue
- 
-            # Title keyword filter
-            title_lower = title.lower()
-            if not any(kw in title_lower for kw in WORKABLE_TITLE_KEYWORDS):
+            if not _is_security_role(title):
+                continue
+            
+            description_raw = str(job.get("description") or job.get("full_description") or "")
+            if not telecommuting and not _is_india_eligible(location, title, description_raw):
                 continue
  
             job_url = str(job.get("url") or job.get("application_url") or job.get("shortlink") or "").strip()
@@ -2015,6 +2021,59 @@ def _scrape_workable() -> list[dict]:
 
 
 
+def _scrape_smartrecruiters_company(company_name: str, company_id: str) -> list[dict]:
+    url = f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings?country=IN&limit=100"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "application/json"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        jobs = data.get("content", [])
+        if not isinstance(jobs, list):
+            return []
+        results = []
+        for job in jobs:
+            title = str(job.get("name") or "").strip()
+            if not _is_security_role(title):
+                continue
+            loc_obj = job.get("location") or {}
+            city    = str(loc_obj.get("city") or "")
+            country = str(loc_obj.get("country") or "")
+            remote  = bool(loc_obj.get("remote"))
+            location = ", ".join(filter(None, [city, country]))
+            description = str(job.get("jobAd", {}).get("sections", {}).get("jobDescription", {}).get("text") or "")[:2000]
+            if not remote and not _is_india_eligible(location, title, description):
+                continue
+            job_id  = str(job.get("id") or "")
+            job_url = f"https://jobs.smartrecruiters.com/{company_id}/{job_id}" if job_id else f"https://jobs.smartrecruiters.com/{company_id}"
+            posted_on = str(job.get("releasedDate") or job.get("createdOn") or "")
+            results.append({
+                "title": title, "company": company_name,
+                "location": location or ("Remote" if remote else "India"),
+                "job_url": job_url, "description": description[:1000],
+                "date_posted": posted_on[:10] if posted_on else "",
+                "source": "smartrecruiters",
+            })
+        if results:
+            logger.info("  sr/%s: %d security jobs in India", company_id, len(results))
+        return results
+    except Exception as e:
+        logger.debug("sr/%s: %s", company_id, type(e).__name__)
+        return []
+
+def _scrape_smartrecruiters() -> list[dict]:
+    logger.info("=== SmartRecruiters API: %d companies ===", len(SMARTRECRUITERS_COMPANIES))
+    all_results = []
+    for company_name, company_id in SMARTRECRUITERS_COMPANIES:
+        all_results.extend(_scrape_smartrecruiters_company(company_name, company_id))
+        time.sleep(1)
+    logger.info("SmartRecruiters: %d jobs found", len(all_results))
+    return all_results
+  
+
+
+
 
 def gather_all_listings() -> list[dict]:
     all_results = []
@@ -2031,6 +2090,8 @@ def gather_all_listings() -> list[dict]:
         ("HN Hiring",      _scrape_hn_hiring),
         ("Ashby",          _scrape_ashby),       # ← NEW: Ashby public API
         ("Workable",       _scrape_workable),
+        ("SmartRecruiters", _scrape_smartrecruiters),   # ← add this line
+
       
     ]
 
