@@ -411,7 +411,123 @@ SMARTRECRUITERS_COMPANIES = [
     ("Robinhood", "robinhood"),  # India engineering hub
 ]
 
+# ═══════════════════════════════════════════════════════════════════════
+# RECRUITEE COMPANIES (Public API — no auth required)
+# GET https://careers.recruitee.com/api/c/{slug}/offers/
+# ═══════════════════════════════════════════════════════════════════════
+RECRUITEE_COMPANIES = [
+    ("CloudSEK",       "cloudsek"),       # India AI cybersecurity company
+    ("Sattrix",        "sattrix"),        # India MSSP / SOC services
+    ("SISA",           "sisa"),           # India PCI forensics / GRC
+    ("Kratikal",       "kratikal"),       # India pentest / GRC firm
+    ("Innefu Labs",    "innefu"),         # India cybersecurity AI
+    ("Defencelogic",   "defencelogic"),   # India cybersec consulting
+    ("InstaSafe",      "instasafe"),      # India zero-trust startup
+]
+
 ################################]
+
+# ═══════════════════════════════════════════════════════════════════════
+# ZOHO JOBS — Zoho Recruit public job board API
+# Companies using Zoho Recruit have job boards at:
+#   https://{subdomain}.zohorecruit.{region}/jobs/Careers
+# The JSON feed is at:
+#   https://{subdomain}.zohorecruit.{region}/recruit/v2/portal/JOBS
+# ═══════════════════════════════════════════════════════════════════════
+ZOHO_RECRUIT_COMPANIES = [
+    # (display_name, subdomain, region)
+    # region is "com", "in", "eu" etc.
+    ("Zoho Corp",       "zohocorp",    "com"),   # Zoho itself — Chennai/Bangalore
+    ("Freshworks",      "freshworks",  "com"),   # may have some roles here
+    ("Tata Elxsi",      "tataelxsi",   "in"),    # India engineering, security team
+    ("Mphasis",         "mphasis",     "in"),    # India IT services, security ops
+    ("Subex",           "subex",       "in"),    # India telecom fraud analytics
+    ("Securekloud",     "securekloud", "com"),   # India cloud security
+]
+
+
+def _scrape_zoho_recruit_company(company_name: str, subdomain: str, region: str = "com") -> list[dict]:
+    """
+    Zoho Recruit public portal API.
+    Returns job listings for companies using Zoho Recruit as their ATS.
+    """
+    # Primary: JSON API endpoint
+    api_url = f"https://{subdomain}.zohorecruit.{region}/recruit/v2/portal/JOBS"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+
+    try:
+        resp = requests.get(api_url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            # Fallback: try the .in region if .com failed
+            fallback = f"https://{subdomain}.zohorecruit.in/recruit/v2/portal/JOBS"
+            resp = requests.get(fallback, headers=headers, timeout=12)
+            if resp.status_code != 200:
+                return []
+
+        data = resp.json()
+        # Zoho Recruit returns {"response": {"result": {"Jobs": {"row": [...]}}}}
+        # or sometimes {"data": [...]}
+        jobs_raw = (
+            data.get("response", {}).get("result", {}).get("Jobs", {}).get("row", [])
+            or data.get("data", [])
+            or []
+        )
+        if not isinstance(jobs_raw, list):
+            jobs_raw = [jobs_raw] if jobs_raw else []
+
+    except Exception as e:
+        logger.debug("zoho/%s: %s", subdomain, type(e).__name__)
+        return []
+
+    results = []
+    for job in jobs_raw:
+        # Zoho Recruit field names vary — try common patterns
+        if isinstance(job, dict) and "FL" in job:
+            # Row format: {"FL": [{"val": "field_name", "content": "value"}, ...]}
+            fields = {f.get("val"): f.get("content") for f in job.get("FL", []) if isinstance(f, dict)}
+        else:
+            fields = job if isinstance(job, dict) else {}
+
+        title    = str(fields.get("Job Opening Name") or fields.get("title") or fields.get("name") or "").strip()
+        location = str(fields.get("City") or fields.get("location") or fields.get("Job Location") or "").strip()
+        desc     = str(fields.get("Job Description") or fields.get("description") or "")[:2000]
+        job_url  = str(fields.get("Job Opening URL") or fields.get("url") or
+                       f"https://{subdomain}.zohorecruit.{region}/jobs/Careers").strip()
+        posted   = str(fields.get("Date Opened") or fields.get("created_at") or "").strip()
+
+        if not title or not _is_security_role(title):
+            continue
+        if not _is_india_eligible(location, title, desc):
+            continue
+
+        results.append({
+            "title":       title,
+            "company":     company_name,
+            "location":    location or "India",
+            "job_url":     job_url,
+            "description": _re.sub(r"<[^>]+>", " ", desc)[:1000],
+            "date_posted": posted[:10] if posted else "",
+            "source":      "zoho_recruit",
+        })
+
+    if results:
+        logger.info("  zoho/%s: %d security jobs", subdomain, len(results))
+    return results
+
+
+def _scrape_zoho_jobs() -> list[dict]:
+    logger.info("=== Zoho Recruit: %d companies ===", len(ZOHO_RECRUIT_COMPANIES))
+    all_results = []
+    for company_name, subdomain, region in ZOHO_RECRUIT_COMPANIES:
+        all_results.extend(_scrape_zoho_recruit_company(company_name, subdomain, region))
+        time.sleep(1)
+    logger.info("Zoho Recruit: %d jobs found", len(all_results))
+    return all_results
+  #####
 
 
 WORKDAY_SEARCH_QUERIES = [
@@ -2170,6 +2286,79 @@ def _scrape_smartrecruiters() -> list[dict]:
 
 
 
+def _scrape_recruitee_company(company_name: str, slug: str) -> list[dict]:
+    """
+    Recruitee public API — no auth required.
+    GET https://careers.recruitee.com/api/c/{slug}/offers/
+    Returns {"offers": [{"title", "city", "country", "remote_option",
+                          "url", "description", "created_at"}]}
+    """
+    url = f"https://careers.recruitee.com/api/c/{slug}/offers/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            return []
+        offers = resp.json().get("offers", [])
+        if not isinstance(offers, list):
+            return []
+    except Exception as e:
+        logger.debug("recruitee/%s: %s", slug, type(e).__name__)
+        return []
+
+    results = []
+    for offer in offers:
+        title = str(offer.get("title") or "").strip()
+        if not _is_security_role(title):
+            continue
+
+        city        = str(offer.get("city") or "")
+        country     = str(offer.get("country") or "")
+        remote      = str(offer.get("remote_option") or "").lower() in ("remote", "hybrid", "yes", "true")
+        location    = ", ".join(filter(None, [city, country]))
+
+        description = str(offer.get("description") or "")[:2000]
+        # Recruitee descriptions are HTML — strip tags
+        description = _re.sub(r"<[^>]+>", " ", description).strip()
+
+        if not remote and not _is_india_eligible(location, title, description):
+            continue
+
+        job_url    = str(offer.get("url") or f"https://careers.recruitee.com/c/{slug}").strip()
+        created_at = str(offer.get("created_at") or "").strip()
+        date_posted = created_at[:10] if created_at else ""
+
+        results.append({
+            "title":       title,
+            "company":     company_name,
+            "location":    location or ("Remote" if remote else "India"),
+            "job_url":     job_url,
+            "description": description[:1000],
+            "date_posted": date_posted,
+            "source":      "recruitee",
+        })
+
+    if results:
+        logger.info("  recruitee/%s: %d security jobs", slug, len(results))
+    return results
+
+
+def _scrape_recruitee() -> list[dict]:
+    logger.info("=== Recruitee API: %d companies ===", len(RECRUITEE_COMPANIES))
+    all_results = []
+    for company_name, slug in RECRUITEE_COMPANIES:
+        all_results.extend(_scrape_recruitee_company(company_name, slug))
+        time.sleep(1)
+    logger.info("Recruitee: %d jobs found", len(all_results))
+    return all_results
+
+
+
+
+
 def gather_all_listings() -> list[dict]:
     all_results = []
     seen: set   = set()
@@ -2184,6 +2373,8 @@ def gather_all_listings() -> list[dict]:
         ("Ashby",          _scrape_ashby),       # ← NEW: Ashby public API
         ("Workable",       _scrape_workable),
         ("SmartRecruiters", _scrape_smartrecruiters),   # ← add this line
+        ("Recruitee",       _scrape_recruitee),        # ← NEW
+        ("Zoho Recruit",    _scrape_zoho_jobs),         # ← NEW
 
       
     ]
