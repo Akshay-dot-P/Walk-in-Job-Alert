@@ -109,7 +109,7 @@ def _split_env_list(raw: str) -> list[str]:
 
 SHEET_NAME        = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
 GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
-GROQ_GEN_MODEL    = "llama-3.1-8b-instant"
+GROQ_GEN_MODEL    = "llama-3.3-70b-versatile"
 GROQ_VAL_MODEL    = "llama-3.1-8b-instant"
 GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
 MAX_JOBS_PER_RUN  = 10
