@@ -1699,6 +1699,99 @@ def get_project_bullets(project_key: str, domain: str) -> list[str]:
     return PROJECTS[project_key]["bullets"]
 
 
+def _keyword_variant_for_project(project_key: str, domain: str, jd_keywords: dict) -> list[str]:
+    blob = " ".join([
+        domain,
+        " ".join(jd_keywords.get("ranked", [])),
+        " ".join(jd_keywords.get("tools", [])),
+        " ".join(jd_keywords.get("concepts", [])),
+        " ".join(jd_keywords.get("actions", [])),
+    ]).lower()
+    variant_name = DOMAIN_BULLET_VARIANT.get(domain, {}).get(project_key)
+    if not variant_name:
+        variant_rules = {
+            "soc_auto": [
+                (r"\b(cloud|aws|iam|identity|access|guardduty|cloudtrail)\b", "cloud_iam"),
+                (r"\b(dfir|forensic|incident response|evidence|chain of custody)\b", "dfir_forensics"),
+                (r"\b(network|ids|ips|firewall|packet|wireshark|intrusion)\b", "network_ids"),
+            ],
+            "vuln_scanner": [
+                (r"\b(appsec|application security|owasp|burp|sast|dast|devsecops|pentest|penetration)\b", "devsecops_appsec"),
+                (r"\b(cloud|aws|container|docker|kubernetes|cspm)\b", "cloud_security"),
+                (r"\b(grc|audit|compliance|control|nist|iso|pci|sox)\b", "compliance_audit"),
+            ],
+            "phishing_osint": [
+                (r"\b(grc|audit|compliance|vendor|third-party|risk)\b", "grc_risk_audit"),
+                (r"\b(fraud|aml|kyc|transaction|sanctions|financial crime)\b", "fraud_aml"),
+                (r"\b(cti|threat intelligence|ioc|osint|phishing|indicator|hunt)\b", "cti_threat_intel"),
+            ],
+        }
+        for pattern, candidate in variant_rules.get(project_key, []):
+            if re.search(pattern, blob):
+                variant_name = candidate
+                break
+    if variant_name:
+        variants = BULLET_VARIANTS.get(project_key, {})
+        if variant_name in variants:
+            return variants[variant_name]
+    return get_project_bullets(project_key, domain)
+
+
+def _focus_phrase_for_project(project_key: str, guidance: str, jd_keywords: dict) -> str:
+    candidates = [guidance]
+    candidates.extend(jd_keywords.get("concepts", [])[:4])
+    candidates.extend(jd_keywords.get("actions", [])[:4])
+    for raw in candidates:
+        phrase = re.sub(r"\s+", " ", str(raw or "")).strip(" .;:-")
+        if not phrase or _is_generic_keyword(phrase):
+            continue
+        phrase = re.sub(r"\b(recruiters expect|project angles?|project keywords?)\b", "", phrase, flags=re.I).strip(" .;:-")
+        if len(phrase) > 90:
+            phrase = phrase[:90].rsplit(" ", 1)[0].strip(" .;:-")
+        if len(phrase) >= 8:
+            return phrase
+    defaults = {
+        "soc_auto": "alert triage and detection evidence",
+        "vuln_scanner": "vulnerability assessment and remediation evidence",
+        "phishing_osint": "IOC enrichment and phishing infrastructure analysis",
+    }
+    return defaults.get(project_key, "role-relevant security evidence")
+
+
+def _tailor_project_fallback_bullet(project_key: str, bullet: str, focus: str, index: int) -> str:
+    bullet = re.sub(r"\s+", " ", bullet or "").strip()
+    if not bullet:
+        return " "
+    if _keyword_key(focus) and _keyword_key(focus) not in _keyword_key(bullet) and len(bullet) < 205:
+        connectors = {
+            "soc_auto": "mapped detections to",
+            "vuln_scanner": "organized findings around",
+            "phishing_osint": "documented indicators for",
+        }
+        connector = connectors.get(project_key, "framed evidence around")
+        addition = f"; {connector} {focus}."
+        if index == 0:
+            candidate = bullet.rstrip(".") + addition
+            if len(candidate) <= 240:
+                bullet = candidate
+    return bullet
+
+
+def build_project_fallback_content(project_key: str, prefix: str, domain: str,
+                                   tools: list[str], jd_keywords: dict,
+                                   guidance: str = "") -> dict:
+    proj = PROJECTS[project_key]
+    bullets = _keyword_variant_for_project(project_key, domain, jd_keywords)
+    focus = _focus_phrase_for_project(project_key, guidance, jd_keywords)
+    return {
+        f"{prefix}_TITLE": proj["title"],
+        f"{prefix}_TECH": ", ".join(tools),
+        f"{prefix}_B1": _tailor_project_fallback_bullet(project_key, bullets[0], focus, 0),
+        f"{prefix}_B2": _tailor_project_fallback_bullet(project_key, bullets[1], focus, 1),
+        f"{prefix}_B3": _tailor_project_fallback_bullet(project_key, bullets[2], focus, 2),
+    }
+
+
 _PROJECT_SIGNALS: dict[str, dict[str, set[str]]] = {
     "soc_auto": {
         "strong": {
@@ -1928,6 +2021,19 @@ def _skill_item_grounded(item: str, evidence_blob: str) -> bool:
     return bool(words) and all(w in evidence_blob for w in words[:3])
 
 
+def _clean_skill_label(label: str, fallback_label: str, max_chars: int = 42) -> str:
+    label = re.sub(r"\s+", " ", str(label or "")).strip(" .;:-")
+    if not label:
+        label = re.sub(r"\s+", " ", str(fallback_label or "Skills")).strip(" .;:-")
+    label = label.replace("&", "and")
+    if len(label) <= max_chars:
+        return label
+    cut = label[:max_chars + 1].rsplit(" ", 1)[0].strip(" .;:-")
+    if len(cut) >= 14:
+        return cut
+    return label[:max_chars].rstrip(" .;:-")
+
+
 def _normalize_skill_profile(raw_skills: dict, fallback: dict, project_keys: tuple[str, str]) -> dict:
     if not isinstance(raw_skills, dict):
         raw_skills = {}
@@ -1937,7 +2043,7 @@ def _normalize_skill_profile(raw_skills: dict, fallback: dict, project_keys: tup
         label_key, value_key = f"SK_L{i}", f"SK_V{i}"
         label = re.sub(r"\s+", " ", str(raw_skills.get(label_key, fallback.get(label_key, "")))).strip()
         value = str(raw_skills.get(value_key, fallback.get(value_key, "")))
-        label = label[:32] if label else fallback.get(label_key, f"Skills {i}")
+        label = _clean_skill_label(label, fallback.get(label_key, f"Skills {i}"))
         items = []
         for item in re.split(r"[,|;/]+", value):
             item = re.sub(r"\s+", " ", item).strip(" .;:-")
@@ -3127,6 +3233,7 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
     system = (
         "You are a senior cybersecurity resume writer for the Indian job market. "
         "Bullets must be factual — never fabricate tools or experience. "
+        "Do not merely shorten or delete words from seed bullets; compose fresh JD-tailored bullets from verified evidence. "
         "ALWAYS write 'and' not '&' in bullet text (except MITRE ATT&CK which is a proper noun). "
         "BULLET END RULE: every bullet must end with a concrete technical artifact, workflow, or finding. "
         "NEVER end with 'to improve X', 'to optimize Y', 'to ensure Z', "
@@ -3208,14 +3315,13 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
 	}}
 	Rules: 'and' not '&' | no project metrics or impact claims | escape internal quotes | each project uses ONLY its own technical details"""
 
-    p1_seed_bullets = get_project_bullets(p1_key, job.get("domain", "General"))
-    p2_seed_bullets = get_project_bullets(p2_key, job.get("domain", "General"))
-    fallback_content = {
-        "P1_TITLE": p1["title"], "P1_TECH": ", ".join(p1_tools),
-        "P1_B1": p1_seed_bullets[0], "P1_B2": p1_seed_bullets[1], "P1_B3": p1_seed_bullets[2],
-        "P2_TITLE": p2["title"], "P2_TECH": ", ".join(p2_tools),
-        "P2_B1": p2_seed_bullets[0], "P2_B2": p2_seed_bullets[1], "P2_B3": p2_seed_bullets[2],
-    }
+    fallback_content = {}
+    fallback_content.update(build_project_fallback_content(
+        p1_key, "P1", job.get("domain", "General"), p1_tools, jd_keywords, p1_guidance
+    ))
+    fallback_content.update(build_project_fallback_content(
+        p2_key, "P2", job.get("domain", "General"), p2_tools, jd_keywords, p2_guidance
+    ))
 
     try:
         raw = _call_groq(system, user, GROQ_GEN_MODEL)
@@ -3240,6 +3346,16 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
         logger.warning("  Missing keys from generation (%s) — filling from fallback", missing)
         for key, value in fallback_content.items():
             content.setdefault(key, value)
+
+    invalid_project_re = re.compile(
+        r"\b(JD-tailored|evidence only|placeholder|P[12]_TECH|P[12]\s+project)\b",
+        re.IGNORECASE,
+    )
+    for key in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
+        value = re.sub(r"\s+", " ", str(content.get(key, ""))).strip()
+        if len(value) < 45 or invalid_project_re.search(value):
+            logger.warning("  Invalid generated %s — using JD-aware fallback", key)
+            content[key] = fallback_content[key]
 
     # Skills: AI strategy first, deterministic profile as a safety fallback
     base_skills = (tailoring_strategy or {}).get("skills") or compute_skills(job["domain"])
