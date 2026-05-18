@@ -14,15 +14,19 @@ F. sanitize_project_bullets: _has_purpose_clause check added
 G. Dead code removed: AMAZON_LEGACY_COMPACT_FALLBACK_BULLETS,
    AMAZON_FALLBACK_BULLETS, get_weighted_amazon_fallback()
 H. Parallel research: ThreadPoolExecutor(max_workers=3) for HTTP-bound
-   collect_experience_research() calls — Phase 1 keywords, Phase 2 research
+   experience + role-market research — Phase 1 keywords, Phase 2 research
    parallel, Phase 3 sequential generation+upload
 I. Groq call budget counter: logs total calls at end of run
+J. AI tailoring strategy: chooses projects, skills, work framing, and project
+   bullet guidance from JD + grounded candidate/project evidence
+K. Role-market intelligence: searches Reddit, GitHub, and web snippets for the
+   target job title, then feeds market skills/keywords/project angles into AI
 
 EXISTING FEATURES (unchanged)
 B1. extract_keywords(jd_text) → semantic TF-IDF + cosine, Groq fallback
 B2. SYNONYM_MAP + apply_synonyms() — safe post-generation expansion
 B3. track_keyword_usage() — 2-3x coverage tracking
-B4. dynamic_skills_augment() — JD keywords filtered via whitelist
+B4. dynamic_skills_augment() — JD keywords filtered via grounded evidence
 B5. compute_metrics() → keyword_coverage, keyword_density, skills_count
 B6. recruiter_simulate() → credibility, stuffing_suspicion, hireability
 B7. enforce_single_page() — 5-tier STRICT single-page enforcement + page-fill
@@ -42,6 +46,14 @@ ADD TO requirements.txt:
 
 WORKFLOW env:
   VALIDATION_MODE: normal            # lenient | normal | strict
+  AI_TAILORING: true                 # AI chooses projects/skills/work framing
+  ROLE_MARKET_RESEARCH: true         # Looks up role-market skills/keywords
+  PROJECT_GITHUB_RESEARCH: true      # Pulls README evidence from project repos
+  PROJECT_README_MAX_CHARS: 3500
+  ALLOW_INFERRED_PROJECT_TOOLS: false # If true, can add JD tools without repo evidence
+  ROLE_MARKET_MAX_WEB: 4
+  ROLE_MARKET_MAX_GITHUB: 4
+  ROLE_MARKET_MAX_REDDIT: 5
   PUBLIC_RESUME_RESEARCH: true
   WEB_RESUME_RESEARCH: true
   FORUM_RESEARCH: true
@@ -109,7 +121,7 @@ def _split_env_list(raw: str) -> list[str]:
 
 SHEET_NAME        = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
 GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
-GROQ_GEN_MODEL    = "llama-3.3-70b-versatile"
+GROQ_GEN_MODEL    = "llama-3.1-8b-instant"
 GROQ_VAL_MODEL    = "llama-3.1-8b-instant"
 GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
 MAX_JOBS_PER_RUN  = 10
@@ -123,8 +135,16 @@ VALIDATION_MODE   = os.environ.get("VALIDATION_MODE", "normal").lower().strip()
 PUBLIC_RESUME_RESEARCH         = _env_bool("PUBLIC_RESUME_RESEARCH", True)
 WEB_RESUME_RESEARCH            = _env_bool("WEB_RESUME_RESEARCH", True)
 FORUM_RESEARCH                 = _env_bool("FORUM_RESEARCH", True)
+AI_TAILORING                   = _env_bool("AI_TAILORING", True)
+ROLE_MARKET_RESEARCH           = _env_bool("ROLE_MARKET_RESEARCH", True)
+PROJECT_GITHUB_RESEARCH        = _env_bool("PROJECT_GITHUB_RESEARCH", True)
+ALLOW_INFERRED_PROJECT_TOOLS   = _env_bool("ALLOW_INFERRED_PROJECT_TOOLS", False)
 RESUME_RESEARCH_MAX_WEB        = _env_int("RESUME_RESEARCH_MAX_WEB", 3, 0, 8)
 FORUM_RESEARCH_MAX_POSTS       = _env_int("FORUM_RESEARCH_MAX_POSTS", 6, 0, 20)
+PROJECT_README_MAX_CHARS       = _env_int("PROJECT_README_MAX_CHARS", 3500, 500, 8000)
+ROLE_MARKET_MAX_WEB            = _env_int("ROLE_MARKET_MAX_WEB", 4, 0, 8)
+ROLE_MARKET_MAX_GITHUB         = _env_int("ROLE_MARKET_MAX_GITHUB", 4, 0, 8)
+ROLE_MARKET_MAX_REDDIT         = _env_int("ROLE_MARKET_MAX_REDDIT", 5, 0, 12)
 RESUME_RESEARCH_ALLOW_LINKEDIN = _env_bool("RESUME_RESEARCH_ALLOW_LINKEDIN", True)
 RESUME_SOURCE_URLS             = _split_env_list(os.environ.get("RESUME_SOURCE_URLS", ""))
 REDDIT_RESEARCH_SUBS           = _split_env_list(os.environ.get(
@@ -139,6 +159,8 @@ CURRENT_ROLE_TITLE = os.environ.get(
 # [NEW] Research cache — keyed (domain:job_title[:20]), avoids redundant HTTP calls
 # when multiple jobs share the same domain+title pattern within one run
 _RESEARCH_CACHE: dict[str, dict] = {}
+_PROJECT_EVIDENCE_CACHE: dict[str, str] = {}
+_ROLE_MARKET_CACHE: dict[str, dict] = {}
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -529,25 +551,14 @@ SKILL_PROFILES = {
         "SK_L4":"Systems & Tools",     "SK_V4":"Windows internals, Linux fundamentals, Python, Excel, SQL (basic), TCP/IP basics",
         "SK_L5":"Frameworks",          "SK_V5":"MITRE ATT&CK, OWASP Top 10, Incident Response (PICERL), audit trail documentation",
     },
-   # Add to SKILL_PROFILES
-   "appsec_security": {
-       "SK_L1": "Application Security",  "SK_V1": "OWASP Top 10, vulnerability assessment, injection detection, broken auth, SSRF analysis",
-       "SK_L2": "Testing Tools",         "SK_V2": "Nessus, OpenVAS, Burp Suite (basic), OWASP ZAP, CVSS/EPSS severity classification",
-       "SK_L3": "Threat Intelligence",   "SK_V3": "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, CVE research",
-       "SK_L4": "Systems & Scripting",   "SK_V4": "Python, Bash, NVD API, Linux fundamentals, TCP/IP, HTTP/S, DNS",
-       "SK_L5": "Frameworks",            "SK_V5": "NIST CSF, secure development lifecycle, patch compliance tracking",
-   },
-
-
 }
 
 DOMAIN_SKILL_PROFILE = {
-    "SOC":"soc_security","VAPT":"soc_security","Forensics":"soc_security",
+    "SOC":"soc_security","VAPT":"soc_security","AppSec":"soc_security","Forensics":"soc_security",
     "CloudSec":"soc_security_cloud","IAM":"soc_security_cloud",
     "Network":"networking_entry",
     "GRC":"grc_risk_fraud","Risk":"grc_risk_fraud","Fraud-AML":"grc_risk_fraud",
     "General":"soc_security",
-    "AppSec": "appsec_security",   # was "soc_security"
 }
 
 
@@ -880,9 +891,7 @@ AMAZON_FOCUS_PATTERNS = [
     ("cloud_security",        r"\b(cloud security|aws security|azure security|gcp security|cspm|cloudtrail|guardduty|cloud iam)\b"),
     ("incident_response",     r"\b(incident response|incident responder|dfir|forensic|digital forensics|ediscovery)\b"),
     ("threat_intel",          r"\b(threat intelligence|cti|osint|threat hunting|ioc|indicator|dark web|threat research)\b"),
-    ("vulnerability_management", r"\b(product security|bug bounty|vulnerability disclosure|security review|"
-                                 r"threat model|api security|vulnerability|vapt|penetration|pentest|"
-                                 r"appsec|application security|devsecops|sast|dast|patch management)\b"),    
+    ("vulnerability_management", r"\b(vulnerability|vapt|penetration|pentest|appsec|application security|devsecops|sast|dast|patch management)\b"),
     ("network_security",      r"\b(network security|ids|ips|firewall|intrusion|packet|endpoint security)\b"),
     ("soc",                   r"\b(soc|siem|blue team|alert triage|security monitoring|security operations center|tier\s*[12]|l[12]\s+analyst)\b"),
     ("security_operations",   r"\b(security operations|detect and respond|security monitoring analyst)\b"),
@@ -998,10 +1007,6 @@ THREE_LENS_FRAMES = {
                   "evidence packaging, incident timeline reconstruction, root cause isolation, PICERL handoff"),
     "General":   ("TRIAGE DISCIPLINE",  "AUDIT TRAIL",
                   "structured escalation, severity-based prioritization, audit documentation, pattern recognition"),
-      # Add this entry to THREE_LENS_FRAMES dict
-    "AppSec": ("PATTERN DETECTION", "AUDIT TRAIL",
-              "vulnerability triage, severity scoring, OWASP classification, "
-              "remediation tracking, security review evidence"),
 }
 
 THREE_LENS_DESCRIPTIONS = {
@@ -1064,11 +1069,17 @@ def get_amazon_role_focus(job: dict) -> str:
 # DYNAMIC AMAZON BULLET GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_amazon_bullets_dynamic(job: dict, jd_keywords: dict,
-                                    experience_research: dict | None = None) -> dict:
+                                    experience_research: dict | None = None,
+                                    tailoring_strategy: dict | None = None) -> dict:
     domain    = str(job.get("domain", "General")).strip()
     jd_text   = f"{job.get('skills', '')} {job.get('summary', '')} {job.get('job_title', '')}"
     ranked_kw = jd_keywords.get("ranked", [])
     research_context = format_experience_research_prompt(experience_research, for_work_experience=True)
+    role_focus = get_amazon_role_focus(job)
+    strategy_focus = (tailoring_strategy or {}).get("work_focus", "")
+    role_market = (tailoring_strategy or {}).get("role_market", {}) or {}
+    market_exp_keywords = ", ".join(role_market.get("experience_keywords", [])[:10])
+    avoid_claiming = ", ".join(role_market.get("avoid_claiming", [])[:8])
     kw_hint = (
         f"\nTop JD keywords to weave in (1-2 per bullet): {', '.join(ranked_kw[:8])}\n"
         if ranked_kw else ""
@@ -1083,10 +1094,15 @@ Job: {job.get('job_title', 'Role')} at {job.get('company', 'Company')}
 Domain: {domain}
 JD skills: {jd_text[:500]}
 {kw_hint}
-{research_context}
+	{research_context}
+		TARGET WORK-EXPERIENCE STRATEGY:
+		{role_focus}
+		{strategy_focus}
+		Market experience keywords to use only when grounded: {market_exp_keywords}
+		Avoid unsupported market claims: {avoid_claiming}
 
-RAW EXPERIENCE FACTS (do not invent beyond these):
-{facts_block}
+		RAW EXPERIENCE FACTS (do not invent beyond these):
+	{facts_block}
 
 Task:
 1. Compare benchmark resume/forum signals to the target role.
@@ -1177,20 +1193,6 @@ def jd_gap_analysis(jd_text: str, jd_keywords: dict) -> dict:
     return {"can_frame": can_frame, "cannot_meet": cannot_meet, "gap_instruction": gap_instruction}
 
 
-_VAGUE_OUTCOME_RE = re.compile(
-       r"\b(?:ensuring|for improved|for better|for enhanced|for timely|"
-       r"for efficient|for optimal|for greater)\s+\w+(?:\s+\w+)?\s*[.;]?\s*$",
-       re.IGNORECASE,
-)
-   
-   # Catches stray artifact words appended by dynamic_skills_augment leaking into bullets
-   # e.g. "...escalation, security" or "...handoffs, management"
-_ARTIFACT_WORDS_RE = re.compile(
-       r",\s*\b(security|management|resolution|accountability|transparency|"
-       r"allocation|efficiency)\s*[.;]?\s*$",
-       re.IGNORECASE,
-)
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SANITIZE AMAZON BULLETS
 # [CHANGE B] weak_detail now requires ≥ 2 AMAZON_DETAIL_TOKENS (was ≥ 1)
@@ -1202,8 +1204,6 @@ def sanitize_amazon_bullets(content: dict, job: dict,
         r"\b(mirroring|similar to|akin to|central to|used in|required for)\b.*\b(role|roles|soc|security|audit)\b",
         re.IGNORECASE,
     )
-                               # Catches "ensuring X", "for improved X", "for timely X" endings
-
     for key in AMAZON_KEYS:
         bullet = re.sub(r"\s+", " ", str(content.get(key, ""))).strip()
         bullet = bullet.replace(" & ", " and ")
@@ -1215,9 +1215,6 @@ def sanitize_amazon_bullets(content: dict, job: dict,
         weak_density = len(bullet) < AMAZON_MIN_CHARS
         # [CHANGE B] require at least 2 detail tokens to prevent thin bullets
         weak_detail = sum(1 for token in AMAZON_DETAIL_TOKENS if token in lowered) < 2
-
-        weak_vague_ending = bool(_VAGUE_OUTCOME_RE.search(bullet))
-        artifact_ending   = bool(_ARTIFACT_WORDS_RE.search(bullet))
         invalid = (
             not bullet
             or len(bullet) > AMAZON_MAX_CHARS
@@ -1227,8 +1224,6 @@ def sanitize_amazon_bullets(content: dict, job: dict,
             or weak_density
             or weak_detail
             or _has_purpose_clause(bullet)
-            or weak_vague_ending          # NEW
-            or artifact_ending            # NEW
         )
         content[key] = fallback[key] if invalid else bullet
     return content
@@ -1276,110 +1271,6 @@ def sanitize_project_bullets(content: dict) -> dict:
     return content
 
 
-
-
-
-_PROJECT_SIGNALS: dict[str, dict[str, set[str]]] = {
-    "soc_auto": {
-        "strong": {
-            "splunk", "siem", "sigma rules", "soar", "alert triage",
-            "blue team", "detection engineering", "threat hunting",
-            "security operations center", "mitre att&ck", "picerl",
-            "soc analyst", "log correlation",
-        },
-        "weak": {
-            "incident", "detection", "monitoring", "correlation",
-            "log analysis", "brute force", "lateral movement",
-            "edr", "playbook", "sigma", "spl",
-        },
-    },
-    "vuln_scanner": {
-        "strong": {
-            "vulnerability management", "cvss", "epss", "nessus", "openvas",
-            "penetration testing", "vapt", "appsec", "application security",
-            "owasp", "sast", "dast", "devsecops", "patch management",
-            "security testing", "bug bounty", "product security",
-            "vulnerability assessment", "api security", "threat modeling",
-        },
-        "weak": {
-            "cve", "nvd", "patch", "remediation", "scanning", "sqli",
-            "injection", "trivy", "qualys", "tenable", "vulnerability",
-        },
-    },
-    "phishing_osint": {
-        "strong": {
-            "osint", "threat intelligence", "ioc enrichment", "virustotal",
-            "abuseipdb", "typosquatting", "dark web", "cyber threat intelligence",
-            "phishing analysis", "transaction monitoring", "fraud detection",
-            "cti analyst", "threat intel",
-        },
-        "weak": {
-            "phishing", "ioc", "whois", "urlscan", "enrichment",
-            "indicator", "sanctions", "kyc", "aml", "dns lookup",
-        },
-    },
-}
-
-# Flat score bonus added after keyword scoring.
-# Ensures the right project wins even on sparse or vague JDs.
-_DOMAIN_PROJECT_BOOST: dict[str, dict[str, int]] = {
-    "SOC":       {"soc_auto": 4},
-    "VAPT":      {"vuln_scanner": 5},
-    "AppSec":    {"vuln_scanner": 6},
-    "GRC":       {"phishing_osint": 3},
-    "Risk":      {"phishing_osint": 3, "vuln_scanner": 1},
-    "Fraud-AML": {"phishing_osint": 6},
-    "CloudSec":  {"soc_auto": 4},
-    "IAM":       {"soc_auto": 3},
-    "Forensics": {"soc_auto": 4},
-    "Network":   {"soc_auto": 4},
-    "General":   {"soc_auto": 2},
-}
-
-
-def select_projects_for_job(domain: str, jd_keywords: dict) -> tuple[str, str]:
-    """
-    Score all 3 projects with weighted signals (strong=3, weak=1) then apply
-    a domain boost. Uses unidirectional matching (kw in signal) only, to avoid
-    false positives from broad terms like 'domain' or 'monitoring'.
-    Falls back to DOMAIN_TO_PROJECTS when all keyword scores are zero.
-    """
-    ranked = [kw.lower() for kw in jd_keywords.get("ranked", [])]
-    tools  = [kw.lower() for kw in jd_keywords.get("tools",  [])]
-    all_kw = set(ranked + tools)
-
-    scores: dict[str, int] = {k: 0 for k in _PROJECT_SIGNALS}
-    for proj_key, tiers in _PROJECT_SIGNALS.items():
-        for kw in all_kw:
-            if any(kw in sig for sig in tiers["strong"]):
-                scores[proj_key] += 3
-            elif any(kw in sig for sig in tiers["weak"]):
-                scores[proj_key] += 1
-
-    # Apply domain boost on top of keyword scores
-    for proj_key, bonus in _DOMAIN_PROJECT_BOOST.get(domain, {}).items():
-        scores[proj_key] = scores.get(proj_key, 0) + bonus
-
-    logger.info("  Project weighted scores (incl. domain boost): %s", scores)
-
-    sorted_projects = sorted(scores, key=lambda k: scores[k], reverse=True)
-    p1, p2 = sorted_projects[0], sorted_projects[1]
-
-    # Check if keyword scoring contributed anything (ignoring boost-only scores)
-    kw_total = sum(
-        scores[k] - _DOMAIN_PROJECT_BOOST.get(domain, {}).get(k, 0)
-        for k in scores
-    )
-    if kw_total == 0:
-        fallback = DOMAIN_TO_PROJECTS.get(domain, ("soc_auto", "vuln_scanner"))
-        logger.info("  Project selection: zero kw scores — domain fallback %s", fallback)
-        return fallback
-
-    logger.info("  Project selection: %s (score=%d) + %s (score=%d)",
-                p1, scores[p1], p2, scores[p2])
-    return p1, p2
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPANY INTELLIGENCE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1420,9 +1311,12 @@ def select_tools(project_key: str, jd_text: str, max_tools: int = 5) -> list[str
     jd_lower = jd_text.lower()
     base     = list(proj["tech_base"])
     extra    = []
+    evidence_lower = get_project_evidence(project_key).lower()
     for pattern, tools in proj["tech_swappable"].items():
         if re.search(pattern, jd_lower):
             for t in tools:
+                if not ALLOW_INFERRED_PROJECT_TOOLS and t.lower() not in evidence_lower:
+                    continue
                 if t not in base and t not in extra:
                     extra.append(t)
     return (base + extra)[:max_tools]
@@ -1447,6 +1341,316 @@ def get_project_bullets(project_key: str, domain: str) -> list[str]:
         if variant_name in variants:
             return variants[variant_name]
     return PROJECTS[project_key]["bullets"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI TAILORING STRATEGY
+# ─────────────────────────────────────────────────────────────────────────────
+def _project_readme_urls(github_url: str) -> list[str]:
+    parsed = urlparse(github_url or "")
+    if parsed.netloc.lower() != "github.com":
+        return []
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) < 2:
+        return []
+    owner, repo = parts[:2]
+    names = ("README.md", "readme.md", "README.markdown", "README.rst")
+    urls = []
+    for branch in ("main", "master"):
+        for name in names:
+            urls.append(f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{name}")
+    return urls
+
+
+def _scrub_markdown_text(text: str, max_chars: int = PROJECT_README_MAX_CHARS) -> str:
+    text = re.sub(r"```.*?```", " ", text or "", flags=re.DOTALL)
+    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"^[#>*\-\s]+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\|", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_chars]
+
+
+def _fetch_project_readme(project_key: str) -> str:
+    if not PROJECT_GITHUB_RESEARCH:
+        return ""
+    if project_key in _PROJECT_EVIDENCE_CACHE:
+        return _PROJECT_EVIDENCE_CACHE[project_key]
+    github_url = PROJECTS.get(project_key, {}).get("github", "")
+    readme = ""
+    for url in _project_readme_urls(github_url):
+        try:
+            resp = requests.get(url, headers=_HDRS, timeout=8)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            if len(resp.text) > 80:
+                readme = _scrub_markdown_text(resp.text)
+                break
+        except Exception as exc:
+            logger.debug("Project README fetch failed for %s via %s: %s", project_key, url, exc)
+    _PROJECT_EVIDENCE_CACHE[project_key] = readme
+    return readme
+
+
+def get_project_evidence(project_key: str, domain: str = "General") -> str:
+    proj = PROJECTS[project_key]
+    bullets = get_project_bullets(project_key, domain)
+    readme = _fetch_project_readme(project_key)
+    parts = [
+        f"Title: {proj['title']}",
+        f"GitHub: {proj.get('github', '')}",
+        f"Verified tools: {', '.join(proj.get('tech_base', []))}",
+        "Verified project facts:",
+        *[f"- {b}" for b in bullets],
+    ]
+    if readme:
+        parts.append(f"GitHub README evidence: {readme[:PROJECT_README_MAX_CHARS]}")
+    return "\n".join(parts)
+
+
+def _project_catalog_for_prompt(job: dict) -> str:
+    chunks = []
+    for key, proj in PROJECTS.items():
+        evidence = get_project_evidence(key, job.get("domain", "General"))
+        chunks.append(f"[{key}] {proj['title']}\n{evidence[:1400]}")
+    return "\n\n".join(chunks)
+
+
+def _jd_blob(job: dict, jd_keywords: dict) -> str:
+    return " ".join(filter(None, [
+        str(job.get("job_title", "")),
+        str(job.get("company", "")),
+        str(job.get("domain", "")),
+        str(job.get("summary", "")),
+        str(job.get("skills", "")),
+        " ".join(jd_keywords.get("ranked", [])[:12]),
+        " ".join(jd_keywords.get("tools", [])[:8]),
+    ]))
+
+
+def _project_match_score(project_key: str, job: dict, jd_keywords: dict) -> int:
+    jd = _jd_blob(job, jd_keywords).lower()
+    proj = PROJECTS[project_key]
+    haystack = " ".join([
+        proj["title"],
+        " ".join(proj.get("tech_base", [])),
+        " ".join(proj.get("bullets", [])),
+        " ".join(sum(proj.get("tech_swappable", {}).values(), [])),
+        " ".join(sum(CONCEPT_SWAPPABLE.get(project_key, {}).values(), [])),
+    ]).lower()
+    score = 0
+    for term in set(re.findall(r"[a-zA-Z][a-zA-Z0-9+#.-]{2,}", jd)):
+        if term in _RESEARCH_STOPWORDS:
+            continue
+        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", haystack):
+            score += 1
+    for kw in jd_keywords.get("ranked", [])[:10]:
+        if kw and kw.lower() in haystack:
+            score += 3
+    mapped = DOMAIN_TO_PROJECTS.get(job.get("domain", "General"), ())
+    if project_key in mapped:
+        score += 5
+    return score
+
+
+def _fallback_project_pair(job: dict, jd_keywords: dict) -> tuple[str, str]:
+    scored = sorted(
+        PROJECTS.keys(),
+        key=lambda key: _project_match_score(key, job, jd_keywords),
+        reverse=True,
+    )
+    mapped = DOMAIN_TO_PROJECTS.get(job.get("domain", "General"), ("soc_auto", "vuln_scanner"))
+    pair = []
+    for key in scored + list(mapped):
+        if key in PROJECTS and key not in pair:
+            pair.append(key)
+        if len(pair) == 2:
+            break
+    while len(pair) < 2:
+        for key in ("soc_auto", "vuln_scanner", "phishing_osint"):
+            if key not in pair:
+                pair.append(key)
+                break
+    return pair[0], pair[1]
+
+
+def _candidate_evidence_blob(project_keys: list[str] | tuple[str, ...] = ()) -> str:
+    chunks = [_CANDIDATE_PROFILE, " ".join(AMAZON_RAW_FACTS)]
+    for key in project_keys:
+        if key in PROJECTS:
+            chunks.append(get_project_evidence(key))
+    return " ".join(chunks).lower()
+
+
+def _skill_item_grounded(item: str, evidence_blob: str) -> bool:
+    item = re.sub(r"\s+", " ", item or "").strip(" .;:-")
+    if not item:
+        return False
+    lower = item.lower()
+    groundable = set(CANDIDATE_GROUNDABLE)
+    for proj in PROJECTS.values():
+        groundable.update(t.lower() for t in proj.get("tech_base", []))
+    if lower in groundable or any(lower in g or g in lower for g in groundable):
+        return True
+    words = [w for w in re.findall(r"[a-zA-Z][a-zA-Z0-9+#.-]{2,}", lower) if w not in _RESEARCH_STOPWORDS]
+    return bool(words) and all(w in evidence_blob for w in words[:3])
+
+
+def _normalize_skill_profile(raw_skills: dict, fallback: dict, project_keys: tuple[str, str]) -> dict:
+    if not isinstance(raw_skills, dict):
+        raw_skills = {}
+    evidence_blob = _candidate_evidence_blob(project_keys)
+    normalized = {}
+    for i in range(1, 6):
+        label_key, value_key = f"SK_L{i}", f"SK_V{i}"
+        label = re.sub(r"\s+", " ", str(raw_skills.get(label_key, fallback.get(label_key, "")))).strip()
+        value = str(raw_skills.get(value_key, fallback.get(value_key, "")))
+        label = label[:32] if label else fallback.get(label_key, f"Skills {i}")
+        items = []
+        for item in re.split(r"[,|;/]+", value):
+            item = re.sub(r"\s+", " ", item).strip(" .;:-")
+            if item and item.lower() not in {x.lower() for x in items} and _skill_item_grounded(item, evidence_blob):
+                items.append(item)
+            if len(items) >= 8:
+                break
+        if len(items) < 3:
+            items = [x.strip() for x in fallback.get(value_key, "").split(",") if x.strip()][:8]
+        normalized[label_key] = label
+        normalized[value_key] = ", ".join(items)
+    return normalized
+
+
+def _keywords_with_market(jd_keywords: dict, role_market_intel: dict | None = None) -> dict:
+    merged = dict(jd_keywords or {})
+    ranked = []
+    for term in (
+        list((jd_keywords or {}).get("ranked", []))
+        + list((role_market_intel or {}).get("target_skills", []))
+        + list((role_market_intel or {}).get("project_keywords", []))
+        + list((role_market_intel or {}).get("experience_keywords", []))
+    ):
+        term = re.sub(r"\s+", " ", str(term)).strip()
+        if term and term.lower() not in {x.lower() for x in ranked}:
+            ranked.append(term)
+    merged["ranked"] = ranked[:18]
+    return merged
+
+
+def _default_tailoring_strategy(job: dict, jd_keywords: dict,
+                                role_market_intel: dict | None = None) -> dict:
+    p1_key, p2_key = _fallback_project_pair(job, jd_keywords)
+    base_skills = dynamic_skills_augment(
+        compute_skills(job.get("domain", "General")),
+        _keywords_with_market(jd_keywords, role_market_intel),
+    )
+    focus_key = get_amazon_focus_key(job)
+    market_project_terms = (role_market_intel or {}).get("project_keywords", [])
+    return {
+        "projects": [p1_key, p2_key],
+        "skills": base_skills,
+        "work_focus": AMAZON_ROLE_FOCUS.get(focus_key, AMAZON_ROLE_FOCUS["general"]),
+        "project_guidance": {
+            p1_key: select_concepts(p1_key, _jd_blob(job, jd_keywords) + " " + " ".join(market_project_terms)),
+            p2_key: select_concepts(p2_key, _jd_blob(job, jd_keywords) + " " + " ".join(market_project_terms)),
+        },
+        "role_market": role_market_intel or {},
+        "source": "fallback-score",
+    }
+
+
+def build_tailoring_strategy(job: dict, jd_keywords: dict,
+                             experience_research: dict | None = None,
+                             role_market_intel: dict | None = None) -> dict:
+    fallback = _default_tailoring_strategy(job, jd_keywords, role_market_intel)
+    if not AI_TAILORING or not GROQ_API_KEY:
+        return fallback
+
+    system = (
+        "You are a resume tailoring strategist. Return ONLY valid JSON. "
+        "Use only the candidate/project/current-role evidence provided. Do not invent tools, certs, employers, or metrics."
+    )
+    user = f"""
+JOB:
+Title: {job.get('job_title', '')}
+Company: {job.get('company', '')}
+Domain: {job.get('domain', '')}
+Summary: {job.get('summary', '')}
+Skills/JD terms: {job.get('skills', '')}
+Top extracted keywords: {', '.join(jd_keywords.get('ranked', [])[:12])}
+
+CURRENT ROLE FACTS:
+{chr(10).join('- ' + fact for fact in AMAZON_RAW_FACTS)}
+
+PROJECT CATALOG:
+{_project_catalog_for_prompt(job)}
+
+	ROLE RESEARCH SIGNALS:
+	{(experience_research or {}).get('summary', '')[:1400]}
+
+	ROLE-MARKET INTELLIGENCE FROM REDDIT/GITHUB/WEB:
+	{(role_market_intel or {}).get('summary', '')[:1800]}
+	Market target skills: {', '.join((role_market_intel or {}).get('target_skills', [])[:14])}
+	Market experience keywords: {', '.join((role_market_intel or {}).get('experience_keywords', [])[:12])}
+	Market project angles: {'; '.join((role_market_intel or {}).get('project_angles', [])[:8])}
+	Unsupported / avoid claiming: {', '.join((role_market_intel or {}).get('avoid_claiming', [])[:10])}
+
+	Task:
+	1. Pick exactly 2 project keys from: {', '.join(PROJECTS.keys())}. Keep their titles unchanged later.
+	2. Build a 5-row skills profile tailored to the JD + market intelligence using only grounded candidate/project evidence.
+	3. Give short work-experience focus guidance using market experience keywords only when they fit current-role facts.
+	4. Give 2-3 project guidance phrases per selected project using market project angles where supported.
+
+Return raw JSON only:
+{{
+  "projects":["project_key_1","project_key_2"],
+  "skills":{{"SK_L1":"...","SK_V1":"a, b, c","SK_L2":"...","SK_V2":"...","SK_L3":"...","SK_V3":"...","SK_L4":"...","SK_V4":"...","SK_L5":"...","SK_V5":"..."}},
+  "work_focus":"...",
+  "project_guidance":{{"project_key_1":["..."],"project_key_2":["..."]}}
+}}
+"""
+    try:
+        raw = _call_groq(system, user, GROQ_GEN_MODEL, max_tokens=1200)
+        data = json.loads(_repair_json(raw))
+    except Exception as exc:
+        logger.warning("  AI tailoring strategy failed - using scored fallback: %s", exc)
+        return fallback
+
+    projects = []
+    for key in data.get("projects", []):
+        key = str(key).strip()
+        if key in PROJECTS and key not in projects:
+            projects.append(key)
+    for key in fallback["projects"]:
+        if key not in projects:
+            projects.append(key)
+        if len(projects) == 2:
+            break
+    projects = projects[:2]
+    project_pair = (projects[0], projects[1])
+
+    strategy = {
+        "projects": projects,
+        "skills": _normalize_skill_profile(data.get("skills", {}), fallback["skills"], project_pair),
+        "work_focus": re.sub(r"\s+", " ", str(data.get("work_focus", fallback["work_focus"]))).strip()[:500],
+        "project_guidance": {},
+        "role_market": role_market_intel or {},
+        "source": "ai",
+    }
+    raw_guidance = data.get("project_guidance", {}) if isinstance(data.get("project_guidance", {}), dict) else {}
+    for key in projects:
+        vals = raw_guidance.get(key, fallback.get("project_guidance", {}).get(key, []))
+        if isinstance(vals, str):
+            vals = [vals]
+        strategy["project_guidance"][key] = [
+            re.sub(r"\s+", " ", str(v)).strip()[:160]
+            for v in vals[:3]
+            if str(v).strip()
+        ]
+    logger.info("  AI tailoring strategy: projects=%s source=%s", " + ".join(projects), strategy["source"])
+    return strategy
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1815,6 +2019,388 @@ def _is_work_experience_safe_term(term: str) -> bool:
     return any(signal in lower for signal in _WORK_EXPERIENCE_SAFE_SIGNALS)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ROLE-MARKET INTELLIGENCE  (Reddit + GitHub + web snippets)
+# ─────────────────────────────────────────────────────────────────────────────
+def _github_headers() -> dict:
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    return headers
+
+
+def _clean_market_list(values, limit: int = 10, max_chars: int = 80) -> list[str]:
+    if isinstance(values, str):
+        values = re.split(r"[,;\n]+", values)
+    if not isinstance(values, list):
+        return []
+    cleaned, seen = [], set()
+    for raw in values:
+        item = re.sub(r"\s+", " ", str(raw)).strip(" .;:-")
+        if not item or len(item) > max_chars:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(item)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _market_query_terms(job: dict, jd_keywords: dict) -> list[str]:
+    terms = _role_research_terms(job, jd_keywords)
+    role_terms = re.findall(r"[a-zA-Z][a-zA-Z0-9+#.-]{2,}", str(job.get("job_title", "")))
+    raw = role_terms + terms + jd_keywords.get("ranked", [])[:10] + jd_keywords.get("tools", [])[:6]
+    cleaned, seen = [], set()
+    for term in raw:
+        term = re.sub(r"\s+", " ", str(term).lower()).strip(" -_/|")
+        if len(term) < 3 or term in _RESEARCH_STOPWORDS or term in seen:
+            continue
+        seen.add(term)
+        cleaned.append(term)
+    return cleaned[:24]
+
+
+def _fetch_market_web_sources(job: dict, terms: list[str]) -> list[dict]:
+    if not WEB_RESUME_RESEARCH or ROLE_MARKET_MAX_WEB <= 0:
+        return []
+    title = str(job.get("job_title", "")).strip()
+    domain = str(job.get("domain", "")).strip()
+    queries = [
+        f'{title} {domain} entry level skills projects resume cybersecurity',
+        f'{title} {domain} reddit skills projects fresher India',
+    ]
+    sources = []
+    for query in queries:
+        if len(sources) >= ROLE_MARKET_MAX_WEB:
+            break
+        try:
+            resp = requests.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query[:220]},
+                headers=_HDRS,
+                timeout=8,
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.debug("Role-market web search failed: %s", exc)
+            continue
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for result in soup.select(".result"):
+            link = result.select_one("a.result__a")
+            snippet = result.select_one(".result__snippet")
+            if not link:
+                continue
+            url = _unwrap_duckduckgo_url(link.get("href", ""))
+            host = urlparse(url).netloc.lower()
+            if any(blocked in host for blocked in ("linkedin.com", "indeed.com", "glassdoor.com")):
+                continue
+            text = _scrub_external_text(
+                f"{link.get_text(' ', strip=True)}. {snippet.get_text(' ', strip=True) if snippet else ''}",
+                max_chars=900,
+            )
+            if len(text) < 50:
+                continue
+            sources.append({
+                "kind": "market_web",
+                "source": host or "duckduckgo",
+                "text": text,
+                "score": _source_relevance_score(text, terms),
+            })
+            if len(sources) >= ROLE_MARKET_MAX_WEB:
+                break
+    sources.sort(key=lambda item: item.get("score", 0), reverse=True)
+    return sources[:ROLE_MARKET_MAX_WEB]
+
+
+def _fetch_github_readme_snippet(full_name: str) -> str:
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{full_name}/readme",
+            headers=_github_headers(),
+            timeout=8,
+        )
+        if resp.status_code in (403, 404, 429):
+            return ""
+        resp.raise_for_status()
+        payload = resp.json()
+        encoded = payload.get("content", "")
+        if not encoded:
+            return ""
+        raw = base64.b64decode(encoded).decode("utf-8", errors="ignore")
+        return _scrub_markdown_text(raw, max_chars=1400)
+    except Exception as exc:
+        logger.debug("GitHub README market fetch failed for %s: %s", full_name, exc)
+        return ""
+
+
+def _fetch_market_github_sources(job: dict, terms: list[str]) -> list[dict]:
+    if not PROJECT_GITHUB_RESEARCH or ROLE_MARKET_MAX_GITHUB <= 0:
+        return []
+    title = re.sub(r"[^a-zA-Z0-9 +#.-]+", " ", str(job.get("job_title", ""))).strip()
+    domain_terms = " ".join(terms[:6])
+    query = f"{title} {domain_terms} cybersecurity portfolio project in:readme stars:>1"
+    try:
+        resp = requests.get(
+            "https://api.github.com/search/repositories",
+            params={"q": query[:240], "sort": "stars", "per_page": str(ROLE_MARKET_MAX_GITHUB)},
+            headers=_github_headers(),
+            timeout=10,
+        )
+        if resp.status_code in (403, 429):
+            logger.debug("GitHub market search rate-limited: %s", resp.status_code)
+            return []
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+    except Exception as exc:
+        logger.debug("GitHub market search failed: %s", exc)
+        return []
+
+    sources = []
+    for item in items[:ROLE_MARKET_MAX_GITHUB]:
+        full_name = item.get("full_name", "")
+        readme = _fetch_github_readme_snippet(full_name) if full_name else ""
+        text = _scrub_external_text(
+            " ".join(filter(None, [
+                full_name,
+                item.get("description") or "",
+                " ".join(item.get("topics", [])[:10]),
+                readme,
+            ])),
+            max_chars=2200,
+        )
+        if len(text) < 60:
+            continue
+        sources.append({
+            "kind": "market_github",
+            "source": full_name,
+            "text": text,
+            "score": _source_relevance_score(text, terms) + min(int(item.get("stargazers_count", 0)), 50) // 10,
+        })
+    sources.sort(key=lambda item: item.get("score", 0), reverse=True)
+    return sources[:ROLE_MARKET_MAX_GITHUB]
+
+
+def _fetch_market_reddit_sources(job: dict, terms: list[str]) -> list[dict]:
+    if not FORUM_RESEARCH or ROLE_MARKET_MAX_REDDIT <= 0:
+        return []
+    subs = REDDIT_RESEARCH_SUBS or ["cybersecurityindia", "cybersecurity", "AskNetsec"]
+    per_sub = max(1, min(3, (ROLE_MARKET_MAX_REDDIT + len(subs) - 1) // len(subs)))
+    title = str(job.get("job_title", ""))
+    query = f"{title} skills projects resume entry level fresher India cybersecurity".strip()
+    sources = []
+    for sub in subs:
+        if len(sources) >= ROLE_MARKET_MAX_REDDIT:
+            break
+        try:
+            resp = requests.get(
+                f"https://www.reddit.com/r/{sub}/search.json",
+                params={"q": query[:180], "restrict_sr": "1", "sort": "relevance", "limit": str(per_sub)},
+                headers=_HDRS,
+                timeout=8,
+            )
+            if resp.status_code in (403, 429):
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            logger.debug("Role-market Reddit search failed for r/%s: %s", sub, exc)
+            continue
+        for child in data.get("data", {}).get("children", []):
+            post = child.get("data", {})
+            text = _scrub_external_text(
+                f"{post.get('title', '')}. {post.get('selftext', '')}",
+                max_chars=1400,
+            )
+            if len(text) < 60:
+                continue
+            sources.append({
+                "kind": "market_reddit",
+                "source": f"r/{sub}",
+                "text": text,
+                "score": _source_relevance_score(text, terms),
+            })
+            if len(sources) >= ROLE_MARKET_MAX_REDDIT:
+                break
+    sources.sort(key=lambda item: item.get("score", 0), reverse=True)
+    return sources[:ROLE_MARKET_MAX_REDDIT]
+
+
+def _project_angles_from_terms(terms: list[str]) -> list[str]:
+    blob = " ".join(terms).lower()
+    patterns = [
+        (r"\b(soc|siem|splunk|alert|incident|detection|sigma|soar)\b", "SIEM alert triage, detection rules, and incident escalation"),
+        (r"\b(vulnerability|cve|cvss|epss|nessus|openvas|patch|remediation)\b", "vulnerability prioritization, CVE evidence, and remediation tracking"),
+        (r"\b(appsec|application security|owasp|sast|dast|burp|secure code)\b", "OWASP testing, application security evidence, and secure remediation notes"),
+        (r"\b(grc|audit|compliance|control|nist|iso|sox|itgc)\b", "audit-ready evidence, control mapping, and compliance documentation"),
+        (r"\b(cloud|aws|iam|guardduty|cloudtrail|cspm|identity)\b", "cloud/IAM monitoring, access-risk review, and policy exception evidence"),
+        (r"\b(osint|phishing|ioc|threat intelligence|virustotal|urlscan|abuseipdb)\b", "OSINT enrichment, IOC investigation, and phishing infrastructure analysis"),
+        (r"\b(fraud|aml|kyc|transaction|sanctions|financial crime)\b", "fraud-pattern review, KYC evidence, and suspicious-activity investigation workflows"),
+        (r"\b(network|firewall|ids|ips|packet|wireshark|tcp)\b", "network traffic analysis, packet evidence, and IDS alert correlation"),
+    ]
+    angles = []
+    for pattern, angle in patterns:
+        if re.search(pattern, blob) and angle not in angles:
+            angles.append(angle)
+    return angles[:6]
+
+
+def _market_avoid_claims(market_terms: list[str], texts: list[str]) -> list[str]:
+    blob = " ".join(texts + market_terms).lower()
+    avoid = []
+    for term in sorted(_CANDIDATE_CANNOT_MEET):
+        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", blob):
+            avoid.append(term)
+    evidence_blob = _candidate_evidence_blob(tuple(PROJECTS.keys()))
+    for term in market_terms:
+        lower = term.lower()
+        technical = lower in _TECHNICAL_BENCHMARK_TERMS or any(
+            signal in lower for signal in ("certified", "certification", "cissp", "cisa", "oscp", "giac", "senior", "lead")
+        )
+        if technical and not _skill_item_grounded(term, evidence_blob):
+            avoid.append(term)
+    return _clean_market_list(avoid, limit=10)
+
+
+def _role_market_llm_summary(job: dict, jd_keywords: dict, sources: list[dict], fallback: dict) -> dict:
+    if not AI_TAILORING or not GROQ_API_KEY or not sources:
+        return fallback
+    snippets = "\n\n".join(
+        f"[{s.get('kind')}:{s.get('source')}] {s.get('text', '')[:900]}"
+        for s in sources[:10]
+    )
+    system = (
+        "You are a cybersecurity role-market analyst. Return ONLY valid JSON. "
+        "Separate market demand from what the candidate can honestly claim."
+    )
+    user = f"""
+Target job: {job.get('job_title', '')} | Domain: {job.get('domain', '')}
+JD summary/skills: {job.get('summary', '')} {job.get('skills', '')}
+JD extracted keywords: {', '.join(jd_keywords.get('ranked', [])[:12])}
+
+Candidate evidence summary:
+- Current role: {CURRENT_ROLE_TITLE}
+- Current facts: {'; '.join(AMAZON_RAW_FACTS)}
+- Candidate/project vocabulary: {_CANDIDATE_PROFILE[:900]}
+- Project titles: {'; '.join(p['title'] for p in PROJECTS.values())}
+
+Reddit/GitHub/web role-market snippets:
+{snippets[:6000]}
+
+Return JSON:
+{{
+  "target_skills":["role-market skill/tool/concept", "..."],
+  "experience_keywords":["transferable work-experience keyword", "..."],
+  "project_angles":["project storyline recruiters expect", "..."],
+  "project_keywords":["project/tool/concept keyword", "..."],
+  "avoid_claiming":["unsupported senior/cert/tool claim", "..."],
+  "role_summary":"one concise sentence"
+}}
+
+Rules:
+- target_skills are what the market/JD wants, but they still must be filtered before the final resume.
+- experience_keywords must be safe for operations-to-security transfer: triage, investigation, evidence, policy, audit, escalation, patterns, risk.
+- project_angles should describe what project bullets should emphasize.
+- avoid_claiming should include seniority, certifications, platforms, or tools not grounded in candidate/project evidence.
+"""
+    try:
+        raw = _call_groq(system, user, GROQ_GEN_MODEL, max_tokens=900)
+        data = json.loads(_repair_json(raw))
+    except Exception as exc:
+        logger.debug("Role-market LLM summary failed: %s", exc)
+        return fallback
+
+    result = dict(fallback)
+    result["target_skills"] = _clean_market_list(data.get("target_skills", []), 14) or fallback.get("target_skills", [])
+    result["experience_keywords"] = _clean_market_list(data.get("experience_keywords", []), 12) or fallback.get("experience_keywords", [])
+    result["project_angles"] = _clean_market_list(data.get("project_angles", []), 8, 140) or fallback.get("project_angles", [])
+    result["project_keywords"] = _clean_market_list(data.get("project_keywords", []), 12) or fallback.get("project_keywords", [])
+    avoid = _clean_market_list(data.get("avoid_claiming", []), 10)
+    result["avoid_claiming"] = _clean_market_list(avoid + fallback.get("avoid_claiming", []), 10)
+    role_summary = re.sub(r"\s+", " ", str(data.get("role_summary", ""))).strip()
+    if role_summary:
+        result["role_summary"] = role_summary[:300]
+    result["summary"] = _format_role_market_summary(result)
+    return result
+
+
+def _format_role_market_summary(intel: dict) -> str:
+    parts = []
+    if intel.get("role_summary"):
+        parts.append(intel["role_summary"])
+    if intel.get("target_skills"):
+        parts.append("Target market skills: " + ", ".join(intel["target_skills"][:12]) + ".")
+    if intel.get("experience_keywords"):
+        parts.append("Experience keywords to weave: " + ", ".join(intel["experience_keywords"][:10]) + ".")
+    if intel.get("project_angles"):
+        parts.append("Project angles: " + "; ".join(intel["project_angles"][:6]) + ".")
+    if intel.get("avoid_claiming"):
+        parts.append("Avoid unsupported claims: " + ", ".join(intel["avoid_claiming"][:8]) + ".")
+    if intel.get("source_note"):
+        parts.append("Sources: " + intel["source_note"] + ".")
+    return " ".join(parts)
+
+
+def _summarize_role_market_intel(job: dict, jd_keywords: dict, sources: list[dict]) -> dict:
+    texts = [s.get("text", "") for s in sources if s.get("text")]
+    terms = _market_query_terms(job, jd_keywords)
+    seed_terms = list(dict.fromkeys(
+        terms
+        + jd_keywords.get("ranked", [])[:14]
+        + jd_keywords.get("tools", [])[:8]
+        + list(CANDIDATE_GROUNDABLE)
+        + list(_TECHNICAL_BENCHMARK_TERMS)
+    ))
+    market_terms = _top_signal_terms(texts + [_jd_blob(job, jd_keywords)], seed_terms, limit=22)
+    experience_keywords = [t for t in market_terms if _is_work_experience_safe_term(t)]
+    project_keywords = [t for t in market_terms if t not in experience_keywords]
+    project_angles = _project_angles_from_terms(market_terms + jd_keywords.get("ranked", []))
+    source_counts = Counter(s.get("kind", "unknown") for s in sources)
+    source_note = (
+        f"web={source_counts.get('market_web', 0)}, "
+        f"github={source_counts.get('market_github', 0)}, "
+        f"reddit={source_counts.get('market_reddit', 0)}"
+    )
+    fallback = {
+        "role_summary": f"Market scan for {job.get('job_title', 'target role')} prioritized role keywords, fresher-safe project angles, and transferable experience wording.",
+        "target_skills": market_terms[:14],
+        "experience_keywords": experience_keywords[:12] or _build_transition_bridges(market_terms + jd_keywords.get("ranked", [])),
+        "project_angles": project_angles,
+        "project_keywords": project_keywords[:12],
+        "avoid_claiming": _market_avoid_claims(market_terms, texts),
+        "source_note": source_note,
+        "sources": [
+            {"kind": s.get("kind"), "source": s.get("source"), "score": s.get("score", 0)}
+            for s in sources[:8]
+        ],
+    }
+    fallback["summary"] = _format_role_market_summary(fallback)
+    return _role_market_llm_summary(job, jd_keywords, sources, fallback)
+
+
+def collect_role_market_intel(job: dict, jd_keywords: dict) -> dict:
+    if not ROLE_MARKET_RESEARCH:
+        return {"summary": "", "source_note": "disabled"}
+    cache_key = f"{job.get('domain', 'General')}:{job.get('job_title', '')[:32]}:{','.join(jd_keywords.get('ranked', [])[:3])}"
+    if cache_key in _ROLE_MARKET_CACHE:
+        logger.info("  Role market intel: cache hit (%s)", cache_key[:60])
+        return _ROLE_MARKET_CACHE[cache_key]
+
+    terms = _market_query_terms(job, jd_keywords)
+    sources = []
+    sources.extend(_fetch_market_web_sources(job, terms))
+    sources.extend(_fetch_market_github_sources(job, terms))
+    sources.extend(_fetch_market_reddit_sources(job, terms))
+    sources = [s for s in sources if s.get("score", 0) >= 1 or s.get("kind") == "market_github"]
+    sources.sort(key=lambda item: item.get("score", 0), reverse=True)
+    intel = _summarize_role_market_intel(job, jd_keywords, sources)
+    logger.info("  Role market intel: %s", intel.get("source_note", ""))
+    _ROLE_MARKET_CACHE[cache_key] = intel
+    return intel
+
+
 def _summarize_experience_research(
     job: dict, jd_keywords: dict,
     resume_sources: list[dict], forum_sources: list[dict]
@@ -2035,10 +2621,14 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
                      intel: dict | None, scraped_ctx: str,
                      p1_tools: list, p2_tools: list,
                      jd_keywords: dict,
-                     experience_research: dict | None = None) -> dict:
+                     experience_research: dict | None = None,
+                     tailoring_strategy: dict | None = None,
+                     project_evidence: dict | None = None) -> dict:
 
     # Phase A: Amazon bullets (separate Groq call, outcome-first)
-    amazon_bullets = generate_amazon_bullets_dynamic(job, jd_keywords, experience_research)
+    amazon_bullets = generate_amazon_bullets_dynamic(
+        job, jd_keywords, experience_research, tailoring_strategy
+    )
 
     # Phase B: Gap analysis + lens context for project generation
     jd_text_for_gap = f"{job.get('skills', '')} {job.get('summary', '')}"
@@ -2048,6 +2638,16 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
 
     p1 = PROJECTS[p1_key]
     p2 = PROJECTS[p2_key]
+    project_evidence = project_evidence or {
+        p1_key: get_project_evidence(p1_key, job.get("domain", "General")),
+        p2_key: get_project_evidence(p2_key, job.get("domain", "General")),
+    }
+    guidance = (tailoring_strategy or {}).get("project_guidance", {})
+    p1_guidance = "; ".join(guidance.get(p1_key, []) or select_concepts(p1_key, jd_text_for_gap))
+    p2_guidance = "; ".join(guidance.get(p2_key, []) or select_concepts(p2_key, jd_text_for_gap))
+    role_market = (tailoring_strategy or {}).get("role_market", {}) or {}
+    market_project_angles = "; ".join(role_market.get("project_angles", [])[:8])
+    market_project_keywords = ", ".join(role_market.get("project_keywords", [])[:12])
 
     co_ctx = ""
     if intel:
@@ -2099,32 +2699,53 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
   Skills:  {job['skills']}
 {co_ctx}{kw_hint}
 {lens_ctx}
-{gap_ctx}
-{research_ctx}
-
-SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
+	{gap_ctx}
+	{research_ctx}
+	ROLE-MARKET PROJECT SIGNALS:
+	Project angles recruiters expect: {market_project_angles}
+	Project keywords from Reddit/GitHub/web: {market_project_keywords}
+	
+	SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
 {diff_instruction}
-PROJECT METRIC BAN:
-- Do not write project metrics, impact claims, percentages, time savings, MTTR/MTTD, SLA deadlines, or reduced/improved/increased claims.
-- Project bullets should show what was built, configured, analyzed, documented, or mapped.
-PLACEHOLDER BAN:
-- Never write placeholder names such as P1_TECH, P2_TECH, P1 project, or P2 project in the final bullets.
-- Do not include raw SPL query syntax or MITRE technique IDs; write those concepts in plain English.
+	PROJECT METRIC BAN:
+	- Do not write project metrics, impact claims, percentages, time savings, MTTR/MTTD, SLA deadlines, or reduced/improved/increased claims.
+	- Project bullets should show what was built, configured, analyzed, documented, or mapped.
+	PROJECT EVIDENCE RULE:
+	- Generate project bullets from the verified project evidence below, not from generic role assumptions.
+	- You may reframe wording for this JD, but do not add tools, integrations, APIs, certifications, platforms, or results missing from the evidence.
+	- Keep project titles exactly as provided.
+	PLACEHOLDER BAN:
+	- Never write placeholder names such as P1_TECH, P2_TECH, P1 project, or P2 project in the final bullets.
+	- Do not include raw SPL query syntax or MITRE technique IDs; write those concepts in plain English.
 
-Return JSON with EXACTLY 10 keys:
-{{
-  "P1_TITLE": "{p1['title']}",
-  "P1_TECH":  "{', '.join(p1_tools)}",
-  "P1_B1": "Rewrite this bullet using the P1 tool list only; preserve technical detail; use 'and' not '&': {p1['bullets'][0]}",
-  "P1_B2": "Rewrite this bullet using the P1 tool list only; preserve technical detail; use 'and' not '&': {p1['bullets'][1]}",
-  "P1_B3": "Rewrite this bullet using the P1 tool list only; preserve technical detail; use 'and' not '&': {p1['bullets'][2]}",
-  "P2_TITLE": "{p2['title']}",
-  "P2_TECH":  "{', '.join(p2_tools)}",
-  "P2_B1": "Rewrite this bullet using the P2 tool list only; preserve technical detail; use 'and' not '&': {p2['bullets'][0]}",
-  "P2_B2": "Rewrite this bullet using the P2 tool list only; preserve technical detail; use 'and' not '&': {p2['bullets'][1]}",
-  "P2_B3": "Rewrite this bullet using the P2 tool list only; preserve technical detail; use 'and' not '&': {p2['bullets'][2]}"
-}}
-Rules: 'and' not '&' | no project metrics or impact claims | escape internal quotes | each project uses ONLY its own technical details"""
+	PROJECT 1 VERIFIED EVIDENCE:
+	Key: {p1_key}
+	Title: {p1['title']}
+	Allowed tools: {', '.join(p1_tools)}
+	Tailoring guidance: {p1_guidance}
+	{project_evidence.get(p1_key, '')[:2200]}
+
+	PROJECT 2 VERIFIED EVIDENCE:
+	Key: {p2_key}
+	Title: {p2['title']}
+	Allowed tools: {', '.join(p2_tools)}
+	Tailoring guidance: {p2_guidance}
+	{project_evidence.get(p2_key, '')[:2200]}
+	
+	Return JSON with EXACTLY 10 keys:
+	{{
+	  "P1_TITLE": "{p1['title']}",
+	  "P1_TECH":  "{', '.join(p1_tools)}",
+	  "P1_B1": "JD-tailored project bullet from P1 evidence only",
+	  "P1_B2": "JD-tailored project bullet from P1 evidence only",
+	  "P1_B3": "JD-tailored project bullet from P1 evidence only",
+	  "P2_TITLE": "{p2['title']}",
+	  "P2_TECH":  "{', '.join(p2_tools)}",
+	  "P2_B1": "JD-tailored project bullet from P2 evidence only",
+	  "P2_B2": "JD-tailored project bullet from P2 evidence only",
+	  "P2_B3": "JD-tailored project bullet from P2 evidence only"
+	}}
+	Rules: 'and' not '&' | no project metrics or impact claims | escape internal quotes | each project uses ONLY its own technical details"""
 
     p1_seed_bullets = get_project_bullets(p1_key, job.get("domain", "General"))
     p2_seed_bullets = get_project_bullets(p2_key, job.get("domain", "General"))
@@ -2159,9 +2780,9 @@ Rules: 'and' not '&' | no project metrics or impact claims | escape internal quo
         for key, value in fallback_content.items():
             content.setdefault(key, value)
 
-    # Skills augmentation (Feature 4)
-    base_skills = compute_skills(job["domain"])
-    content.update(dynamic_skills_augment(base_skills, jd_keywords))
+    # Skills: AI strategy first, deterministic profile as a safety fallback
+    base_skills = (tailoring_strategy or {}).get("skills") or compute_skills(job["domain"])
+    content.update(dynamic_skills_augment(base_skills, _keywords_with_market(jd_keywords, role_market)))
 
     # Synonym expansion (Feature 2)
     for k in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
@@ -2170,37 +2791,6 @@ Rules: 'and' not '&' | no project metrics or impact claims | escape internal quo
 
     # Project bullet sanitisation (strips unverifiable metrics + purpose clauses)
     content = sanitize_project_bullets(content)
-
-    # Inject pre-generated Amazon bullets and sanitize them
-    # Strip terms that belong exclusively to one project appearing in another project's bullets.
-    # e.g. EPSS/SOAR stuffed into phishing bullets, or typosquatting in SOC bullets.
-    _PROJECT_EXCLUSIVE_TERMS: dict[str, re.Pattern] = {
-        "vuln_scanner":   re.compile(
-            r"\b(typosquat|telegram bot|urlscan\.io|abuseipdb|whois|brand impersonat)\b",
-            re.IGNORECASE,
-        ),
-        "phishing_osint": re.compile(
-            r"\b(epss|nessus|openvas|nvd api|cvss severity|delta.scan|patch compliance|"
-            r"soar pipeline|sigma rules)\b",
-            re.IGNORECASE,
-        ),
-        "soc_auto": re.compile(
-            r"\b(sql injection|owasp top|sqli|cve report|patch scheduling|patch compliance)\b",
-            re.IGNORECASE,
-        ),
-    }
-    for prefix, proj_key in [("P1", p1_key), ("P2", p2_key)]:
-        excl_re = _PROJECT_EXCLUSIVE_TERMS.get(proj_key)
-        if excl_re:
-            for bk in [f"{prefix}_B1", f"{prefix}_B2", f"{prefix}_B3"]:
-                val = content.get(bk, "")
-                if val and excl_re.search(val):
-                    logger.warning(
-                        "  Cross-project term stripped from %s (%s): %s",
-                        bk, proj_key, val[:70],
-                    )
-                    cleaned = excl_re.sub("", val).strip(" ,;.")
-                    content[bk] = cleaned if len(cleaned) > 30 else val
 
     # Inject pre-generated Amazon bullets and sanitize them
     content.update(amazon_bullets)
@@ -2766,9 +3356,10 @@ def main():
             all_keywords[job['row_num']].get('ranked', [])[:3],
         )
 
-    # ── Phase 2: Parallel experience research (HTTP-bound — safe to parallelise)
-    logger.info("Phase 2: Collecting experience research in parallel (max_workers=3)...")
+    # ── Phase 2: Parallel research (HTTP-bound — safe to parallelise)
+    logger.info("Phase 2: Collecting experience + role-market research in parallel (max_workers=3)...")
     all_research: dict[int, dict] = {}
+    all_market_intel: dict[int, dict] = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
         research_futures = {
             executor.submit(
@@ -2789,6 +3380,26 @@ def main():
             except Exception as exc:
                 logger.warning("  Research failed for %s: %s", job['job_title'][:25], exc)
                 all_research[job['row_num']] = {"summary": "", "source_note": f"research-failed: {exc}"}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        market_futures = {
+            executor.submit(
+                collect_role_market_intel,
+                job,
+                all_keywords[job['row_num']],
+            ): job
+            for job in pending
+        }
+        for future in as_completed(market_futures):
+            job = market_futures[future]
+            try:
+                all_market_intel[job['row_num']] = future.result()
+                logger.info(
+                    "  Market intel done: %s @ %s",
+                    job['job_title'][:25], job['company'][:20],
+                )
+            except Exception as exc:
+                logger.warning("  Market intel failed for %s: %s", job['job_title'][:25], exc)
+                all_market_intel[job['row_num']] = {"summary": "", "source_note": f"market-failed: {exc}"}
 
     # ── Phase 3: Sequential generation + validation + upload
     logger.info("Phase 3: Generating and uploading resumes...")
@@ -2801,11 +3412,22 @@ def main():
             jd_text            = f"{job['skills']} {job['summary']} {job['job_title']}"
             jd_keywords        = all_keywords[job['row_num']]
             experience_research = all_research.get(job['row_num'], {})
+            role_market_intel   = all_market_intel.get(job['row_num'], {})
 
-            p1_key, p2_key = select_projects_for_job(job["domain"], jd_keywords)
+            tailoring_strategy = build_tailoring_strategy(
+                job, jd_keywords, experience_research, role_market_intel
+            )
+            p1_key, p2_key = tailoring_strategy.get("projects", ["soc_auto","vuln_scanner"])[:2]
+            project_evidence = {
+                p1_key: get_project_evidence(p1_key, job.get("domain", "General")),
+                p2_key: get_project_evidence(p2_key, job.get("domain", "General")),
+            }
             p1_tools       = select_tools(p1_key, jd_text)
             p2_tools       = select_tools(p2_key, jd_text)
-            logger.info("  Projects: %s + %s | P1 tools: %s", p1_key, p2_key, p1_tools[:3])
+            logger.info(
+                "  Projects: %s + %s | P1 tools: %s | strategy=%s",
+                p1_key, p2_key, p1_tools[:3], tailoring_strategy.get("source", "unknown"),
+            )
 
             # GitHub research (strict mode only)
             github_notes = ""
@@ -2821,6 +3443,7 @@ def main():
             content = generate_content(
                 job, p1_key, p2_key, intel, scraped_ctx,
                 p1_tools, p2_tools, jd_keywords, experience_research,
+                tailoring_strategy, project_evidence,
             )
 
             # Track keyword usage (Feature 3)
@@ -2873,7 +3496,11 @@ def main():
             ws.update_cell(job["row_num"], cred_col,     str(rec_sim.get("credibility", "")))
             ws.update_cell(job["row_num"], stuff_col,    str(rec_sim.get("stuffing_suspicion", "")))
             ws.update_cell(job["row_num"], hire_col,     str(rec_sim.get("hireability", "")))
-            ws.update_cell(job["row_num"], research_col, str(experience_research.get("source_note", "")))
+            research_note = (
+                f"experience: {experience_research.get('source_note', '')}; "
+                f"market: {role_market_intel.get('source_note', '')}"
+            )
+            ws.update_cell(job["row_num"], research_col, research_note)
             logger.info("  ✓ Sheet updated.")
 
             success += 1
