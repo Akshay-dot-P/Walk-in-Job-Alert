@@ -21,6 +21,8 @@ J. AI tailoring strategy: chooses projects, skills, work framing, and project
    bullet guidance from JD + grounded candidate/project evidence
 K. Role-market intelligence: searches Reddit, GitHub, and web snippets for the
    target job title, then feeds market skills/keywords/project angles into AI
+L. AppSec fallback profile + project/experience sanitizers for vague endings
+   and cross-project keyword leakage
 
 EXISTING FEATURES (unchanged)
 B1. extract_keywords(jd_text) → semantic TF-IDF + cosine, Groq fallback
@@ -46,11 +48,22 @@ ADD TO requirements.txt:
 
 WORKFLOW env:
   VALIDATION_MODE: normal            # lenient | normal | strict
+  GROQ_GEN_MODEL: llama-3.3-70b-versatile
+  GROQ_VAL_MODEL: llama-3.1-8b-instant
+  GROQ_MAX_RETRIES: 1                # Fail fast on rate limits; fallbacks keep run moving
+  GROQ_429_WAIT_BASE: 10
+  GROQ_MIN_INTERVAL_SECONDS: 2
+  GROQ_COOLDOWN_AFTER_429S: 3
+  GROQ_COOLDOWN_SECONDS: 300
+  MAX_JOBS_PER_RUN: 5
   AI_TAILORING: true                 # AI chooses projects/skills/work framing
   ROLE_MARKET_RESEARCH: true         # Looks up role-market skills/keywords
+  ROLE_MARKET_LLM_SUMMARY: false     # Keep parallel research HTTP-only by default
   PROJECT_GITHUB_RESEARCH: true      # Pulls README evidence from project repos
   PROJECT_README_MAX_CHARS: 3500
   ALLOW_INFERRED_PROJECT_TOOLS: false # If true, can add JD tools without repo evidence
+  RECRUITER_SIMULATION: false
+  USE_LLM_SHORTENING: false
   ROLE_MARKET_MAX_WEB: 4
   ROLE_MARKET_MAX_GITHUB: 4
   ROLE_MARKET_MAX_REDDIT: 5
@@ -67,7 +80,7 @@ WORKFLOW env:
 
 from __future__ import annotations
 
-import os, sys, re, json, time, io, base64, logging, requests, subprocess, tempfile
+import os, sys, re, json, time, io, base64, logging, requests, subprocess, tempfile, threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -93,6 +106,10 @@ logger = logging.getLogger(__name__)
 # Groq call budget counter  [NEW — tracks total API calls per run]
 # ─────────────────────────────────────────────────────────────────────────────
 _groq_call_count: int = 0
+_groq_consecutive_429s: int = 0
+_groq_cooldown_until: float = 0.0
+_groq_last_call_ts: float = 0.0
+_GROQ_LOCK = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
@@ -115,16 +132,33 @@ def _env_int(name: str, default: int, min_value: int = 0, max_value: int | None 
     return value
 
 
+def _env_float(name: str, default: float, min_value: float = 0.0,
+               max_value: float | None = None) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        value = default
+    value = max(value, min_value)
+    if max_value is not None:
+        value = min(value, max_value)
+    return value
+
+
 def _split_env_list(raw: str) -> list[str]:
     return [x.strip() for x in re.split(r"[\n,]+", raw or "") if x.strip()]
 
 
 SHEET_NAME        = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
 GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
-GROQ_GEN_MODEL    = "llama-3.1-8b-instant"
-GROQ_VAL_MODEL    = "llama-3.1-8b-instant"
+GROQ_GEN_MODEL    = os.environ.get("GROQ_GEN_MODEL", "llama-3.3-70b-versatile")
+GROQ_VAL_MODEL    = os.environ.get("GROQ_VAL_MODEL", "llama-3.1-8b-instant")
 GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
-MAX_JOBS_PER_RUN  = 10
+GROQ_MAX_RETRIES  = _env_int("GROQ_MAX_RETRIES", 1, 1, 5)
+GROQ_429_WAIT_BASE = _env_float("GROQ_429_WAIT_BASE", 10.0, 0.0, 120.0)
+GROQ_MIN_INTERVAL_SECONDS = _env_float("GROQ_MIN_INTERVAL_SECONDS", 2.0, 0.0, 60.0)
+GROQ_COOLDOWN_AFTER_429S = _env_int("GROQ_COOLDOWN_AFTER_429S", 3, 0, 20)
+GROQ_COOLDOWN_SECONDS = _env_int("GROQ_COOLDOWN_SECONDS", 300, 0, 3600)
+MAX_JOBS_PER_RUN  = _env_int("MAX_JOBS_PER_RUN", 5, 1, 20)
 TEMPLATE_PATH     = Path(__file__).parent / "resume_template.docx"
 GITHUB_TOKEN      = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "")
@@ -137,8 +171,11 @@ WEB_RESUME_RESEARCH            = _env_bool("WEB_RESUME_RESEARCH", True)
 FORUM_RESEARCH                 = _env_bool("FORUM_RESEARCH", True)
 AI_TAILORING                   = _env_bool("AI_TAILORING", True)
 ROLE_MARKET_RESEARCH           = _env_bool("ROLE_MARKET_RESEARCH", True)
+ROLE_MARKET_LLM_SUMMARY        = _env_bool("ROLE_MARKET_LLM_SUMMARY", False)
 PROJECT_GITHUB_RESEARCH        = _env_bool("PROJECT_GITHUB_RESEARCH", True)
 ALLOW_INFERRED_PROJECT_TOOLS   = _env_bool("ALLOW_INFERRED_PROJECT_TOOLS", False)
+RECRUITER_SIMULATION           = _env_bool("RECRUITER_SIMULATION", False)
+USE_LLM_SHORTENING             = _env_bool("USE_LLM_SHORTENING", False)
 RESUME_RESEARCH_MAX_WEB        = _env_int("RESUME_RESEARCH_MAX_WEB", 3, 0, 8)
 FORUM_RESEARCH_MAX_POSTS       = _env_int("FORUM_RESEARCH_MAX_POSTS", 6, 0, 20)
 PROJECT_README_MAX_CHARS       = _env_int("PROJECT_README_MAX_CHARS", 3500, 500, 8000)
@@ -255,7 +292,8 @@ def apply_synonyms(text: str) -> str:
 #    Terms the candidate has but the JD doesn't mention also score near 0.
 #    Only the intersection surfaces — which is exactly what we want for ATS.
 #
-# 5. Fallback: if sklearn is not installed, the Groq LLM is called instead.
+# 5. Fallback: if sklearn is not installed, deterministic catalog matching is
+#    still used so keyword extraction does not burn Groq calls.
 # ─────────────────────────────────────────────────────────────────────────────
 _CYBER_STOPWORDS = {
     "experience", "knowledge", "understanding", "ability", "skill", "skills",
@@ -264,6 +302,9 @@ _CYBER_STOPWORDS = {
     "including", "following", "responsible", "responsibilities", "etc",
     "years", "year", "day", "days", "time", "using", "used", "use",
     "help", "ensure", "support", "provide", "manage", "develop", "maintain",
+    "cyber", "cybersecurity", "security", "information", "technical",
+    "engineer", "analyst", "associate", "intern", "internship", "trainee",
+    "summer", "hiring", "entry", "level", "solutions", "business",
 }
 
 _CANDIDATE_PROFILE = """
@@ -279,6 +320,218 @@ gdpr sox itgc risk assessment vendor risk transaction monitoring aml kyc
 sanctions screening wireshark nmap tcp ip firewall ids ips endpoint security
 windows linux active directory powershell cyber kill chain
 """
+
+_KEYWORD_TOOL_PATTERNS = [
+    ("Splunk", r"\bsplunk\b|\bspl\b"),
+    ("SIEM", r"\bsiem\b"),
+    ("Elastic SIEM", r"\belastic\b|\belk\b|\bkibana\b"),
+    ("QRadar", r"\bqradar\b"),
+    ("Microsoft Sentinel", r"\b(?:azure\s+)?sentinel\b|\bmicrosoft\s+sentinel\b"),
+    ("CrowdStrike Falcon", r"\bcrowdstrike\b|\bfalcon\b"),
+    ("Microsoft Defender", r"\bmicrosoft\s+defender\b|\bdefender\b|\bmde\b"),
+    ("Sysmon", r"\bsysmon\b"),
+    ("Sigma rules", r"\bsigma(?:\s+rules?)?\b"),
+    ("SOAR", r"\bsoar\b|security orchestration"),
+    ("VirusTotal", r"\bvirustotal\b"),
+    ("AbuseIPDB", r"\babuseipdb\b"),
+    ("URLScan.io", r"\burlscan(?:\.io)?\b"),
+    ("Nessus", r"\bnessus\b"),
+    ("OpenVAS", r"\bopenvas\b"),
+    ("Burp Suite", r"\bburp(?:\s+suite)?\b"),
+    ("OWASP ZAP", r"\bowasp\s+zap\b|\bzap\b"),
+    ("Metasploit", r"\bmetasploit\b"),
+    ("Nmap", r"\bnmap\b"),
+    ("Wireshark", r"\bwireshark\b"),
+    ("Python", r"\bpython\b"),
+    ("Bash", r"\bbash\b"),
+    ("PowerShell", r"\bpowershell\b"),
+    ("SQL", r"\bsql\b"),
+    ("AWS", r"\baws\b|amazon web services"),
+    ("CloudTrail", r"\bcloudtrail\b"),
+    ("GuardDuty", r"\bguardduty\b"),
+    ("boto3", r"\bboto3\b"),
+    ("CyberArk", r"\bcyberark\b"),
+    ("SailPoint", r"\bsailpoint\b"),
+    ("Okta", r"\bokta\b"),
+    ("Active Directory", r"\bactive directory\b|\bad\b"),
+    ("Linux", r"\blinux\b"),
+    ("Windows", r"\bwindows\b"),
+    ("Docker", r"\bdocker\b"),
+    ("Kubernetes", r"\bkubernetes\b|\bk8s\b"),
+    ("Trivy", r"\btrivy\b"),
+    ("Semgrep", r"\bsemgrep\b"),
+    ("Qualys", r"\bqualys\b"),
+    ("Tenable", r"\btenable(?:\.io)?\b"),
+]
+
+_KEYWORD_ACTION_PATTERNS = [
+    ("alert triage", r"\balert\s+triage\b|\btriag(?:e|ed|ing)\b"),
+    ("incident investigation", r"\bincident\s+investigation\b|\binvestigat(?:e|ed|ing|ion)\b"),
+    ("analysis", r"\blog\s+analysis\b|\banaly(?:s[ei]s|ze|zed|zing)\b"),
+    ("security monitoring", r"\bmonitor(?:ing|ed)?\b"),
+    ("threat detection", r"\bdetect(?:ion|ed|ing)?\b"),
+    ("incident response", r"\brespond(?:ed|ing)?\b|\bresponse\b"),
+    ("remediation tracking", r"\bremediat(?:e|ed|ing|ion)\b|\bpatch(?:ing)?\b"),
+    ("risk assessment", r"\brisk\s+assessment\b|\bassess(?:ed|ing)?\b"),
+    ("control testing", r"\bcontrol\s+test(?:ing)?\b"),
+    ("security testing", r"\b(?:security|application|penetration)\s+test(?:ing)?\b"),
+    ("audit documentation", r"\baudit(?:ed|ing)?\b|\bdocument(?:ed|ing|ation)?\b"),
+    ("incident escalation", r"\bescalat(?:e|ed|ing|ion)\b"),
+    ("IOC enrichment", r"\benrich(?:ed|ing|ment)?\b"),
+    ("vulnerability scanning", r"\bscan(?:ned|ning)?\b"),
+    ("threat hunting", r"\bhunt(?:ed|ing)?\b"),
+    ("risk prioritization", r"\bprioriti[sz](?:e|ed|ing|ation)\b"),
+    ("evidence review", r"\breview(?:ed|ing)?\b|\bvalidat(?:e|ed|ing|ion)\b"),
+    ("automation", r"\bautomat(?:e|ed|ing|ion)\b"),
+]
+
+_KEYWORD_CONCEPT_PATTERNS = [
+    ("SOC operations", r"\bsoc\b|security operations center|blue team"),
+    ("incident response", r"\bincident response\b|\bdfir\b"),
+    ("threat intelligence", r"\bthreat intelligence\b|\bcti\b"),
+    ("IOC analysis", r"\bioc(?:s)?\b|indicator(?:s)? of compromise"),
+    ("OSINT", r"\bosint\b|open source intelligence"),
+    ("phishing analysis", r"\bphishing\b"),
+    ("typosquatting", r"\btyposquat(?:ting)?\b|brand impersonat"),
+    ("MITRE ATT&CK", r"\bmitre(?:\s+att&ck|\s+attack)?\b|\batt&ck\b"),
+    ("TTP mapping", r"\bttps?\b|tactics techniques procedures"),
+    ("Cyber Kill Chain", r"\bcyber kill chain\b"),
+    ("vulnerability management", r"\bvulnerability management\b|\bpatch management\b"),
+    ("vulnerability assessment", r"\bvulnerability assessment\b|\bvapt\b"),
+    ("penetration testing", r"\bpenetration testing\b|\bpentest(?:ing)?\b"),
+    ("application security", r"\bapplication security\b|\bappsec\b|product security"),
+    ("OWASP Top 10", r"\bowasp(?:\s+top\s+10)?\b"),
+    ("CVE analysis", r"\bcve(?:s)?\b|\bnvd\b"),
+    ("CVSS scoring", r"\bcvss\b"),
+    ("EPSS scoring", r"\bepss\b"),
+    ("secure SDLC", r"\bsecure sdlc\b|\bsdlc\b|devsecops"),
+    ("GRC", r"\bgrc\b|governance risk compliance"),
+    ("compliance monitoring", r"\bcompliance\b|regulatory compliance"),
+    ("control validation", r"\bcontrol(?:s)?\b|control validation"),
+    ("audit evidence", r"\baudit evidence\b|evidence completeness|audit trail"),
+    ("NIST CSF", r"\bnist(?:\s+csf)?\b"),
+    ("ISO 27001", r"\biso\s*27001\b"),
+    ("PCI-DSS", r"\bpci[-\s]?dss\b"),
+    ("GDPR", r"\bgdpr\b"),
+    ("SOX/ITGC", r"\bsox\b|\bitgc\b"),
+    ("technology risk", r"\btechnology risk\b|\bit risk\b|cyber risk"),
+    ("vendor risk", r"\bvendor risk\b|third[- ]party risk|tprm"),
+    ("IAM", r"\biam\b|identity and access management"),
+    ("identity governance", r"\bidentity governance\b|access governance|iga\b"),
+    ("privileged access", r"\bprivileged access\b|\bpam\b"),
+    ("cloud security", r"\bcloud security\b|aws security|azure security|gcp security"),
+    ("cloud misconfiguration", r"\bcloud misconfiguration\b|\bcspm\b"),
+    ("least privilege", r"\bleast privilege\b"),
+    ("zero trust", r"\bzero trust\b"),
+    ("network security", r"\bnetwork security\b"),
+    ("IDS/IPS", r"\bids\b|\bips\b|intrusion detection|intrusion prevention"),
+    ("firewall", r"\bfirewall\b"),
+    ("endpoint security", r"\bendpoint security\b|\bedr\b|\bxdr\b"),
+    ("packet analysis", r"\bpacket analysis\b|\bpcap\b|tcp/ip"),
+    ("digital forensics", r"\bdigital forensics\b|\bforensics\b"),
+    ("chain of custody", r"\bchain of custody\b"),
+    ("fraud detection", r"\bfraud detection\b|\bfraud\b"),
+    ("transaction monitoring", r"\btransaction monitoring\b"),
+    ("AML/KYC", r"\baml\b|\bkyc\b|anti-money laundering|know your customer"),
+    ("sanctions screening", r"\bsanctions screening\b|\bsanctions\b"),
+    ("trust and safety", r"\btrust\s*(?:and|&)\s*safety\b"),
+    ("privacy compliance", r"\bprivacy\b|data protection|dpdp|pdpb"),
+]
+
+
+def _normalise_keyword(term: str) -> str:
+    return re.sub(r"\s+", " ", str(term or "")).strip(" .;:-_/|")
+
+
+def _keyword_key(term: str) -> str:
+    return _normalise_keyword(term).lower()
+
+
+def _is_generic_keyword(term: str) -> bool:
+    key = _keyword_key(term)
+    if len(key) < 3:
+        return True
+    words = key.split()
+    return all(w in _CYBER_STOPWORDS for w in words) or key in _CYBER_STOPWORDS
+
+
+def _append_keyword(items: list[str], term: str, limit: int | None = None) -> None:
+    term = _normalise_keyword(term)
+    if not term or _is_generic_keyword(term):
+        return
+    term_key = _keyword_key(term)
+    for i, existing in enumerate(list(items)):
+        existing_key = _keyword_key(existing)
+        if term_key == existing_key or term_key in existing_key:
+            return
+        if existing_key in term_key:
+            items[i] = term
+            return
+    if limit is None or len(items) < limit:
+        items.append(term)
+
+
+def _regex_term_present(term: str, text: str) -> bool:
+    pattern = re.escape(_normalise_keyword(term)).replace(r"\ ", r"\s+")
+    return bool(re.search(rf"(?<!\w){pattern}(?!\w)", text or "", re.IGNORECASE))
+
+
+def _catalog_keyword_matches(jd_text: str) -> list[tuple[str, str, int]]:
+    matches = []
+    seen = set()
+    for category, patterns in (
+        ("tools", _KEYWORD_TOOL_PATTERNS),
+        ("actions", _KEYWORD_ACTION_PATTERNS),
+        ("concepts", _KEYWORD_CONCEPT_PATTERNS),
+    ):
+        for label, pattern in patterns:
+            match = re.search(pattern, jd_text or "", re.IGNORECASE)
+            key = (category, _keyword_key(label))
+            if match and key not in seen:
+                seen.add(key)
+                matches.append((category, label, match.start()))
+    category_weight = {"tools": 0, "concepts": 1, "actions": 2}
+    return sorted(matches, key=lambda item: (category_weight[item[0]], item[2], -len(item[1])))
+
+
+def _keyword_category(term: str) -> str | None:
+    term = _normalise_keyword(term)
+    for category, patterns in (
+        ("tools", _KEYWORD_TOOL_PATTERNS),
+        ("concepts", _KEYWORD_CONCEPT_PATTERNS),
+        ("actions", _KEYWORD_ACTION_PATTERNS),
+    ):
+        for label, pattern in patterns:
+            if _keyword_key(term) == _keyword_key(label) or re.search(pattern, term, re.IGNORECASE):
+                return category
+    return None
+
+
+def _keyword_grounding_text() -> str:
+    parts = [_CANDIDATE_PROFILE]
+    try:
+        for project in PROJECTS.values():
+            parts.append(project.get("title", ""))
+            parts.extend(project.get("tech_base", []))
+            parts.extend(project.get("bullets", []))
+            for values in project.get("tech_swappable", {}).values():
+                parts.extend(values)
+    except NameError:
+        pass
+    return " ".join(parts).lower()
+
+
+def _fallback_jd_terms(jd_text: str) -> list[str]:
+    tokens = [
+        t for t in re.findall(r"[a-zA-Z][a-zA-Z0-9+#.-]{2,}", (jd_text or "").lower())
+        if t not in _CYBER_STOPWORDS
+    ]
+    counts = Counter(tokens)
+    ranked = []
+    for term, _ in counts.most_common(30):
+        if _keyword_category(term) or _is_groundable_keyword(term):
+            _append_keyword(ranked, term, 12)
+    return ranked
 
 
 def _extract_keywords_groq_fallback(jd_text: str) -> dict:
@@ -302,88 +555,111 @@ def _extract_keywords_groq_fallback(jd_text: str) -> dict:
 
 def extract_keywords(jd_text: str) -> dict:
     """
-    Semantic JD keyword extraction using TF-IDF cosine similarity.
+    Hybrid JD keyword extraction:
+    1. deterministic catalog match for concrete tools/actions/concepts
+    2. TF-IDF ranking for remaining JD terms, with grounding as a bonus
+
     Accepts a pre-weighted JD string (title 3x, skills 2x, summary 1x).
-    Falls back to Groq LLM if sklearn is not installed.
+    Falls back to deterministic catalog + token ranking if sklearn is absent.
     """
     if not jd_text or len(jd_text.strip()) < 30:
         return {"tools": [], "concepts": [], "actions": [], "ranked": []}
 
+    tools, actions, concepts, ranked_terms = [], [], [], []
+    catalog_matches = _catalog_keyword_matches(jd_text)
+    for category, label, _pos in catalog_matches:
+        if category == "tools":
+            _append_keyword(tools, label, 8)
+        elif category == "actions":
+            _append_keyword(actions, label, 8)
+        elif category == "concepts":
+            _append_keyword(concepts, label, 8)
+        _append_keyword(ranked_terms, label, 20)
+
     try:
         from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
         import numpy as np
     except ImportError:
-        logger.warning("  sklearn not installed — using Groq keyword fallback")
-        return _extract_keywords_groq_fallback(jd_text)
+        for term in _fallback_jd_terms(jd_text):
+            category = _keyword_category(term)
+            if category == "tools":
+                _append_keyword(tools, term, 8)
+            elif category == "actions":
+                _append_keyword(actions, term, 8)
+            elif category == "concepts":
+                _append_keyword(concepts, term, 8)
+            _append_keyword(ranked_terms, term, 20)
+        logger.info(
+            "  JD keywords (rule-based) — top 5: %s | tools: %s | actions: %s",
+            ranked_terms[:5], tools[:3], actions[:3],
+        )
+        return {
+            "tools":    tools[:6],
+            "concepts": concepts[:6],
+            "actions":  actions[:6],
+            "ranked":   ranked_terms[:15],
+        }
 
     vectorizer = TfidfVectorizer(
-        ngram_range=(1, 2),
-        max_features=200,
-        stop_words="english",
+        ngram_range=(1, 3),
+        max_features=450,
+        stop_words=list(ENGLISH_STOP_WORDS.union(_CYBER_STOPWORDS)),
         token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z0-9\+\#\-\.]{1,}\b",
         sublinear_tf=True,
     )
-    # Two documents: JD (what employer wants) vs candidate profile (what we have)
-    docs = [jd_text.lower(), _CANDIDATE_PROFILE.lower()]
+    grounding_text = _keyword_grounding_text()
+    docs = [jd_text.lower(), grounding_text]
     try:
         tfidf_matrix = vectorizer.fit_transform(docs)
     except ValueError:
-        return {"tools": [], "concepts": [], "actions": [], "ranked": []}
+        return {
+            "tools":    tools[:6],
+            "concepts": concepts[:6],
+            "actions":  actions[:6],
+            "ranked":   ranked_terms[:15],
+        }
 
     feature_names = vectorizer.get_feature_names_out()
     jd_arr   = tfidf_matrix[0].toarray()[0]
     cand_arr = tfidf_matrix[1].toarray()[0]
 
-    # Element-wise product = intersection of JD importance × candidate relevance
-    # (dot-product component of cosine similarity — see module docstring above)
-    scores = jd_arr * cand_arr
-
-    ranked_terms = []
-    for idx in np.argsort(scores)[::-1]:
+    scored_terms = []
+    catalog_labels = {_keyword_key(label) for _cat, label, _pos in catalog_matches}
+    for idx in np.argsort(jd_arr)[::-1]:
         term  = feature_names[idx]
-        score = scores[idx]
-        if score < 0.001:
+        jd_score = jd_arr[idx]
+        if jd_score < 0.001:
             break
+        term = _normalise_keyword(term)
         words = term.split()
-        if any(w in _CYBER_STOPWORDS for w in words):
+        if _is_generic_keyword(term) or any(w in _CYBER_STOPWORDS for w in words):
             continue
         if len(term) < 3:
             continue
-        ranked_terms.append(term)
-        if len(ranked_terms) >= 15:
+        category = _keyword_category(term)
+        grounded_bonus = min(cand_arr[idx] * 1.5, 0.7)
+        category_bonus = {"tools": 0.55, "concepts": 0.40, "actions": 0.30}.get(category, 0.0)
+        catalog_bonus = 0.8 if _keyword_key(term) in catalog_labels else 0.0
+        phrase_bonus = 0.12 * min(len(words), 3)
+        score = jd_score + grounded_bonus + category_bonus + catalog_bonus + phrase_bonus
+        scored_terms.append((score, term, category))
+
+    for _score, term, category in sorted(scored_terms, key=lambda item: item[0], reverse=True):
+        if category == "tools":
+            _append_keyword(tools, term, 8)
+        elif category == "actions":
+            _append_keyword(actions, term, 8)
+        elif category == "concepts":
+            _append_keyword(concepts, term, 8)
+        _append_keyword(ranked_terms, term, 20)
+        if len(ranked_terms) >= 18 and len(tools) >= 2 and len(actions) >= 2:
             break
 
-    tool_signals = {
-        "splunk","siem","nessus","openvas","wireshark","nmap",
-        "python","bash","sigma","soar","virustotal","abuseipdb",
-        "urlscan","aws","boto3","cloudtrail","guardduty","elastic",
-        "qradar","sentinel","crowdstrike","defender","sysmon",
-    }
-    action_signals = {
-        "triage","investigate","analyze","detect","monitor",
-        "escalat","assess","audit","document","enrich","scan",
-        "hunt","respond","remediat","prioriti",
-    }
-    concept_signals = {
-        "threat","intelligence","compliance","risk","incident",
-        "vulnerability","framework","policy","control","audit",
-        "mitre","attack","kill chain","ttp","ioc","cvss","epss",
-        "owasp","nist","iso","pci","gdpr","aml","kyc",
-    }
-
-    tools, actions, concepts = [], [], []
-    for term in ranked_terms:
-        tl = term.lower()
-        if any(s in tl for s in tool_signals):
-            tools.append(term)
-        elif any(s in tl for s in action_signals):
-            actions.append(term)
-        elif any(s in tl for s in concept_signals):
-            concepts.append(term)
-
     logger.info(
-        "  Semantic keywords — top 5: %s | tools: %s | actions: %s",
+        "  JD keywords — top 5: %s | tools: %s | actions: %s | concepts: %s",
         ranked_terms[:5], tools[:3], actions[:3],
+        concepts[:3],
     )
     return {
         "tools":    tools[:6],
@@ -439,6 +715,20 @@ CANDIDATE_GROUNDABLE = {
 }
 
 
+def _is_groundable_keyword(keyword: str) -> bool:
+    key = _keyword_key(keyword)
+    if not key or _is_generic_keyword(key):
+        return False
+    groundable = {_keyword_key(item) for item in CANDIDATE_GROUNDABLE}
+    if key in groundable:
+        return True
+    # Only phrase-level partial matching is safe. This avoids junk like
+    # "domain" being accepted because "domain analysis" is groundable.
+    if " " in key:
+        return any(key in item or item in key for item in groundable)
+    return False
+
+
 def dynamic_skills_augment(profile_skills: dict, jd_keywords: dict) -> dict:
     ranked = jd_keywords.get("ranked", []) + jd_keywords.get("tools", [])
     if not ranked:
@@ -447,7 +737,7 @@ def dynamic_skills_augment(profile_skills: dict, jd_keywords: dict) -> dict:
     safe   = []
     for kw in ranked[:15]:
         kl = kw.lower()
-        if any(g in kl or kl in g for g in CANDIDATE_GROUNDABLE):
+        if _is_groundable_keyword(kw):
             if not any(kl in v.lower() for v in skills.values()):
                 safe.append(kw)
     if safe:
@@ -551,10 +841,17 @@ SKILL_PROFILES = {
         "SK_L4":"Systems & Tools",     "SK_V4":"Windows internals, Linux fundamentals, Python, Excel, SQL (basic), TCP/IP basics",
         "SK_L5":"Frameworks",          "SK_V5":"MITRE ATT&CK, OWASP Top 10, Incident Response (PICERL), audit trail documentation",
     },
+    "appsec_security": {
+        "SK_L1":"Application Security", "SK_V1":"OWASP Top 10, vulnerability assessment, injection detection, broken authentication, SSRF analysis",
+        "SK_L2":"Testing Tools",        "SK_V2":"Nessus, OpenVAS, OWASP ZAP, CVSS/EPSS severity classification",
+        "SK_L3":"Security Review",      "SK_V3":"CVE research, remediation tracking, vulnerability-to-fix documentation, secure code review basics",
+        "SK_L4":"Systems & Scripting",  "SK_V4":"Python, Bash, NVD API, Linux fundamentals, TCP/IP, HTTP/S, DNS",
+        "SK_L5":"Frameworks",           "SK_V5":"MITRE ATT&CK, NIST CSF, secure development lifecycle, patch compliance tracking",
+    },
 }
 
 DOMAIN_SKILL_PROFILE = {
-    "SOC":"soc_security","VAPT":"soc_security","AppSec":"soc_security","Forensics":"soc_security",
+    "SOC":"soc_security","VAPT":"soc_security","AppSec":"appsec_security","Forensics":"soc_security",
     "CloudSec":"soc_security_cloud","IAM":"soc_security_cloud",
     "Network":"networking_entry",
     "GRC":"grc_risk_fraud","Risk":"grc_risk_fraud","Fraud-AML":"grc_risk_fraud",
@@ -891,7 +1188,9 @@ AMAZON_FOCUS_PATTERNS = [
     ("cloud_security",        r"\b(cloud security|aws security|azure security|gcp security|cspm|cloudtrail|guardduty|cloud iam)\b"),
     ("incident_response",     r"\b(incident response|incident responder|dfir|forensic|digital forensics|ediscovery)\b"),
     ("threat_intel",          r"\b(threat intelligence|cti|osint|threat hunting|ioc|indicator|dark web|threat research)\b"),
-    ("vulnerability_management", r"\b(vulnerability|vapt|penetration|pentest|appsec|application security|devsecops|sast|dast|patch management)\b"),
+    ("vulnerability_management", r"\b(product security|bug bounty|vulnerability disclosure|security review|"
+                                 r"threat model|api security|vulnerability|vapt|penetration|pentest|"
+                                 r"appsec|application security|devsecops|sast|dast|patch management)\b"),
     ("network_security",      r"\b(network security|ids|ips|firewall|intrusion|packet|endpoint security)\b"),
     ("soc",                   r"\b(soc|siem|blue team|alert triage|security monitoring|security operations center|tier\s*[12]|l[12]\s+analyst)\b"),
     ("security_operations",   r"\b(security operations|detect and respond|security monitoring analyst)\b"),
@@ -1005,6 +1304,8 @@ THREE_LENS_FRAMES = {
                   "eligibility validation, access review discipline, policy exception handling, governance documentation"),
     "Forensics": ("AUDIT TRAIL",        "PATTERN DETECTION",
                   "evidence packaging, incident timeline reconstruction, root cause isolation, PICERL handoff"),
+    "AppSec":    ("PATTERN DETECTION",  "AUDIT TRAIL",
+                  "vulnerability triage, severity scoring, OWASP classification, remediation tracking, security review evidence"),
     "General":   ("TRIAGE DISCIPLINE",  "AUDIT TRAIL",
                   "structured escalation, severity-based prioritization, audit documentation, pattern recognition"),
 }
@@ -1193,6 +1494,19 @@ def jd_gap_analysis(jd_text: str, jd_keywords: dict) -> dict:
     return {"can_frame": can_frame, "cannot_meet": cannot_meet, "gap_instruction": gap_instruction}
 
 
+_VAGUE_OUTCOME_RE = re.compile(
+    r"\b(?:ensuring|for improved|for better|for enhanced|for timely|"
+    r"for efficient|for optimal|for greater)\s+\w+(?:\s+\w+)?\s*[.;]?\s*$",
+    re.IGNORECASE,
+)
+
+_ARTIFACT_WORDS_RE = re.compile(
+    r",\s*\b(security|management|resolution|accountability|transparency|"
+    r"allocation|efficiency)\s*[.;]?\s*$",
+    re.IGNORECASE,
+)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SANITIZE AMAZON BULLETS
 # [CHANGE B] weak_detail now requires ≥ 2 AMAZON_DETAIL_TOKENS (was ≥ 1)
@@ -1215,6 +1529,8 @@ def sanitize_amazon_bullets(content: dict, job: dict,
         weak_density = len(bullet) < AMAZON_MIN_CHARS
         # [CHANGE B] require at least 2 detail tokens to prevent thin bullets
         weak_detail = sum(1 for token in AMAZON_DETAIL_TOKENS if token in lowered) < 2
+        weak_vague_ending = bool(_VAGUE_OUTCOME_RE.search(bullet))
+        artifact_ending   = bool(_ARTIFACT_WORDS_RE.search(bullet))
         invalid = (
             not bullet
             or len(bullet) > AMAZON_MAX_CHARS
@@ -1224,6 +1540,8 @@ def sanitize_amazon_bullets(content: dict, job: dict,
             or weak_density
             or weak_detail
             or _has_purpose_clause(bullet)
+            or weak_vague_ending
+            or artifact_ending
         )
         content[key] = fallback[key] if invalid else bullet
     return content
@@ -1268,6 +1586,44 @@ def sanitize_project_bullets(content: dict) -> dict:
         if bullet and bullet[-1] not in ".!?":
             bullet += "."
         content[key] = bullet
+    return content
+
+
+_PROJECT_EXCLUSIVE_TERMS: dict[str, re.Pattern] = {
+    "vuln_scanner": re.compile(
+        r"\b(typosquat|telegram bot|urlscan\.io|abuseipdb|whois|brand impersonat)\b",
+        re.IGNORECASE,
+    ),
+    "phishing_osint": re.compile(
+        r"\b(epss|nessus|openvas|nvd api|cvss severity|delta.scan|patch compliance|"
+        r"soar pipeline|sigma rules)\b",
+        re.IGNORECASE,
+    ),
+    "soc_auto": re.compile(
+        r"\b(sql injection|owasp top|sqli|cve report|patch scheduling|patch compliance)\b",
+        re.IGNORECASE,
+    ),
+}
+
+
+def strip_cross_project_terms(content: dict, p1_key: str, p2_key: str) -> dict:
+    for prefix, project_key in (("P1", p1_key), ("P2", p2_key)):
+        exclusive_re = _PROJECT_EXCLUSIVE_TERMS.get(project_key)
+        if not exclusive_re:
+            continue
+        for bullet_key in (f"{prefix}_B1", f"{prefix}_B2", f"{prefix}_B3"):
+            bullet = str(content.get(bullet_key, ""))
+            if not bullet or not exclusive_re.search(bullet):
+                continue
+            cleaned = exclusive_re.sub("", bullet)
+            cleaned = re.sub(r"\s+([.;,])", r"\1", cleaned)
+            cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,;.")
+            if len(cleaned) > 40:
+                logger.warning(
+                    "  Cross-project term stripped from %s (%s): %s",
+                    bullet_key, project_key, bullet[:70],
+                )
+                content[bullet_key] = cleaned + ("." if cleaned[-1] not in ".!?" else "")
     return content
 
 
@@ -1341,6 +1697,67 @@ def get_project_bullets(project_key: str, domain: str) -> list[str]:
         if variant_name in variants:
             return variants[variant_name]
     return PROJECTS[project_key]["bullets"]
+
+
+_PROJECT_SIGNALS: dict[str, dict[str, set[str]]] = {
+    "soc_auto": {
+        "strong": {
+            "splunk", "siem", "sigma rules", "soar", "alert triage",
+            "blue team", "detection engineering", "threat hunting",
+            "security operations center", "mitre att&ck", "picerl",
+            "soc analyst", "log correlation",
+        },
+        "weak": {
+            "incident", "detection", "monitoring", "correlation",
+            "log analysis", "brute force", "lateral movement",
+            "edr", "playbook", "sigma", "spl",
+        },
+    },
+    "vuln_scanner": {
+        "strong": {
+            "vulnerability management", "cvss", "epss", "nessus", "openvas",
+            "penetration testing", "vapt", "appsec", "application security",
+            "owasp", "sast", "dast", "devsecops", "patch management",
+            "security testing", "bug bounty", "product security",
+            "vulnerability assessment", "api security", "threat modeling",
+        },
+        "weak": {
+            "cve", "nvd", "patch", "remediation", "scanning", "sqli",
+            "injection", "trivy", "qualys", "tenable", "vulnerability",
+        },
+    },
+    "phishing_osint": {
+        "strong": {
+            "osint", "threat intelligence", "ioc enrichment", "virustotal",
+            "abuseipdb", "typosquatting", "dark web", "cyber threat intelligence",
+            "phishing analysis", "transaction monitoring", "fraud detection",
+            "cti analyst", "threat intel",
+        },
+        "weak": {
+            "phishing", "ioc", "whois", "urlscan", "enrichment",
+            "indicator", "sanctions", "kyc", "aml", "dns lookup",
+        },
+    },
+}
+
+_DOMAIN_PROJECT_BOOST: dict[str, dict[str, int]] = {
+    "SOC":       {"soc_auto": 4},
+    "VAPT":      {"vuln_scanner": 5},
+    "AppSec":    {"vuln_scanner": 6},
+    "GRC":       {"phishing_osint": 3},
+    "Risk":      {"phishing_osint": 3, "vuln_scanner": 1},
+    "Fraud-AML": {"phishing_osint": 6},
+    "CloudSec":  {"soc_auto": 4},
+    "IAM":       {"soc_auto": 3},
+    "Forensics": {"soc_auto": 4},
+    "Network":   {"soc_auto": 4},
+    "General":   {"soc_auto": 2},
+}
+
+_PROJECT_SIGNAL_IGNORE = {
+    "security", "cyber", "cybersecurity", "analyst", "engineer", "associate",
+    "intern", "trainee", "application", "information", "technical",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1442,6 +1859,17 @@ def _project_match_score(project_key: str, job: dict, jd_keywords: dict) -> int:
         " ".join(sum(CONCEPT_SWAPPABLE.get(project_key, {}).values(), [])),
     ]).lower()
     score = 0
+    ranked_terms = [str(kw).lower() for kw in jd_keywords.get("ranked", [])[:14] if str(kw).strip()]
+    tool_terms   = [str(kw).lower() for kw in jd_keywords.get("tools", [])[:8] if str(kw).strip()]
+    signal_terms = set(ranked_terms + tool_terms)
+    signal_tiers = _PROJECT_SIGNALS.get(project_key, {})
+    for kw in signal_terms:
+        if kw in _PROJECT_SIGNAL_IGNORE or len(kw) < 4:
+            continue
+        if any(kw in signal for signal in signal_tiers.get("strong", set())):
+            score += 3
+        elif any(kw in signal for signal in signal_tiers.get("weak", set())):
+            score += 1
     for term in set(re.findall(r"[a-zA-Z][a-zA-Z0-9+#.-]{2,}", jd)):
         if term in _RESEARCH_STOPWORDS:
             continue
@@ -1453,6 +1881,7 @@ def _project_match_score(project_key: str, job: dict, jd_keywords: dict) -> int:
     mapped = DOMAIN_TO_PROJECTS.get(job.get("domain", "General"), ())
     if project_key in mapped:
         score += 5
+    score += _DOMAIN_PROJECT_BOOST.get(job.get("domain", "General"), {}).get(project_key, 0)
     return score
 
 
@@ -2265,7 +2694,7 @@ def _market_avoid_claims(market_terms: list[str], texts: list[str]) -> list[str]
 
 
 def _role_market_llm_summary(job: dict, jd_keywords: dict, sources: list[dict], fallback: dict) -> dict:
-    if not AI_TAILORING or not GROQ_API_KEY or not sources:
+    if not ROLE_MARKET_LLM_SUMMARY or not AI_TAILORING or not GROQ_API_KEY or not sources:
         return fallback
     snippets = "\n\n".join(
         f"[{s.get('kind')}:{s.get('source')}] {s.get('text', '')[:900]}"
@@ -2590,8 +3019,18 @@ def _repair_json(raw: str) -> str:
     return raw.strip()
 
 
-def _call_groq(system: str, user: str, model: str, max_tokens: int = 2500, retries: int = 3) -> str:
-    global _groq_call_count
+def _call_groq(system: str, user: str, model: str,
+               max_tokens: int = 2500, retries: int | None = None) -> str:
+    global _groq_call_count, _groq_consecutive_429s, _groq_cooldown_until, _groq_last_call_ts
+    retries = GROQ_MAX_RETRIES if retries is None else max(1, retries)
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY not set.")
+
+    now = time.time()
+    if _groq_cooldown_until and now < _groq_cooldown_until:
+        remaining = int(_groq_cooldown_until - now)
+        raise RuntimeError(f"Groq cooldown active for {remaining}s after repeated 429s.")
+
     payload = {
         "model": model, "temperature": 0.15, "max_tokens": max_tokens,
         "messages": [{"role":"system","content":system},{"role":"user","content":user}],
@@ -2599,18 +3038,40 @@ def _call_groq(system: str, user: str, model: str, max_tokens: int = 2500, retri
     hdrs = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     for attempt in range(1, retries + 1):
         try:
-            r = requests.post(GROQ_URL, json=payload, headers=hdrs, timeout=35)
+            with _GROQ_LOCK:
+                now = time.time()
+                if _groq_cooldown_until and now < _groq_cooldown_until:
+                    remaining = int(_groq_cooldown_until - now)
+                    raise RuntimeError(f"Groq cooldown active for {remaining}s after repeated 429s.")
+                elapsed = now - _groq_last_call_ts
+                if GROQ_MIN_INTERVAL_SECONDS > 0 and elapsed < GROQ_MIN_INTERVAL_SECONDS:
+                    time.sleep(GROQ_MIN_INTERVAL_SECONDS - elapsed)
+                _groq_last_call_ts = time.time()
+                r = requests.post(GROQ_URL, json=payload, headers=hdrs, timeout=35)
             if r.status_code == 429:
-                wait = 25 * attempt
-                logger.warning("  Groq 429 — waiting %ds (attempt %d/%d)", wait, attempt, retries)
-                time.sleep(wait)
+                _groq_consecutive_429s += 1
+                if GROQ_COOLDOWN_AFTER_429S and _groq_consecutive_429s >= GROQ_COOLDOWN_AFTER_429S:
+                    _groq_cooldown_until = time.time() + GROQ_COOLDOWN_SECONDS
+                    raise RuntimeError(
+                        f"Groq rate-limit circuit opened after {_groq_consecutive_429s} consecutive 429s."
+                    )
+                wait = GROQ_429_WAIT_BASE * attempt
+                logger.warning(
+                    "  Groq 429 — %s (attempt %d/%d, model=%s)",
+                    f"waiting {wait:.0f}s" if attempt < retries and wait > 0 else "no retry wait",
+                    attempt, retries, model,
+                )
+                if attempt < retries and wait > 0:
+                    time.sleep(wait)
                 continue
             r.raise_for_status()
+            _groq_consecutive_429s = 0
             _groq_call_count += 1
             return r.json()["choices"][0]["message"]["content"].strip()
         except requests.RequestException as exc:
-            logger.warning("  Groq error attempt %d: %s", attempt, exc)
-            time.sleep(5 * attempt)
+            logger.warning("  Groq error attempt %d/%d (%s): %s", attempt, retries, model, exc)
+            if attempt < retries:
+                time.sleep(5 * attempt)
     raise RuntimeError(f"Groq ({model}) failed after retries.")
 
 
@@ -2791,6 +3252,7 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
 
     # Project bullet sanitisation (strips unverifiable metrics + purpose clauses)
     content = sanitize_project_bullets(content)
+    content = strip_cross_project_terms(content, p1_key, p2_key)
 
     # Inject pre-generated Amazon bullets and sanitize them
     content.update(amazon_bullets)
@@ -2942,9 +3404,39 @@ def _score_bullet_relevancy(bullet_text: str, ranked_keywords: list) -> int:
     )
 
 
+def _shorten_bullet_deterministic(bullet_text: str, target_chars: int = 160) -> str:
+    bullet = re.sub(r"\s+", " ", bullet_text or "").strip()
+    if not bullet or len(bullet) <= target_chars:
+        return bullet_text
+
+    compact = re.sub(r"\s*\([^)]{12,90}\)", "", bullet)
+    compact = _strip_purpose_clause(compact)
+    if 45 <= len(compact) <= target_chars:
+        return compact.rstrip(" ;,") + ("" if compact.rstrip().endswith((".", "!", "?")) else ".")
+
+    candidates = []
+    for sep in ("; ", ". ", ", and ", ", with ", ", for ", ", "):
+        idx = compact.rfind(sep, 0, target_chars + 1)
+        if idx >= 75:
+            candidates.append(compact[:idx])
+    if candidates:
+        shortened = max(candidates, key=len)
+    else:
+        shortened = compact[:target_chars].rsplit(" ", 1)[0]
+    shortened = shortened.rstrip(" ;,.-")
+    if len(shortened) < 45:
+        return bullet_text
+    if shortened[-1] not in ".!?":
+        shortened += "."
+    logger.info("    Deterministic shorten %d->%d chars", len(bullet_text), len(shortened))
+    return shortened
+
+
 def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
     if not bullet_text or len(bullet_text) <= target_chars:
         return bullet_text
+    if not USE_LLM_SHORTENING:
+        return _shorten_bullet_deterministic(bullet_text, target_chars)
     system = (
         f"You are a resume bullet editor. Shorten the bullet to under {target_chars} characters. "
         "PRESERVE: EPSS context, MITRE mapping, SOAR detail, FIRST.org mention. "
@@ -2959,7 +3451,7 @@ def _shorten_bullet_llm(bullet_text: str, target_chars: int = 160) -> str:
             return result
     except Exception as exc:
         logger.warning("    Bullet shortening failed: %s", exc)
-    return bullet_text
+    return _shorten_bullet_deterministic(bullet_text, target_chars)
 
 
 def _trim_skills_line(skills_value: str, max_items: int = 4) -> str:
@@ -3300,11 +3792,19 @@ def get_pending_jobs(ws, doc_col: int) -> list[dict]:
 #   Phase 3 — sequential generate + validate + upload per job
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
-    global _groq_call_count
+    global _groq_call_count, _groq_consecutive_429s, _groq_cooldown_until, _groq_last_call_ts
     _groq_call_count = 0   # reset counter at start of run
+    _groq_consecutive_429s = 0
+    _groq_cooldown_until = 0.0
+    _groq_last_call_ts = 0.0
 
     logger.info("=" * 60)
     logger.info("Resume Tailor — Research Framework Edition (validation=%s)", VALIDATION_MODE)
+    logger.info(
+        "Groq controls: model=%s retries=%d min_interval=%.1fs market_llm=%s recruiter=%s llm_shortening=%s max_jobs=%d",
+        GROQ_GEN_MODEL, GROQ_MAX_RETRIES, GROQ_MIN_INTERVAL_SECONDS,
+        ROLE_MARKET_LLM_SUMMARY, RECRUITER_SIMULATION, USE_LLM_SHORTENING, MAX_JOBS_PER_RUN,
+    )
     logger.info("=" * 60)
 
     for name, val in [("GROQ_API_KEY",GROQ_API_KEY),("GITHUB_TOKEN",GITHUB_TOKEN),("GITHUB_REPOSITORY",GITHUB_REPOSITORY)]:
@@ -3466,7 +3966,7 @@ def main():
             metrics = compute_metrics(content, jd_keywords, ats_score)
 
             # Recruiter simulation (Feature 6)
-            if VALIDATION_MODE != "lenient":
+            if RECRUITER_SIMULATION and VALIDATION_MODE != "lenient":
                 time.sleep(2)
                 rec_sim = recruiter_simulate(content, job)
             else:
