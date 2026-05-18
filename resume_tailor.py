@@ -529,14 +529,25 @@ SKILL_PROFILES = {
         "SK_L4":"Systems & Tools",     "SK_V4":"Windows internals, Linux fundamentals, Python, Excel, SQL (basic), TCP/IP basics",
         "SK_L5":"Frameworks",          "SK_V5":"MITRE ATT&CK, OWASP Top 10, Incident Response (PICERL), audit trail documentation",
     },
+   # Add to SKILL_PROFILES
+   "appsec_security": {
+       "SK_L1": "Application Security",  "SK_V1": "OWASP Top 10, vulnerability assessment, injection detection, broken auth, SSRF analysis",
+       "SK_L2": "Testing Tools",         "SK_V2": "Nessus, OpenVAS, Burp Suite (basic), OWASP ZAP, CVSS/EPSS severity classification",
+       "SK_L3": "Threat Intelligence",   "SK_V3": "MITRE ATT&CK, IOC analysis, VirusTotal, OSINT enrichment, CVE research",
+       "SK_L4": "Systems & Scripting",   "SK_V4": "Python, Bash, NVD API, Linux fundamentals, TCP/IP, HTTP/S, DNS",
+       "SK_L5": "Frameworks",            "SK_V5": "NIST CSF, secure development lifecycle, patch compliance tracking",
+   },
+
+
 }
 
 DOMAIN_SKILL_PROFILE = {
-    "SOC":"soc_security","VAPT":"soc_security","AppSec":"soc_security","Forensics":"soc_security",
+    "SOC":"soc_security","VAPT":"soc_security","Forensics":"soc_security",
     "CloudSec":"soc_security_cloud","IAM":"soc_security_cloud",
     "Network":"networking_entry",
     "GRC":"grc_risk_fraud","Risk":"grc_risk_fraud","Fraud-AML":"grc_risk_fraud",
     "General":"soc_security",
+    "AppSec": "appsec_security",   # was "soc_security"
 }
 
 
@@ -869,7 +880,9 @@ AMAZON_FOCUS_PATTERNS = [
     ("cloud_security",        r"\b(cloud security|aws security|azure security|gcp security|cspm|cloudtrail|guardduty|cloud iam)\b"),
     ("incident_response",     r"\b(incident response|incident responder|dfir|forensic|digital forensics|ediscovery)\b"),
     ("threat_intel",          r"\b(threat intelligence|cti|osint|threat hunting|ioc|indicator|dark web|threat research)\b"),
-    ("vulnerability_management", r"\b(vulnerability|vapt|penetration|pentest|appsec|application security|devsecops|sast|dast|patch management)\b"),
+    ("vulnerability_management", r"\b(product security|bug bounty|vulnerability disclosure|security review|"
+                                 r"threat model|api security|vulnerability|vapt|penetration|pentest|"
+                                 r"appsec|application security|devsecops|sast|dast|patch management)\b"),    
     ("network_security",      r"\b(network security|ids|ips|firewall|intrusion|packet|endpoint security)\b"),
     ("soc",                   r"\b(soc|siem|blue team|alert triage|security monitoring|security operations center|tier\s*[12]|l[12]\s+analyst)\b"),
     ("security_operations",   r"\b(security operations|detect and respond|security monitoring analyst)\b"),
@@ -985,6 +998,10 @@ THREE_LENS_FRAMES = {
                   "evidence packaging, incident timeline reconstruction, root cause isolation, PICERL handoff"),
     "General":   ("TRIAGE DISCIPLINE",  "AUDIT TRAIL",
                   "structured escalation, severity-based prioritization, audit documentation, pattern recognition"),
+      # Add this entry to THREE_LENS_FRAMES dict
+    "AppSec": ("PATTERN DETECTION", "AUDIT TRAIL",
+              "vulnerability triage, severity scoring, OWASP classification, "
+              "remediation tracking, security review evidence"),
 }
 
 THREE_LENS_DESCRIPTIONS = {
@@ -1160,6 +1177,20 @@ def jd_gap_analysis(jd_text: str, jd_keywords: dict) -> dict:
     return {"can_frame": can_frame, "cannot_meet": cannot_meet, "gap_instruction": gap_instruction}
 
 
+_VAGUE_OUTCOME_RE = re.compile(
+       r"\b(?:ensuring|for improved|for better|for enhanced|for timely|"
+       r"for efficient|for optimal|for greater)\s+\w+(?:\s+\w+)?\s*[.;]?\s*$",
+       re.IGNORECASE,
+)
+   
+   # Catches stray artifact words appended by dynamic_skills_augment leaking into bullets
+   # e.g. "...escalation, security" or "...handoffs, management"
+_ARTIFACT_WORDS_RE = re.compile(
+       r",\s*\b(security|management|resolution|accountability|transparency|"
+       r"allocation|efficiency)\s*[.;]?\s*$",
+       re.IGNORECASE,
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SANITIZE AMAZON BULLETS
 # [CHANGE B] weak_detail now requires ≥ 2 AMAZON_DETAIL_TOKENS (was ≥ 1)
@@ -1171,6 +1202,8 @@ def sanitize_amazon_bullets(content: dict, job: dict,
         r"\b(mirroring|similar to|akin to|central to|used in|required for)\b.*\b(role|roles|soc|security|audit)\b",
         re.IGNORECASE,
     )
+                               # Catches "ensuring X", "for improved X", "for timely X" endings
+
     for key in AMAZON_KEYS:
         bullet = re.sub(r"\s+", " ", str(content.get(key, ""))).strip()
         bullet = bullet.replace(" & ", " and ")
@@ -1182,6 +1215,9 @@ def sanitize_amazon_bullets(content: dict, job: dict,
         weak_density = len(bullet) < AMAZON_MIN_CHARS
         # [CHANGE B] require at least 2 detail tokens to prevent thin bullets
         weak_detail = sum(1 for token in AMAZON_DETAIL_TOKENS if token in lowered) < 2
+
+        weak_vague_ending = bool(_VAGUE_OUTCOME_RE.search(bullet))
+        artifact_ending   = bool(_ARTIFACT_WORDS_RE.search(bullet))
         invalid = (
             not bullet
             or len(bullet) > AMAZON_MAX_CHARS
@@ -1191,6 +1227,8 @@ def sanitize_amazon_bullets(content: dict, job: dict,
             or weak_density
             or weak_detail
             or _has_purpose_clause(bullet)
+            or weak_vague_ending          # NEW
+            or artifact_ending            # NEW
         )
         content[key] = fallback[key] if invalid else bullet
     return content
@@ -1239,67 +1277,108 @@ def sanitize_project_bullets(content: dict) -> dict:
 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DYNAMIC PROJECT SELECTION
-# Replaces static DOMAIN_TO_PROJECTS lookup with keyword-signal scoring.
-# All 3 projects are scored against ranked JD keywords; top 2 are selected.
-# Falls back to DOMAIN_TO_PROJECTS if all scores are zero (sparse JD).
-# ─────────────────────────────────────────────────────────────────────────────
-_PROJECT_SIGNALS = {
+
+
+_PROJECT_SIGNALS: dict[str, dict[str, set[str]]] = {
     "soc_auto": {
-        "splunk", "siem", "sigma", "soar", "alert triage", "incident",
-        "detection", "mitre", "brute force", "lateral movement", "blue team",
-        "soc", "monitoring", "edr", "correlation", "log analysis",
-        "threat hunting", "playbook", "picerl",
+        "strong": {
+            "splunk", "siem", "sigma rules", "soar", "alert triage",
+            "blue team", "detection engineering", "threat hunting",
+            "security operations center", "mitre att&ck", "picerl",
+            "soc analyst", "log correlation",
+        },
+        "weak": {
+            "incident", "detection", "monitoring", "correlation",
+            "log analysis", "brute force", "lateral movement",
+            "edr", "playbook", "sigma", "spl",
+        },
     },
     "vuln_scanner": {
-        "vulnerability", "cvss", "epss", "nessus", "openvas", "patch",
-        "cve", "nvd", "owasp", "appsec", "vapt", "remediation", "scanning",
-        "pentest", "sqli", "injection", "sast", "dast", "devsecops",
-        "trivy", "qualys", "tenable",
+        "strong": {
+            "vulnerability management", "cvss", "epss", "nessus", "openvas",
+            "penetration testing", "vapt", "appsec", "application security",
+            "owasp", "sast", "dast", "devsecops", "patch management",
+            "security testing", "bug bounty", "product security",
+            "vulnerability assessment", "api security", "threat modeling",
+        },
+        "weak": {
+            "cve", "nvd", "patch", "remediation", "scanning", "sqli",
+            "injection", "trivy", "qualys", "tenable", "vulnerability",
+        },
     },
     "phishing_osint": {
-        "osint", "phishing", "threat intel", "ioc", "virustotal", "abuseipdb",
-        "domain", "whois", "dns", "typosquat", "fraud", "aml", "kyc",
-        "brand", "urlscan", "enrichment", "dark web", "cti", "indicator",
-        "sanctions", "transaction monitoring",
+        "strong": {
+            "osint", "threat intelligence", "ioc enrichment", "virustotal",
+            "abuseipdb", "typosquatting", "dark web", "cyber threat intelligence",
+            "phishing analysis", "transaction monitoring", "fraud detection",
+            "cti analyst", "threat intel",
+        },
+        "weak": {
+            "phishing", "ioc", "whois", "urlscan", "enrichment",
+            "indicator", "sanctions", "kyc", "aml", "dns lookup",
+        },
     },
+}
+
+# Flat score bonus added after keyword scoring.
+# Ensures the right project wins even on sparse or vague JDs.
+_DOMAIN_PROJECT_BOOST: dict[str, dict[str, int]] = {
+    "SOC":       {"soc_auto": 4},
+    "VAPT":      {"vuln_scanner": 5},
+    "AppSec":    {"vuln_scanner": 6},
+    "GRC":       {"phishing_osint": 3},
+    "Risk":      {"phishing_osint": 3, "vuln_scanner": 1},
+    "Fraud-AML": {"phishing_osint": 6},
+    "CloudSec":  {"soc_auto": 4},
+    "IAM":       {"soc_auto": 3},
+    "Forensics": {"soc_auto": 4},
+    "Network":   {"soc_auto": 4},
+    "General":   {"soc_auto": 2},
 }
 
 
 def select_projects_for_job(domain: str, jd_keywords: dict) -> tuple[str, str]:
     """
-    Score all 3 projects against JD keywords and return the top 2.
-    Scoring: each JD keyword that overlaps with a project's signal set adds 1 point.
-    Overlap is checked bidirectionally (kw in signal OR signal in kw) to handle
-    partial matches like 'alert triage' matching 'triage'.
+    Score all 3 projects with weighted signals (strong=3, weak=1) then apply
+    a domain boost. Uses unidirectional matching (kw in signal) only, to avoid
+    false positives from broad terms like 'domain' or 'monitoring'.
+    Falls back to DOMAIN_TO_PROJECTS when all keyword scores are zero.
     """
     ranked = [kw.lower() for kw in jd_keywords.get("ranked", [])]
     tools  = [kw.lower() for kw in jd_keywords.get("tools",  [])]
     all_kw = set(ranked + tools)
 
-    scores: dict[str, int] = {}
-    for proj_key, signals in _PROJECT_SIGNALS.items():
-        score = sum(
-            1 for kw in all_kw
-            if any(sig in kw or kw in sig for sig in signals)
-        )
-        scores[proj_key] = score
+    scores: dict[str, int] = {k: 0 for k in _PROJECT_SIGNALS}
+    for proj_key, tiers in _PROJECT_SIGNALS.items():
+        for kw in all_kw:
+            if any(kw in sig for sig in tiers["strong"]):
+                scores[proj_key] += 3
+            elif any(kw in sig for sig in tiers["weak"]):
+                scores[proj_key] += 1
 
-    logger.info("  Project keyword scores: %s", scores)
+    # Apply domain boost on top of keyword scores
+    for proj_key, bonus in _DOMAIN_PROJECT_BOOST.get(domain, {}).items():
+        scores[proj_key] = scores.get(proj_key, 0) + bonus
+
+    logger.info("  Project weighted scores (incl. domain boost): %s", scores)
 
     sorted_projects = sorted(scores, key=lambda k: scores[k], reverse=True)
     p1, p2 = sorted_projects[0], sorted_projects[1]
 
-    # All scores zero = JD was too sparse to signal anything; use domain default
-    if scores[p1] == 0:
+    # Check if keyword scoring contributed anything (ignoring boost-only scores)
+    kw_total = sum(
+        scores[k] - _DOMAIN_PROJECT_BOOST.get(domain, {}).get(k, 0)
+        for k in scores
+    )
+    if kw_total == 0:
         fallback = DOMAIN_TO_PROJECTS.get(domain, ("soc_auto", "vuln_scanner"))
-        logger.info("  Project selection: zero scores — fallback to domain default %s", fallback)
+        logger.info("  Project selection: zero kw scores — domain fallback %s", fallback)
         return fallback
 
     logger.info("  Project selection: %s (score=%d) + %s (score=%d)",
                 p1, scores[p1], p2, scores[p2])
     return p1, p2
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # COMPANY INTELLIGENCE
@@ -2091,6 +2170,37 @@ Rules: 'and' not '&' | no project metrics or impact claims | escape internal quo
 
     # Project bullet sanitisation (strips unverifiable metrics + purpose clauses)
     content = sanitize_project_bullets(content)
+
+    # Inject pre-generated Amazon bullets and sanitize them
+    # Strip terms that belong exclusively to one project appearing in another project's bullets.
+    # e.g. EPSS/SOAR stuffed into phishing bullets, or typosquatting in SOC bullets.
+    _PROJECT_EXCLUSIVE_TERMS: dict[str, re.Pattern] = {
+        "vuln_scanner":   re.compile(
+            r"\b(typosquat|telegram bot|urlscan\.io|abuseipdb|whois|brand impersonat)\b",
+            re.IGNORECASE,
+        ),
+        "phishing_osint": re.compile(
+            r"\b(epss|nessus|openvas|nvd api|cvss severity|delta.scan|patch compliance|"
+            r"soar pipeline|sigma rules)\b",
+            re.IGNORECASE,
+        ),
+        "soc_auto": re.compile(
+            r"\b(sql injection|owasp top|sqli|cve report|patch scheduling|patch compliance)\b",
+            re.IGNORECASE,
+        ),
+    }
+    for prefix, proj_key in [("P1", p1_key), ("P2", p2_key)]:
+        excl_re = _PROJECT_EXCLUSIVE_TERMS.get(proj_key)
+        if excl_re:
+            for bk in [f"{prefix}_B1", f"{prefix}_B2", f"{prefix}_B3"]:
+                val = content.get(bk, "")
+                if val and excl_re.search(val):
+                    logger.warning(
+                        "  Cross-project term stripped from %s (%s): %s",
+                        bk, proj_key, val[:70],
+                    )
+                    cleaned = excl_re.sub("", val).strip(" ,;.")
+                    content[bk] = cleaned if len(cleaned) > 30 else val
 
     # Inject pre-generated Amazon bullets and sanitize them
     content.update(amazon_bullets)
