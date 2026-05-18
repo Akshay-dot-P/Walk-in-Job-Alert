@@ -18,7 +18,6 @@ FIXES in this version:
   - Profile regex catches Name - Title @ Company AND Name - Title | Company formats
   - GARBAGE_URL_PATTERNS now includes linkedin.com/in/ as permanent catch-all
 """
-#new code
 
 import re
 import time
@@ -33,8 +32,6 @@ import feedparser
 import httpx
 import jobspy
 import pandas as pd
-import re as _re
-
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -206,7 +203,6 @@ GREENHOUSE_COMPANIES = [
     "beyond-identity",    # passwordless IAM
  
     # ── Cloud / Infra (original + new) ──
-    "cloudflare",         # CDN / zero trust
     "fastly",             # edge cloud
     "algolia",            # search
     "hashicorp",          # infra security / secrets
@@ -268,7 +264,7 @@ LEVER_COMPANIES = [
     "flagright",          # AML compliance — India presence
     "complyadvantage",    # financial crime intelligence
     "behaviosec",         # behavioral biometrics
-
+    
     "cred",           # jobs.lever.co/cred — large security team (fraud, GRC, AppSec)
     "fi",             # jobs.lever.co/fi — Fi Money neobank, security/compliance roles
     "smallcase",      # jobs.lever.co/smallcase — fintech, compliance roles
@@ -343,8 +339,8 @@ ASHBY_COMPANIES = [
     "mine",                 # data privacy automation
     "osano",                # data privacy mgmt
     "securiti",             # data security (India office)
-
     "kreditbee",      # kreditbee.in — lending fintech, compliance/risk roles
+
 ]
  
  
@@ -397,137 +393,29 @@ WORKABLE_COMPANIES = [
 # All 20 verified working via api.smartrecruiters.com
 # ═══════════════════════════════════════════════════════════════════════
 SMARTRECRUITERS_COMPANIES = [
-    ("Visa",      "visa"),       # large Bangalore GCC, security roles
-    ("Bosch",     "bosch"),      # Bangalore engineering hub
-    ("Logitech",  "logitech"),   # India office
-    ("Autodesk",  "autodesk"),   # Hyderabad + Bangalore presence
-    ("LinkedIn",  "linkedin"),   # Bangalore office, security team
-    ("Equinix",   "equinix"),    # India data centers, security ops
-    ("Twilio",    "twilio"),     # Bangalore engineering
-    ("Atlassian", "atlassian"),  # large Bangalore office
-    ("Zendesk",   "zendesk"),    # Bangalore engineering
-    ("DocuSign",  "docusign"),   # India office
-    ("Square",    "square"),     # Block Inc, India presence
-    ("Robinhood", "robinhood"),  # India engineering hub
-]
-
-# ═══════════════════════════════════════════════════════════════════════
-# RECRUITEE COMPANIES (Public API — no auth required)
-# GET https://careers.recruitee.com/api/c/{slug}/offers/
-# ═══════════════════════════════════════════════════════════════════════
-RECRUITEE_COMPANIES = [
-    ("CloudSEK",       "cloudsek"),       # India AI cybersecurity company
-    ("Sattrix",        "sattrix"),        # India MSSP / SOC services
-    ("SISA",           "sisa"),           # India PCI forensics / GRC
-    ("Kratikal",       "kratikal"),       # India pentest / GRC firm
-    ("Innefu Labs",    "innefu"),         # India cybersecurity AI
-    ("Defencelogic",   "defencelogic"),   # India cybersec consulting
-    ("InstaSafe",      "instasafe"),      # India zero-trust startup
-]
+    ("Visa", "visa"),
+    ("Bosch", "bosch"),
+    ("IKEA", "IKEA"),
+    ("Skechers", "skechers"),
+    ("Logitech", "logitech"),
+    ("Autodesk", "autodesk"),
+    ("LinkedIn", "linkedin"),
+    ("Equinix", "equinix"),
+    ("Twilio", "twilio"),
+    ("Atlassian", "atlassian"),
+    ("Zendesk", "zendesk"),
+    ("DocuSign", "docusign"),
+    ("SoFi", "sofi"),
+    ("Square", "square"),
+    ("Toast", "toast"),
+    ("ServiceTitan", "servicetitan"),
+    ("Instacart", "instacart"),
+    ("DoorDash", "doordash"),
+    ("Lyft", "lyft"),
+    ("Robinhood", "robinhood"),
+]  
 
 ################################]
-
-# ═══════════════════════════════════════════════════════════════════════
-# ZOHO JOBS — Zoho Recruit public job board API
-# Companies using Zoho Recruit have job boards at:
-#   https://{subdomain}.zohorecruit.{region}/jobs/Careers
-# The JSON feed is at:
-#   https://{subdomain}.zohorecruit.{region}/recruit/v2/portal/JOBS
-# ═══════════════════════════════════════════════════════════════════════
-ZOHO_RECRUIT_COMPANIES = [
-    # (display_name, subdomain, region)
-    # region is "com", "in", "eu" etc.
-    ("Zoho Corp",       "zohocorp",    "com"),   # Zoho itself — Chennai/Bangalore
-    ("Freshworks",      "freshworks",  "com"),   # may have some roles here
-    ("Tata Elxsi",      "tataelxsi",   "in"),    # India engineering, security team
-    ("Mphasis",         "mphasis",     "in"),    # India IT services, security ops
-    ("Subex",           "subex",       "in"),    # India telecom fraud analytics
-    ("Securekloud",     "securekloud", "com"),   # India cloud security
-]
-
-
-def _scrape_zoho_recruit_company(company_name: str, subdomain: str, region: str = "com") -> list[dict]:
-    """
-    Zoho Recruit public portal API.
-    Returns job listings for companies using Zoho Recruit as their ATS.
-    """
-    # Primary: JSON API endpoint
-    api_url = f"https://{subdomain}.zohorecruit.{region}/recruit/v2/portal/JOBS"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
-    }
-
-    try:
-        resp = requests.get(api_url, headers=headers, timeout=12)
-        if resp.status_code != 200:
-            # Fallback: try the .in region if .com failed
-            fallback = f"https://{subdomain}.zohorecruit.in/recruit/v2/portal/JOBS"
-            resp = requests.get(fallback, headers=headers, timeout=12)
-            if resp.status_code != 200:
-                return []
-
-        data = resp.json()
-        # Zoho Recruit returns {"response": {"result": {"Jobs": {"row": [...]}}}}
-        # or sometimes {"data": [...]}
-        jobs_raw = (
-            data.get("response", {}).get("result", {}).get("Jobs", {}).get("row", [])
-            or data.get("data", [])
-            or []
-        )
-        if not isinstance(jobs_raw, list):
-            jobs_raw = [jobs_raw] if jobs_raw else []
-
-    except Exception as e:
-        logger.debug("zoho/%s: %s", subdomain, type(e).__name__)
-        return []
-
-    results = []
-    for job in jobs_raw:
-        # Zoho Recruit field names vary — try common patterns
-        if isinstance(job, dict) and "FL" in job:
-            # Row format: {"FL": [{"val": "field_name", "content": "value"}, ...]}
-            fields = {f.get("val"): f.get("content") for f in job.get("FL", []) if isinstance(f, dict)}
-        else:
-            fields = job if isinstance(job, dict) else {}
-
-        title    = str(fields.get("Job Opening Name") or fields.get("title") or fields.get("name") or "").strip()
-        location = str(fields.get("City") or fields.get("location") or fields.get("Job Location") or "").strip()
-        desc     = str(fields.get("Job Description") or fields.get("description") or "")[:2000]
-        job_url  = str(fields.get("Job Opening URL") or fields.get("url") or
-                       f"https://{subdomain}.zohorecruit.{region}/jobs/Careers").strip()
-        posted   = str(fields.get("Date Opened") or fields.get("created_at") or "").strip()
-
-        if not title or not _is_security_role(title):
-            continue
-        if not _is_india_eligible(location, title, desc):
-            continue
-
-        results.append({
-            "title":       title,
-            "company":     company_name,
-            "location":    location or "India",
-            "job_url":     job_url,
-            "description": _re.sub(r"<[^>]+>", " ", desc)[:1000],
-            "date_posted": posted[:10] if posted else "",
-            "source":      "zoho_recruit",
-        })
-
-    if results:
-        logger.info("  zoho/%s: %d security jobs", subdomain, len(results))
-    return results
-
-
-def _scrape_zoho_jobs() -> list[dict]:
-    logger.info("=== Zoho Recruit: %d companies ===", len(ZOHO_RECRUIT_COMPANIES))
-    all_results = []
-    for company_name, subdomain, region in ZOHO_RECRUIT_COMPANIES:
-        all_results.extend(_scrape_zoho_recruit_company(company_name, subdomain, region))
-        time.sleep(1)
-    logger.info("Zoho Recruit: %d jobs found", len(all_results))
-    return all_results
-  #####
 
 
 WORKDAY_SEARCH_QUERIES = [
@@ -552,6 +440,7 @@ WORKDAY_TITLE_KEYWORDS = (
     "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
 )
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
+GREENHOUSE_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
 FQ_FRESHER = (
     '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
@@ -829,68 +718,6 @@ PROFILE_HEADLINE_REGEX = re.compile(
     r'\s*[-|]',
     re.IGNORECASE
 )
-
-
-# ═══════════════════════════════════════════════════════════
-# SHARED FILTER HELPERS  — used by Greenhouse, Lever, Ashby,
-#                          Workable, SmartRecruiters
-# ═══════════════════════════════════════════════════════════
-
-_SECURITY_KW = (
-    "security", "cyber", "soc", "risk", "compliance", "grc", "iam",
-    "appsec", "cloud", "fraud", "privacy", "audit", "vapt", "pentest",
-    "penetration", "devsecops", "threat", "vulnerability", "identity",
-    "forensic", "infosec", "cryptography", "dlp", "edr", "siem",
-)
-
-_NON_INDIA = frozenset([
-    "austin", "texas", "san francisco", "new york", "seattle", "chicago",
-    "london", "luxembourg", "singapore", "toronto", "amsterdam", "berlin",
-    "paris", "sydney", "melbourne", "dublin", "boston", "los angeles",
-    "denver", "atlanta", "miami", "phoenix", "portland", "washington",
-    "united states", "usa", "u.s.", "canada", "uk", "united kingdom",
-    "europe", "germany", "france", "netherlands", "australia",
-    "bellevue", "durham", "emeryville", "addison",
-    " wa ", " tx ", " nc ", " ca ", " wa,", " tx,", " nc,", " ca,",
-])
-
-_INDIA = frozenset([
-    "india", "bengaluru", "bangalore", "hyderabad", "mumbai", "pune",
-    "chennai", "delhi", "noida", "gurgaon", "gurugram", "kolkata",
-    "remote", "worldwide", "global", "anywhere",
-    # "hybrid" REMOVED — work mode, not a location
-    # "" REMOVED — empty string is substring of everything → always True
-])
-
-def _is_security_role(title: str) -> bool:
-    t = title.lower()
-    return any(kw in t for kw in _SECURITY_KW)
-
-def _is_india_eligible(location: str, title: str, description: str = "") -> bool:
-    loc     = (location    or "").lower().strip()
-    title_l = (title       or "").lower()
-    desc_l  = (description or "").lower()[:1500]
-
-    # Layer 1 — explicit non-India in location OR title → hard reject
-    if any(kw in loc     for kw in _NON_INDIA): return False
-    if any(kw in title_l for kw in _NON_INDIA): return False
-
-    # Layer 2 — explicit India/remote in location → accept
-    if loc and any(kw in loc for kw in _INDIA): return True
-
-    # Layer 3 — empty/vague location → scan title + description
-    combined = f"{title_l} {desc_l}"
-    if any(kw in combined for kw in [
-        "india", "bangalore", "bengaluru", "hyderabad", "mumbai",
-        "pune", "chennai", "remote", "worldwide", "anywhere", "global",
-    ]): return True
-
-    # Layer 4 — no signal → reject
-    return False
-
-
-
-
 
 
 def _is_valid_post(title: str, url: str) -> bool:
@@ -1390,7 +1217,7 @@ def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
     Greenhouse boards API: GET https://boards-api.greenhouse.io/v1/boards/{company}/jobs
     Returns JSON with 'jobs' array. No auth required.
     """
-    url = f"https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs?content=true"
+    url = f"https://boards-api.greenhouse.io/v1/boards/{company_slug}/jobs"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
@@ -1423,16 +1250,17 @@ def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
                 location = str(location_obj)
             
             # Filter: India/Bangalore only
-            if not _is_security_role(title):
-                continue
+            if location:
+                loc_lower = location.lower()
+                if "india" not in loc_lower and "bangalore" not in loc_lower and "bengaluru" not in loc_lower:
+                    continue
             
-            offices = job.get("offices") or []
-            office_loc = " ".join(str(o.get("name") or "") for o in offices if isinstance(o, dict)).strip()
-            effective_location = location or office_loc
-            
-            description_text = _re.sub(r"<[^>]+>", " ", str(job.get("content") or ""))[:2000]
-            
-            if not _is_india_eligible(effective_location, title, description_text):
+            # Filter: Security/risk/compliance roles only
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in [
+                "security", "cyber", "risk", "compliance", "grc", "soc", 
+                "iam", "fraud", "privacy", "audit", "vapt", "penetration"
+            ]):
                 continue
             
             job_url = job.get("absolute_url") or f"https://boards.greenhouse.io/{company_slug}/jobs/{job.get('id')}"
@@ -1442,7 +1270,7 @@ def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
                 "company": company_slug.replace("-", " ").title(),
                 "location": location or "India",
                 "job_url": job_url,
-                "description": _re.sub(r"<[^>]+>", " ", str(job.get("content") or ""))[:1000],
+                "description": str(job.get("content") or "")[:1000],  # Truncate long descriptions
                 "date_posted": "",
                 "source": "greenhouse",
             })
@@ -1482,7 +1310,7 @@ def _scrape_lever_company(company_slug: str) -> list[dict]:
     Lever API: GET https://api.lever.co/v0/postings/{company}?mode=json
     Returns JSON array of postings. No auth required.
     """
-    url = f"https://api.lever.co/v0/postings/{company_slug}?mode=json&include=description"
+    url = f"https://api.lever.co/v0/postings/{company_slug}?mode=json"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
@@ -1509,25 +1337,24 @@ def _scrape_lever_company(company_slug: str) -> list[dict]:
                 location = str(categories.get("location", ""))
             
             # Filter: India/Bangalore only
-            if not _is_security_role(title):
-                continue
+            if location:
+                loc_lower = location.lower()
+                if "india" not in loc_lower and "bangalore" not in loc_lower and "bengaluru" not in loc_lower:
+                    continue
             
-            workplace = str(job.get("workplaceType") or "").lower()
-            if workplace == "remote" and not location:
-                location = "Remote"
-            
-            description_raw = str(job.get("description") or job.get("descriptionPlain") or "")
-            if not _is_india_eligible(location, title, description_raw):
+            # Filter: Security/risk/compliance roles only
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in [
+                "security", "cyber", "risk", "compliance", "grc", "soc",
+                "iam", "fraud", "privacy", "audit", "vapt", "penetration"
+            ]):
                 continue
             
             job_url = job.get("hostedUrl") or job.get("applyUrl") or f"https://jobs.lever.co/{company_slug}/{job.get('id')}"
             
-          
-            ts = job.get("createdAt")
-            try:
-                date_posted = datetime.fromtimestamp(int(ts) / 1000).strftime("%Y-%m-%d") if ts else ""
-            except Exception:
-                date_posted = ""
+            # Get date
+            created_at = str(job.get("createdAt", ""))
+            date_posted = created_at[:10] if created_at else ""
             
             results.append({
                 "title": title,
@@ -1584,40 +1411,11 @@ def _scrape_lever() -> list[dict]:
 # Find current thread: https://news.ycombinator.com/submitted?id=whoishiring
 # ════════════════════════════════════════════════════════════════
 
-def _get_hn_thread_ids(max_threads: int = 2) -> list[int]:
-    """Auto-fetch CURRENT month's HN hiring thread IDs via Algolia."""
-    import time as _t, urllib.request as _ur
-    FALLBACK = []   # May 2025 — update if Algolia keeps failing
-    try:
-        # Only look at threads created in the last 45 days
-        min_ts = int(_t.time()) - (45 * 86400)
-        url = (
-            "https://hn.algolia.com/api/v1/search"
-            "?query=Ask+HN%3A+Who+is+hiring"
-            "&tags=story,ask_hn"
-            f"&numericFilters=created_at_i%3E{min_ts}"
-            "&hitsPerPage=5"
-            "&attributesToRetrieve=objectID,title,created_at_i"
-        )
-        req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with _ur.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read())
-        ids = []
-        for hit in data.get("hits", []):
-            t = hit.get("title", "").lower()
-            oid = hit.get("objectID", "")
-            if "who is hiring" in t and "hired" not in t and oid:
-                ids.append(int(oid))
-                if len(ids) >= max_threads:
-                    break
-        if ids:
-            logger.info("HN thread IDs (current): %s", ids)
-            return ids
-    except Exception as exc:
-        logger.warning("HN auto-fetch failed (%s) — fallback", exc)
-    return FALLBACK[:max_threads]
-
-HN_HIRING_THREAD_IDS = _get_hn_thread_ids(max_threads=2)
+HN_HIRING_THREAD_IDS = [
+    43543518,   # May 2025
+    42919245,   # Apr 2025
+    42297316,   # Mar 2025
+]
 
 HN_FIREBASE_BASE = "https://hacker-news.firebaseio.com/v0/item/{}.json"
 
@@ -1854,6 +1652,7 @@ def _scrape_google_jobs() -> list[dict]:
         f'site:wellfound.com fraud risk compliance Bangalore',
 
         # Cutshort via Google
+        f'site:cutshort.io "security" OR "cyber" OR "risk" Bangalore',
     ]
     for i, term in enumerate(terms):
         batch = _run_scrape(["google"], term)
@@ -1948,7 +1747,8 @@ def fetch_linkedin_posts() -> list[dict]:
                 # ADDED — 8 lines
                 published = entry.get("published_parsed")
                 if published:
-                    age_days = (time.time() - time.mktime(published)) / 86400
+                    import time as _time
+                    age_days = (_time.time() - _time.mktime(published)) / 86400
                     if age_days > 40:
                         continue
                 # If published_parsed is missing we let it through  
@@ -1988,12 +1788,12 @@ def fetch_linkedin_posts() -> list[dict]:
 # Paste these BEFORE the gather_all_listings() function
 # ═══════════════════════════════════════════════════════════════════════
  
-#ASHBY_TITLE_KEYWORDS = (
-#    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec",
-#    "cloud", "fraud", "privacy", "audit", "vapt", "penetration", "devsecops",
-#    "threat", "vulnerability", "identity", "cryptography", "forensic",
-#)
-#ASHBY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore", "remote", "worldwide", "global", "anywhere")
+ASHBY_TITLE_KEYWORDS = (
+    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec",
+    "cloud", "fraud", "privacy", "audit", "vapt", "penetration", "devsecops",
+    "threat", "vulnerability", "identity", "cryptography", "forensic",
+)
+ASHBY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore", "remote", "worldwide", "global", "anywhere")
  
  
 def _scrape_ashby_company(company_slug: str) -> list[dict]:
@@ -2040,11 +1840,14 @@ def _scrape_ashby_company(company_slug: str) -> list[dict]:
                 location = "Remote"
  
             # Location filter: India / Bangalore / Remote
-            if not _is_security_role(title):
-                continue
-            
-            description_for_loc = str(job.get("descriptionPlain") or job.get("descriptionHtml") or "")
-            if not _is_india_eligible(location, title, description_for_loc):
+            loc_lower = location.lower()
+            if not is_remote and location:
+                if not any(kw in loc_lower for kw in ASHBY_ALLOWED_LOCATIONS):
+                    continue
+ 
+            # Title keyword filter
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in ASHBY_TITLE_KEYWORDS):
                 continue
  
             job_url = str(job.get("jobUrl") or "").strip()
@@ -2103,8 +1906,8 @@ def _scrape_ashby() -> list[dict]:
 # Paste these AFTER the Ashby functions and BEFORE gather_all_listings()
 # ═══════════════════════════════════════════════════════════════════════
  
-#WORKABLE_TITLE_KEYWORDS = ASHBY_TITLE_KEYWORDS  # reuse same set
-#WORKABLE_ALLOWED_LOCATIONS = ASHBY_ALLOWED_LOCATIONS
+WORKABLE_TITLE_KEYWORDS = ASHBY_TITLE_KEYWORDS  # reuse same set
+WORKABLE_ALLOWED_LOCATIONS = ASHBY_ALLOWED_LOCATIONS
  
  
 def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
@@ -2149,12 +1952,16 @@ def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
                 location = str(location_obj)
                 telecommuting = False
  
+            loc_lower = location.lower()
  
-            if not _is_security_role(title):
-                continue
-            
-            description_raw = str(job.get("description") or job.get("full_description") or "")
-            if not telecommuting and not _is_india_eligible(location, title, description_raw):
+            # Location filter
+            if location and not telecommuting:
+                if not any(kw in loc_lower for kw in WORKABLE_ALLOWED_LOCATIONS):
+                    continue
+ 
+            # Title keyword filter
+            title_lower = title.lower()
+            if not any(kw in title_lower for kw in WORKABLE_TITLE_KEYWORDS):
                 continue
  
             job_url = str(job.get("url") or job.get("application_url") or job.get("shortlink") or "").strip()
@@ -2207,157 +2014,6 @@ def _scrape_workable() -> list[dict]:
 
 
 
-def _scrape_smartrecruiters_company(company_name: str, company_id: str) -> list[dict]:
-    list_url = f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings?country=IN&limit=100"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-    }
-    try:
-        resp = requests.get(list_url, headers=headers, timeout=12)
-        if resp.status_code != 200:
-            return []
-        jobs = resp.json().get("content", [])
-        if not isinstance(jobs, list):
-            return []
-    except Exception as e:
-        logger.debug("sr/%s: list fetch %s", company_id, type(e).__name__)
-        return []
-
-    results = []
-    for job in jobs:
-        title = str(job.get("name") or "").strip()
-        if not _is_security_role(title):
-            continue
-
-        loc_obj  = job.get("location") or {}
-        city     = str(loc_obj.get("city") or "")
-        country  = str(loc_obj.get("country") or "")
-        remote   = bool(loc_obj.get("remote"))
-        location = ", ".join(filter(None, [city, country]))
-
-        job_id  = str(job.get("id") or "")
-        if not job_id:
-            continue
-
-        # Fetch description from detail endpoint (not available in list)
-        description = ""
-        try:
-            det = requests.get(
-                f"https://api.smartrecruiters.com/v1/companies/{company_id}/postings/{job_id}",
-                headers=headers, timeout=8,
-            )
-            if det.status_code == 200:
-                sections = det.json().get("jobAd", {}).get("sections", {})
-                description = str(sections.get("jobDescription", {}).get("text") or "")[:2000]
-        except Exception:
-            pass
-        time.sleep(0.3)  # polite between detail fetches
-
-        if not remote and not _is_india_eligible(location, title, description):
-            continue
-
-        job_url   = f"https://jobs.smartrecruiters.com/{company_id}/{job_id}"
-        posted_on = str(job.get("releasedDate") or job.get("createdOn") or "")
-        results.append({
-            "title":       title,
-            "company":     company_name,
-            "location":    location or ("Remote" if remote else "India"),
-            "job_url":     job_url,
-            "description": description[:1000],
-            "date_posted": posted_on[:10] if posted_on else "",
-            "source":      "smartrecruiters",
-        })
-
-    if results:
-        logger.info("  sr/%s: %d security jobs in India", company_id, len(results))
-    return results
-
-def _scrape_smartrecruiters() -> list[dict]:
-    logger.info("=== SmartRecruiters API: %d companies ===", len(SMARTRECRUITERS_COMPANIES))
-    all_results = []
-    for company_name, company_id in SMARTRECRUITERS_COMPANIES:
-        all_results.extend(_scrape_smartrecruiters_company(company_name, company_id))
-        time.sleep(1)
-    logger.info("SmartRecruiters: %d jobs found", len(all_results))
-    return all_results
-  
-
-
-
-
-def _scrape_recruitee_company(company_name: str, slug: str) -> list[dict]:
-    """
-    Recruitee public API — no auth required.
-    GET https://careers.recruitee.com/api/c/{slug}/offers/
-    Returns {"offers": [{"title", "city", "country", "remote_option",
-                          "url", "description", "created_at"}]}
-    """
-    url = f"https://careers.recruitee.com/api/c/{slug}/offers/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-    }
-    try:
-        resp = requests.get(url, headers=headers, timeout=12)
-        if resp.status_code != 200:
-            return []
-        offers = resp.json().get("offers", [])
-        if not isinstance(offers, list):
-            return []
-    except Exception as e:
-        logger.debug("recruitee/%s: %s", slug, type(e).__name__)
-        return []
-
-    results = []
-    for offer in offers:
-        title = str(offer.get("title") or "").strip()
-        if not _is_security_role(title):
-            continue
-
-        city        = str(offer.get("city") or "")
-        country     = str(offer.get("country") or "")
-        remote      = str(offer.get("remote_option") or "").lower() in ("remote", "hybrid", "yes", "true")
-        location    = ", ".join(filter(None, [city, country]))
-
-        description = str(offer.get("description") or "")[:2000]
-        # Recruitee descriptions are HTML — strip tags
-        description = _re.sub(r"<[^>]+>", " ", description).strip()
-
-        if not remote and not _is_india_eligible(location, title, description):
-            continue
-
-        job_url    = str(offer.get("url") or f"https://careers.recruitee.com/c/{slug}").strip()
-        created_at = str(offer.get("created_at") or "").strip()
-        date_posted = created_at[:10] if created_at else ""
-
-        results.append({
-            "title":       title,
-            "company":     company_name,
-            "location":    location or ("Remote" if remote else "India"),
-            "job_url":     job_url,
-            "description": description[:1000],
-            "date_posted": date_posted,
-            "source":      "recruitee",
-        })
-
-    if results:
-        logger.info("  recruitee/%s: %d security jobs", slug, len(results))
-    return results
-
-
-def _scrape_recruitee() -> list[dict]:
-    logger.info("=== Recruitee API: %d companies ===", len(RECRUITEE_COMPANIES))
-    all_results = []
-    for company_name, slug in RECRUITEE_COMPANIES:
-        all_results.extend(_scrape_recruitee_company(company_name, slug))
-        time.sleep(1)
-    logger.info("Recruitee: %d jobs found", len(all_results))
-    return all_results
-
-
-
-
 
 def gather_all_listings() -> list[dict]:
     all_results = []
@@ -2372,10 +2028,6 @@ def gather_all_listings() -> list[dict]:
         ("HN Hiring",      _scrape_hn_hiring),
         ("Ashby",          _scrape_ashby),       # ← NEW: Ashby public API
         ("Workable",       _scrape_workable),
-        ("SmartRecruiters", _scrape_smartrecruiters),   # ← add this line
-        ("Recruitee",       _scrape_recruitee),        # ← NEW
-        ("Zoho Recruit",    _scrape_zoho_jobs),         # ← NEW
-
       
     ]
 
@@ -2403,3 +2055,4 @@ def gather_all_listings() -> list[dict]:
                 len(all_results),
                 " | ".join(f"{k}={v}" for k, v in counts.items()))
     return all_results
+
