@@ -449,7 +449,7 @@ function buildCard(j, animIdx){
       <a href="${j.apply_url}" target="_blank" rel="noopener" class="btn-apply">Apply</a>
       <button type="button" class="btn-sm btn-mark-applied ${applied ? 'is-applied' : ''}" data-apply-key="${key}">${CHECK_ICO} ${applied ? 'Undo' : 'Mark applied'}</button>
       ${j.resume_doc_link ? `<a href="${j.resume_doc_link}" target="_blank" rel="noopener" class="btn-sm">${DOC_ICO} Resume .doc</a>` : ''}
-      ${j.resume_pdf_link ? `<a href="${j.resume_pdf_link}" target="_blank" rel="noopener" class="btn-sm">${DOC_ICO} .pdf</a>` : ''}
+      ${j.resume_pdf_link ? `<a href="${j.resume_pdf_link}" download="Akshay_P_Resume.pdf" rel="noopener" class="btn-sm">${DOC_ICO} .pdf</a>` : ''}
     </div>
   </div>
   ${scorePanel}
