@@ -2464,7 +2464,8 @@ def _github_commit(filename: str, file_bytes: bytes, message: str) -> str:
 
 
 def upload_to_github(docx_bytes: bytes, pdf_bytes: bytes, job: dict) -> tuple[str, str]:
-    base = f"Resume_{_safe(job['job_title'])}_{_safe(job['company'])}"
+    #base = f"Resume_{_safe(job['job_title'])}_{_safe(job['company'])}"
+    base = "Akshay_P_Resume"
     msg  = f"Resume: {job['job_title']} @ {job['company']}"
     return (
         _github_commit(f"{base}.docx", docx_bytes, msg),
