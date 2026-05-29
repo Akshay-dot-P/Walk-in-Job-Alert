@@ -28,8 +28,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install LibreOffice (for PDF generation)
-        run: sudo apt-get install -y libreoffice
+      - name: Install LibreOffice (minimal + stable)
+        run: |
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
+          sudo apt-get update --fix-missing
+      
+          sudo apt-get install -y \
+            libreoffice-core \
+            libreoffice-writer
 
       - name: Set up Python
         uses: actions/setup-python@v4
