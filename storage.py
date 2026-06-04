@@ -26,7 +26,7 @@ DEFAULT_SHEET_NAME = "WalkIn Jobs Bangalore"
 # =============================================================================
 
 def _set_status_dropdown(worksheet) -> None:
-    """Apply a dropdown validation to the status column: New/Applied/Interview/Rejected/Offer/Not Relevant."""
+    """Apply a dropdown validation to the status column."""
     try:
         headers = worksheet.row_values(1)
         if "status" not in headers:
@@ -48,7 +48,8 @@ def _set_status_dropdown(worksheet) -> None:
                             "values": [
                                 {"userEnteredValue": v}
                                 for v in ["New", "Applied", "Interview",
-                                          "Rejected", "Offer", "Not Relevant"]
+                                          "Rejected", "Offer", "Not Relevant",
+                                          "Invalid"]
                             ],
                         },
                         "showCustomUi": True,
@@ -106,8 +107,10 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
                 "Dedup still works via URL matching.",
                 data_row_count
             )
+            _set_status_dropdown(worksheet)
     else:
         logger.info("Sheet headers OK.")
+        _set_status_dropdown(worksheet)
 
     return worksheet
 
