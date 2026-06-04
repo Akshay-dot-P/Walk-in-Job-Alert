@@ -19,6 +19,8 @@ FIXES in this version:
   - GARBAGE_URL_PATTERNS now includes linkedin.com/in/ as permanent catch-all
 """
 
+from __future__ import annotations
+
 import re
 import time
 import logging
@@ -704,6 +706,27 @@ GARBAGE_TITLE_PATTERNS = [
     "404",
 ]
 
+# RSS frequently returns SEO/directory pages instead of concrete openings.
+# Example:
+#   "Cyber Security Internships in Purnia: Find 40 Best Cyber Security Intern Jobs in Purnia - Internshala"
+GARBAGE_TITLE_REGEXES = [
+    re.compile(
+        r"\binternships?\s+in\s+[^:]{2,80}:\s*find\s+\d+\s+"
+        r"(?:best\s+)?[\w\s/&+.-]+?\s+jobs?\s+in\s+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bfind\s+\d+\s+(?:best\s+)?[\w\s/&+.-]+?\s+jobs?\s+in\s+"
+        r"[\w\s/&+.-]+(?:\s+-\s+internshala)?\.?$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bfind\s+\d+\s+(?:best\s+)?[\w\s/&+.-]+?\s+jobs?\s+"
+        r"(?:-\s+internshala)?\.?$",
+        re.IGNORECASE,
+    ),
+]
+
 # Regex: matches LinkedIn profile headline formats
 # Covers all these patterns:
 #   "Firstname Lastname - Job Title @ Company"
@@ -727,6 +750,7 @@ def _is_valid_post(title: str, url: str) -> bool:
 
     if any(p in url_l   for p in GARBAGE_URL_PATTERNS):   return False
     if any(p in title_l for p in GARBAGE_TITLE_PATTERNS): return False
+    if any(pattern.search(title) for pattern in GARBAGE_TITLE_REGEXES): return False
     if len(title.strip()) < 10:                            return False
 
     return True
@@ -2055,4 +2079,3 @@ def gather_all_listings() -> list[dict]:
                 len(all_results),
                 " | ".join(f"{k}={v}" for k, v in counts.items()))
     return all_results
-
