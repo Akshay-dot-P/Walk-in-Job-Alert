@@ -18,9 +18,9 @@ H. Parallel research: ThreadPoolExecutor(max_workers=3) for HTTP-bound
    parallel, Phase 3 sequential generation+upload
 I. Groq call budget counter: logs total calls at end of run
 
-EXISTING FEATURES (unchanged)
+EXISTING FEATURES (updated)
 B1. extract_keywords(jd_text) → semantic TF-IDF + cosine, Groq fallback
-B2. SYNONYM_MAP + apply_synonyms() — safe post-generation expansion
+B2. Parenthetical synonym injection disabled — keywords must be written naturally
 B3. track_keyword_usage() — 2-3x coverage tracking
 B4. dynamic_skills_augment() — JD keywords filtered via whitelist
 B5. compute_metrics() → keyword_coverage, keyword_density, skills_count
@@ -127,6 +127,7 @@ RESUME_RESEARCH_MAX_WEB        = _env_int("RESUME_RESEARCH_MAX_WEB", 3, 0, 8)
 FORUM_RESEARCH_MAX_POSTS       = _env_int("FORUM_RESEARCH_MAX_POSTS", 6, 0, 20)
 RESUME_RESEARCH_ALLOW_LINKEDIN = _env_bool("RESUME_RESEARCH_ALLOW_LINKEDIN", True)
 RESUME_SOURCE_URLS             = _split_env_list(os.environ.get("RESUME_SOURCE_URLS", ""))
+GOTENBERG_URL                  = os.environ.get("GOTENBERG_URL", "").strip().rstrip("/")
 REDDIT_RESEARCH_SUBS           = _split_env_list(os.environ.get(
     "REDDIT_RESEARCH_SUBS",
     "cybersecurityindia,cybersecurity,AskNetsec,cybersecurityjobs,resumes,developersIndia,cscareerquestionsIndia,IndianWorkplace",
@@ -177,8 +178,68 @@ SYNONYM_MAP = {
     "transaction monitoring":  ["financial crime detection"],
 }
 
+SYNONYM_INJECTION_INSTRUCTION = """
+KEYWORD NATURALNESS RULE:
+Do not add parenthetical synonyms like "Sigma rules (detection-as-code)" or
+"SOAR (security orchestration and automation)".
+Use the alternative term naturally in the sentence when it fits:
+- Good: built detection-as-code Sigma rules for cross-SIEM portability
+- Good: converted detection logic to Sigma rules for vendor-neutral SIEM use
+"""
+
+DEDUP_CONSTRAINT = """
+DIFFERENTIATION RULE:
+Each current-role bullet must cover a distinctly different angle:
+- AMZ_B1: volume + triage discipline
+- AMZ_B2: analysis + escalation
+- AMZ_B3: documentation quality
+- AMZ_B4: pattern detection
+
+Before writing AMZ_B3, check whether it says anything AMZ_B2 did not.
+Never end bullets with "resulting in", "leading to", "ensuring", or generic improved-outcome language.
+"""
+
+
+def _amazon_angle_signature(bullet: str) -> set[str]:
+    text = (bullet or "").lower()
+    if text.startswith("triaged"):
+        return {"triage"}
+    if text.startswith(("investigated", "analyzed", "conducted")):
+        return {"analysis"}
+    if text.startswith(("maintained", "documented")):
+        return {"documentation"}
+    if text.startswith(("identified", "spotted", "detected")):
+        return {"pattern"}
+    angles = set()
+    if re.search(r"\b(triage|severity|eligibility|sla|routing|route)\b", text):
+        angles.add("triage")
+    if re.search(r"\b(investigat|root cause|violation|anomal|claim|finding)\b", text):
+        angles.add("analysis")
+    if re.search(r"\b(document|record|evidence|audit|rationale|corrective)\b", text):
+        angles.add("documentation")
+    if re.search(r"\b(pattern|fraud|recurring|repeat|flagged|case history)\b", text):
+        angles.add("pattern")
+    return angles
+
+
+def _amazon_bullets_are_distinct(bullets: dict) -> bool:
+    # What it does: rejects repeated Amazon bullets by checking their topic angle.
+    # Why it's better: prevents the classic LLM failure where B3 and B4 both say "I wrote notes".
+    signatures = [_amazon_angle_signature(str(bullets.get(key, ""))) for key in AMAZON_KEYS]
+    if any(not sig for sig in signatures):
+        return False
+    for i, left in enumerate(signatures):
+        for right in signatures[i + 1:]:
+            if left == right or len(left & right) >= 2:
+                return False
+    return True
+
 
 def apply_synonyms(text: str) -> str:
+    # What it does: intentionally leaves generated bullets unchanged.
+    # Why it's better: avoids AI-looking "term (keyword)" stuffing and broken compounds like SOAR-style.
+    return text
+    # Deprecated implementation kept below as historical context only.
     if not text:
         return text
     applied = 0
@@ -256,7 +317,47 @@ iam cloudtrail guardduty cloud misconfiguration nist csf iso 27001 pci-dss
 gdpr sox itgc risk assessment vendor risk transaction monitoring aml kyc
 sanctions screening wireshark nmap tcp ip firewall ids ips endpoint security
 windows linux active directory powershell cyber kill chain
-"""
+	"""
+
+
+_kw_model = None
+
+
+def extract_keywords_keybert(jd_text: str) -> dict | None:
+    # What it does: uses semantic embeddings for JD keyword extraction when KeyBERT is installed.
+    # Why it's better: understands related phrases like "SOC operations" and "security monitoring".
+    global _kw_model
+    try:
+        from keybert import KeyBERT
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        return None
+
+    if _kw_model is None:
+        _kw_model = KeyBERT(model=SentenceTransformer("all-MiniLM-L6-v2"))
+    keywords = _kw_model.extract_keywords(
+        jd_text,
+        keyphrase_ngram_range=(1, 2),
+        stop_words="english",
+        use_mmr=True,
+        diversity=0.5,
+        top_n=20,
+    )
+    ranked = [kw for kw, score in keywords if score > 0.3 and len(kw) > 2]
+    tool_signals = {"splunk","siem","python","bash","sigma","soar","aws","cloudtrail","guardduty"}
+    action_signals = {"triage","investigate","detect","monitor","escalat","assess","audit","scan"}
+    concept_signals = {"threat","compliance","risk","incident","vulnerability","mitre","framework","nist","owasp"}
+    tools, actions, concepts = [], [], []
+    for term in ranked:
+        tl = term.lower()
+        if any(s in tl for s in tool_signals):
+            tools.append(term)
+        elif any(s in tl for s in action_signals):
+            actions.append(term)
+        elif any(s in tl for s in concept_signals):
+            concepts.append(term)
+    logger.info("  KeyBERT keywords — top 5: %s", ranked[:5])
+    return {"tools": tools[:6], "concepts": concepts[:6], "actions": actions[:6], "ranked": ranked[:15]}
 
 
 def _extract_keywords_groq_fallback(jd_text: str) -> dict:
@@ -286,6 +387,13 @@ def extract_keywords(jd_text: str) -> dict:
     """
     if not jd_text or len(jd_text.strip()) < 30:
         return {"tools": [], "concepts": [], "actions": [], "ranked": []}
+
+    try:
+        keybert_result = extract_keywords_keybert(jd_text)
+        if keybert_result and keybert_result.get("ranked"):
+            return keybert_result
+    except Exception as exc:
+        logger.warning("  KeyBERT keyword extraction failed — using TF-IDF: %s", exc)
 
     try:
         from sklearn.feature_extraction.text import TfidfVectorizer
@@ -423,9 +531,17 @@ def dynamic_skills_augment(profile_skills: dict, jd_keywords: dict) -> dict:
         return profile_skills
     skills = dict(profile_skills)
     safe   = []
+    generic_reject = {
+        "security", "cyber", "cybersecurity", "information security",
+        "analyst", "intern", "internship", "risk", "compliance",
+    }
     for kw in ranked[:15]:
         kl = kw.lower()
-        if any(g in kl or kl in g for g in CANDIDATE_GROUNDABLE):
+        # What it does: only appends concrete, candidate-grounded tools/phrases.
+        # Why it's better: prevents orphaned keyword dumps like "Automation: ..., security".
+        if kl in generic_reject or (len(kl.split()) == 1 and len(kl) < 5):
+            continue
+        if any(g == kl or g in kl for g in CANDIDATE_GROUNDABLE):
             if not any(kl in v.lower() for v in skills.values()):
                 safe.append(kw)
     if safe:
@@ -773,7 +889,7 @@ AMAZON_RAW_FACTS = AMAZON_BASE   # alias used in generate_amazon_bullets_dynamic
 AMAZON_KEYS         = ["AMZ_B1", "AMZ_B2", "AMZ_B3", "AMZ_B4"]
 AMAZON_ACTION_VERBS = (
     "Triaged", "Investigated", "Analyzed", "Detected", "Documented",
-    "Conducted", "Maintained", "Spotted",
+    "Conducted", "Maintained", "Spotted", "Identified",
 )
 AMAZON_MAX_CHARS    = 230
 AMAZON_MIN_CHARS    = 95
@@ -787,12 +903,17 @@ AMAZON_DETAIL_TOKENS = (
 # PURPOSE CLAUSE DETECTION
 # ─────────────────────────────────────────────────────────────────────────────
 PURPOSE_CLAUSE_RE = re.compile(
+    # What it does: catches vague tail clauses that look like resume filler.
+    # Why it's better: rejects "leading to improved outcomes" before it reaches the PDF.
     r"\b(to (?:improve|optimize|enhance|ensure|streamline|boost|strengthen|"
     r"increase|reduce|maximize|support|drive|achieve|facilitate|accelerate|"
     r"promote|enable|allow|help|assist|maintain)\b"
     r"|in order to\b"
     r"|for (?:better|improved|enhanced|optimal|greater|effective)\b"
-    r"|so (?:as to|that (?:we|the team|the org))\b)",
+    r"|so (?:as to|that (?:we|the team|the org))\b"
+    r"|resulting in (?:timely|accurate|improved|better|greater|enhanced)\b"
+    r"|leading to (?:improved|better|greater|enhanced)\b"
+    r"|ensuring (?:transparency|accountability|accuracy|consistency)\b)",
     re.IGNORECASE,
 )
 
@@ -905,54 +1026,47 @@ AMAZON_WEIGHTED_CONTEXT = {
 
 def _build_outcome_fallbacks(focus_key: str) -> dict:
     """Outcome-first static fallback — no purpose-clause endings."""
-    triage, documentation, patterns = AMAZON_WEIGHTED_CONTEXT.get(
-        focus_key, AMAZON_WEIGHTED_CONTEXT["general"]
-    )
+    # What it does: uses the human-reviewed four-angle Amazon rewrite as fallback.
+    # Why it's better: each bullet earns a different job, instead of four polished paraphrases.
     return {
         "AMZ_B1": (
             "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, "
-            f"applying {triage}, with zero missed escalations across reviewed queues."
+            "routing high-risk claims to senior review within same-day SLA with no escalation omissions."
         ),
         "AMZ_B2": (
-            "Conducted root cause analysis on seller claims, identifying policy violations and "
-            "anomalous patterns; escalated findings to senior reviewers without re-investigation loops."
+            "Investigated seller claims for policy violations and anomalous patterns across 200+ weekly cases; "
+            "documented root-cause findings with supporting evidence for senior reviewer sign-off."
         ),
         "AMZ_B3": (
-            "Maintained audit-ready case documentation, recording findings, decisions, corrective actions, "
-            f"and evidence notes for {documentation}, with no documentation gaps flagged."
+            "Maintained structured case records capturing investigation rationale, policy evidence, "
+            "and corrective actions, producing audit-ready documentation for compliance review."
         ),
         "AMZ_B4": (
-            f"Spotted recurring {patterns} across 200+ weekly cases and flagged them early, "
-            "cutting repeat-issue investigation cycles before escalation."
+            "Identified recurring fraud patterns across case history and flagged them ahead of weekly review cycles, "
+            "cutting repeat-issue re-investigation before escalation."
         ),
     }
 
 
 def _build_source_driven_experience_fallback(experience_research: dict | None = None) -> dict:
-    bridges = (experience_research or {}).get("bridges", []) or [
-        "case triage -> severity classification and escalation routing",
-        "audit-ready case notes -> evidence documentation and decision trails",
-        "seller-claim anomalies -> suspicious pattern review and investigation handoffs",
-    ]
-    bridge_1 = bridges[0].split("->")[-1].strip()
-    bridge_2 = bridges[1].split("->")[-1].strip() if len(bridges) > 1 else "evidence documentation and decision trails"
-    bridge_3 = bridges[2].split("->")[-1].strip() if len(bridges) > 2 else "pattern review and investigation handoffs"
+    # What it does: keeps deterministic fallback bullets distinct by angle.
+    # Why it's better: avoids LLM near-duplicates in bullets 3 and 4.
     return {
         "AMZ_B1": (
             "Triaged 50+ weekly inventory reimbursement cases by severity and policy eligibility, "
-            f"translating high-volume case review into {bridge_1}."
+            "routing high-risk claims to senior review within same-day SLA with no escalation omissions."
         ),
         "AMZ_B2": (
-            "Conducted root cause analysis on seller claims, identifying policy violations and "
-            f"anomalous patterns for {bridge_3}."
+            "Investigated seller claims for policy violations and anomalous patterns across 200+ weekly cases; "
+            "documented root-cause findings with supporting evidence for senior reviewer sign-off."
         ),
         "AMZ_B3": (
-            "Maintained audit-ready case documentation with findings, decisions, evidence notes, "
-            f"and corrective actions aligned to {bridge_2}."
+            "Maintained structured case records capturing investigation rationale, policy evidence, "
+            "and corrective actions, producing audit-ready documentation for compliance review."
         ),
         "AMZ_B4": (
-            "Spotted recurring fraud patterns across 200+ weekly cases and flagged repeat issues early, "
-            "reducing investigation cycles before escalation."
+            "Identified recurring fraud patterns across case history and flagged them ahead of weekly review cycles, "
+            "cutting repeat-issue re-investigation before escalation."
         ),
     }
 
@@ -1066,25 +1180,27 @@ Job: {job.get('job_title', 'Role')} at {job.get('company', 'Company')}
 Domain: {domain}
 JD skills: {jd_text[:500]}
 {kw_hint}
-{research_context}
+	{research_context}
+	{SYNONYM_INJECTION_INSTRUCTION}
+	{DEDUP_CONSTRAINT}
 
-RAW EXPERIENCE FACTS (do not invent beyond these):
-{facts_block}
+	RAW EXPERIENCE FACTS (do not invent beyond these):
+	{facts_block}
 
 Task:
 1. Compare benchmark resume/forum signals to the target role.
 2. Compare the target role to the transition role: {CURRENT_ROLE_TITLE}.
 3. Rewrite only the current-role experience facts as transferable bullets.
 
-Generate 4 bullets in fact order.
-Rules:
-- max 230 chars
-- starts with {', '.join(AMAZON_ACTION_VERBS)}
-- include 1-2 transferable target-role terms only when grounded in the current-role facts
-- end with outcome/metric/result (NEVER a purpose clause like "to improve X")
-- do not mention Amazon operations
-- keep 50+ weekly / 200+ weekly / senior reviewer details grounded
-- never claim tools, certifications, platforms, or source-resume achievements
+	Generate 4 bullets in fact order.
+	Rules:
+	- max 230 chars
+	- starts with {', '.join(AMAZON_ACTION_VERBS)}
+	- include 1-2 transferable target-role terms only when grounded in the current-role facts
+	- end with a named output, metric, or concrete process result
+	- do not mention Amazon operations
+	- keep 50+ weekly / 200+ weekly / senior reviewer details grounded
+	- never claim tools, certifications, platforms, or source-resume achievements
 
 Return only:
 {{"AMZ_B1":"...","AMZ_B2":"...","AMZ_B3":"...","AMZ_B4":"..."}}
@@ -1108,6 +1224,9 @@ Return only:
         for key in AMAZON_KEYS:
             if not validated.get(key):
                 validated[key] = fallbacks[key]
+        if not _amazon_bullets_are_distinct(validated):
+            logger.warning("  Amazon bullets overlapped by angle — using human-reviewed fallback")
+            return fallbacks
         logger.info("  Dynamic Amazon bullets generated (domain=%s)", domain)
         return validated
     except Exception as exc:
@@ -1740,14 +1859,21 @@ def _summarize_experience_research(
 def collect_experience_research(job: dict, jd_keywords: dict) -> dict:
     """
     Collect public resume and forum signals for the given job.
-    [CHANGE E] Results are cached in _RESEARCH_CACHE keyed by domain:title[:20].
-    Subsequent jobs with the same domain+title pattern skip HTTP calls entirely.
+    [CHANGE E] Results are cached by domain/title, with company included for known companies.
+    This keeps performance while avoiding stale research across recognizable employers.
     """
     if not PUBLIC_RESUME_RESEARCH:
         return {"summary": "", "source_note": "disabled"}
 
-    # [CHANGE E] Cache check
-    cache_key = f"{job.get('domain', 'General')}:{job.get('job_title', '')[:20]}"
+    # What it does: includes company in the research cache for known employers.
+    # Why it's better: "L1 SOC Analyst at UST" no longer blindly reuses Wipro-style context.
+    base_cache_key = f"{job.get('domain', 'General')}:{job.get('job_title', '')[:20]}"
+    company_cache_part = _safe(job.get("company", ""), 10)
+    cache_key = (
+        f"{base_cache_key}:{company_cache_part}"
+        if company_cache_part and get_company_intel(job.get("company", ""))
+        else base_cache_key
+    )
     if cache_key in _RESEARCH_CACHE:
         logger.info("  Experience research: cache hit (%s)", cache_key)
         return _RESEARCH_CACHE[cache_key]
@@ -1956,11 +2082,12 @@ def generate_content(job: dict, p1_key: str, p2_key: str,
   Summary: {job['summary']}
   Skills:  {job['skills']}
 {co_ctx}{kw_hint}
-{lens_ctx}
-{gap_ctx}
-{research_ctx}
+	{lens_ctx}
+	{gap_ctx}
+	{research_ctx}
+	{SYNONYM_INJECTION_INSTRUCTION}
 
-SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
+	SINGLE-PAGE PREFERENCE: Keep bullets concise (prefer under 200 chars).
 {diff_instruction}
 PROJECT METRIC BAN:
 - Do not write project metrics, impact claims, percentages, time savings, MTTR/MTTD, SLA deadlines, or reduced/improved/increased claims.
@@ -2021,11 +2148,6 @@ Rules: 'and' not '&' | no project metrics or impact claims | escape internal quo
     base_skills = compute_skills(job["domain"])
     content.update(dynamic_skills_augment(base_skills, jd_keywords))
 
-    # Synonym expansion (Feature 2)
-    for k in ["P1_B1","P1_B2","P1_B3","P2_B1","P2_B2","P2_B3"]:
-        if content.get(k):
-            content[k] = apply_synonyms(content[k])
-
     # Project bullet sanitisation (strips unverifiable metrics + purpose clauses)
     content = sanitize_project_bullets(content)
 
@@ -2048,6 +2170,52 @@ def _normalize_validation_output(data: dict) -> dict:
     }
 
 
+def _resume_text_from_content(content: dict) -> str:
+    keys = [
+        "AMZ_B1", "AMZ_B2", "AMZ_B3", "AMZ_B4",
+        "P1_TITLE", "P1_TECH", "P1_B1", "P1_B2", "P1_B3",
+        "P2_TITLE", "P2_TECH", "P2_B1", "P2_B2", "P2_B3",
+        "SK_V1", "SK_V2", "SK_V3", "SK_V4", "SK_V5",
+    ]
+    return " ".join(str(content.get(key, "")) for key in keys if content.get(key))
+
+
+def score_resume_vs_jd(resume_text: str, jd_text: str) -> dict:
+    # What it does: scores resume/JD overlap with TF-IDF math instead of asking an LLM.
+    # Why it's better: missing keywords are computed from actual text, so present words are not hallucinated missing.
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        if len(jd_text.strip()) < 20 or len(resume_text.strip()) < 50:
+            return {"ats_score": "N/A", "missing_keywords": "", "improvements": "", "github_insight": ""}
+
+        vectorizer = TfidfVectorizer(
+            ngram_range=(1, 2),
+            stop_words="english",
+            token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z0-9+#.-]{2,}\b",
+            max_features=500,
+        )
+        tfidf = vectorizer.fit_transform([resume_text, jd_text])
+        score = float(cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0])
+        terms = vectorizer.get_feature_names_out()
+        jd_vec = tfidf[1].toarray()[0]
+        resume_lower = resume_text.lower()
+        missing = [
+            term for term, weight in sorted(zip(terms, jd_vec), key=lambda item: item[1], reverse=True)
+            if weight > 0 and len(term) > 3 and term.lower() not in resume_lower
+        ][:6]
+        return {
+            "ats_score": str(round(score * 10, 1)),
+            "missing_keywords": ", ".join(missing),
+            "improvements": "",
+            "github_insight": "",
+        }
+    except Exception as exc:
+        logger.warning("  Deterministic ATS scoring failed: %s", exc)
+        return {"ats_score": "N/A", "missing_keywords": "", "improvements": "", "github_insight": ""}
+
+
 def validate_resume(content: dict, job: dict, github_notes: str, mode: str) -> dict:
     EMPTY = {"ats_score":"skipped","missing_keywords":"","improvements":"","github_insight":""}
     if mode == "lenient":
@@ -2059,6 +2227,11 @@ def validate_resume(content: dict, job: dict, github_notes: str, mode: str) -> d
         content.get("P1_B1",""),  content.get("P1_B2",""),
         content.get("P2_B1",""),  content.get("P2_B2",""),
     ]))
+    jd_text = " ".join(str(job.get(k, "")) for k in ("job_title", "domain", "summary", "skills"))
+    deterministic = score_resume_vs_jd(_resume_text_from_content(content), jd_text)
+    if deterministic.get("ats_score") != "N/A":
+        logger.info("  ATS=%s missing=%s", deterministic.get("ats_score"), deterministic.get("missing_keywords", "")[:50])
+        return deterministic
     if mode == "normal":
         prompt = (
             f"Job: {job.get('job_title','')} | JD keywords: {job.get('skills','')[:200]}\n"
@@ -2119,17 +2292,35 @@ def _replace_in_para(para, placeholder: str, replacement: str) -> bool:
     return True
 
 
+def _iter_doc_paragraphs(doc):
+    for para in doc.paragraphs:
+        yield para
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    yield para
+
+
 def fill_template(content: dict) -> bytes:
     if not TEMPLATE_PATH.exists():
         raise FileNotFoundError("resume_template.docx not found.")
     doc = Document(str(TEMPLATE_PATH))
     replacements = {f"[[{k}]]": v for k, v in content.items()}
-    for para in doc.paragraphs:
+    # What it does: replaces placeholders in body paragraphs and table cells, then audits leftovers.
+    # Why it's better: Word often stores resume fields in tables; missed placeholders no longer fail silently.
+    for para in _iter_doc_paragraphs(doc):
         full = "".join(t.text or "" for t in para._p.findall(f".//{{{W_NS}}}t"))
         for ph, val in replacements.items():
             if ph in full:
                 _replace_in_para(para, ph, val)
                 full = full.replace(ph, val)
+    leftovers = []
+    for para in _iter_doc_paragraphs(doc):
+        text = "".join(t.text or "" for t in para._p.findall(f".//{{{W_NS}}}t"))
+        leftovers.extend(re.findall(r"\[\[[A-Z0-9_]+\]\]", text))
+    if leftovers:
+        logger.warning("  Unfilled template placeholders remain: %s", sorted(set(leftovers))[:12])
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
@@ -2140,16 +2331,45 @@ def fill_template(content: dict) -> bytes:
 # PDF GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_pdf(docx_bytes: bytes) -> bytes:
+    if GOTENBERG_URL:
+        # What it does: optionally delegates DOCX->PDF conversion to Gotenberg.
+        # Why it's better: managed LibreOffice lifecycle is more reliable in CI than raw subprocesses.
+        try:
+            resp = requests.post(
+                f"{GOTENBERG_URL}/forms/libreoffice/convert",
+                files={
+                    "files": (
+                        "resume.docx",
+                        docx_bytes,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+                timeout=60,
+            )
+            resp.raise_for_status()
+            return resp.content
+        except Exception as exc:
+            logger.warning("  Gotenberg failed, falling back to LibreOffice: %s", exc)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         docx_path = os.path.join(tmpdir, "resume.docx")
         with open(docx_path, "wb") as f:
             f.write(docx_bytes)
-        result = subprocess.run(
-            ["libreoffice","--headless","--convert-to","pdf:writer_pdf_Export","--outdir",tmpdir,docx_path],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"LibreOffice: {result.stderr[:200]}")
+        # What it does: retries LibreOffice once after cold-start/conversion failure.
+        # Why it's better: avoids losing a resume run to a transient headless converter hiccup.
+        last_error = ""
+        for attempt in range(2):
+            result = subprocess.run(
+                ["libreoffice","--headless","--convert-to","pdf:writer_pdf_Export","--outdir",tmpdir,docx_path],
+                capture_output=True, text=True, timeout=90,
+            )
+            if result.returncode == 0:
+                break
+            last_error = result.stderr[:200]
+            if attempt == 0:
+                time.sleep(3)
+        else:
+            raise RuntimeError(f"LibreOffice: {last_error}")
         pdf_path = os.path.join(tmpdir, "resume.pdf")
         if not os.path.exists(pdf_path):
             raise FileNotFoundError("LibreOffice did not produce resume.pdf")
@@ -2464,9 +2684,9 @@ def _github_commit(filename: str, file_bytes: bytes, message: str) -> str:
 
 
 def upload_to_github(docx_bytes: bytes, pdf_bytes: bytes, job: dict) -> tuple[str, str]:
-    #base = f"Resume_{_safe(job['job_title'])}_{_safe(job['company'])}"
+    # What it does: overwrites the shared resume files so every row points at the latest resume.
     base = "Akshay_P_Resume"
-    msg  = f"Resume: {job['job_title']} @ {job['company']}"
+    msg  = "Upload tailored resume"
     return (
         _github_commit(f"{base}.docx", docx_bytes, msg),
         _github_commit(f"{base}.pdf",  pdf_bytes,  msg),
