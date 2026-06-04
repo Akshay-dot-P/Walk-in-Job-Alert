@@ -115,12 +115,13 @@ JOBS_PATTERN = re.compile(
 
 def inject_jobs(template_html: str, jobs: list[dict]) -> str:
     jobs_json = json.dumps(jobs, ensure_ascii=False, indent=None)
+    active_jobs = [j for j in jobs if str(j.get("status", "")).strip().lower() != "invalid"]
 
     # Update the generated-at comment in the header if present
     today = date.today().isoformat()
     html = re.sub(
         r'(<!-- generated:)[^>]*(-->)',
-        f'<!-- generated: {today} | {len(jobs)} listings -->',
+        f'<!-- generated: {today} | {len(active_jobs)} active / {len(jobs)} total listings -->',
         template_html
     )
 
@@ -142,7 +143,7 @@ def inject_jobs(template_html: str, jobs: list[dict]) -> str:
     # Update the totalCount stat shown in the header
     html = re.sub(
         r'(<strong id="totalCount"[^>]*>)\d*(</strong>)',
-        rf'\g<1>{len(jobs)}\2',
+        rf'\g<1>{len(active_jobs)}\2',
         html
     )
     return html
