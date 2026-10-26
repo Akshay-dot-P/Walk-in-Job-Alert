@@ -113,7 +113,9 @@ BANGALORE_KEYWORDS = [
 # Lowered to 4 to catch intern/fresher postings which are often less formal
 MIN_LEGITIMACY_SCORE = 2
 
-GROQ_MODEL = "llama-3.1-8b-instant"
+#GROQ_MODEL = "llama-3.1-8b-instant"**/
+# config.py
+GROQ_MODEL = "openai/gpt-oss-20b"   # was llama-3.1-8b-instant
 
 SHEET_COLUMNS = [
     "scraped_at", "job_title", "company", "domain", 
