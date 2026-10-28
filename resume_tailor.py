@@ -1988,28 +1988,67 @@ def _repair_json(raw: str) -> str:
     return raw.strip()
 
 
+_EXHAUSTED: set[str] = set()
+_STRIKES: dict[str, int] = {}
+_groq_tokens_used: int = 0
+_MODEL_CHAIN = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+
 def _call_groq(system: str, user: str, model: str, max_tokens: int = 2500, retries: int = 3) -> str:
-    global _groq_call_count
-    payload = {
-        "model": model, "temperature": 0.15, "max_tokens": max_tokens,
-        "messages": [{"role":"system","content":system},{"role":"user","content":user}],
-    }
-    hdrs = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    for attempt in range(1, retries + 1):
-        try:
-            r = requests.post(GROQ_URL, json=payload, headers=hdrs, timeout=35)
-            if r.status_code == 429:
-                wait = 25 * attempt
-                logger.warning("  Groq 429 — waiting %ds (attempt %d/%d)", wait, attempt, retries)
-                time.sleep(wait)
-                continue
-            r.raise_for_status()
-            _groq_call_count += 1
-            return r.json()["choices"][0]["message"]["content"].strip()
-        except requests.RequestException as exc:
-            logger.warning("  Groq error attempt %d: %s", attempt, exc)
-            time.sleep(5 * attempt)
-    raise RuntimeError(f"Groq ({model}) failed after retries.")
+    global _groq_call_count, _groq_tokens_used
+    chain = [model] + [m for m in _MODEL_CHAIN if m != model]
+    hdrs  = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+
+    for m in chain:
+        if m in _EXHAUSTED:
+            continue
+        payload = {
+            "model": m, "temperature": 0.15,
+            "max_tokens": max(max_tokens, 1000),   # reasoning tokens count against this
+            "reasoning_effort": "low",
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user",   "content": user}],
+        }
+        rate_limited = False
+        for attempt in range(1, retries + 1):
+            try:
+                r = requests.post(GROQ_URL, json=payload, headers=hdrs, timeout=60)
+                if r.status_code == 429:
+                    rate_limited = True
+                    logger.warning("  429 on %s: %s", m, r.text[:160])
+                    low = r.text.lower()
+                    if "per day" in low or "(tpd)" in low or "(rpd)" in low:
+                        _EXHAUSTED.add(m)
+                        break
+                    time.sleep(min(25 * attempt, 60))
+                    continue
+                if r.status_code in (401, 403, 404):
+                    logger.error("  %s returned %d: %s — disabled for this run",
+                                 m, r.status_code, r.text[:160])
+                    _EXHAUSTED.add(m)
+                    break
+                r.raise_for_status()
+                data    = r.json()
+                content = (data["choices"][0]["message"].get("content") or "").strip()
+                if not content:
+                    logger.warning("  Empty content on %s (finish_reason=%s)",
+                                   m, data["choices"][0].get("finish_reason"))
+                    continue
+                _STRIKES[m] = 0
+                _groq_call_count += 1
+                _groq_tokens_used += int((data.get("usage") or {}).get("total_tokens", 0))
+                return content
+            except requests.RequestException as exc:
+                logger.warning("  %s error attempt %d: %s", m, attempt, exc)
+                time.sleep(5 * attempt)
+        else:
+            if rate_limited:
+                _STRIKES[m] = _STRIKES.get(m, 0) + 1
+                if _STRIKES[m] >= 2:
+                    logger.warning("  %s rate-limited twice in a row — disabled for this run", m)
+                    _EXHAUSTED.add(m)
+
+    raise RuntimeError("Both GPT-OSS models failed or are exhausted.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
