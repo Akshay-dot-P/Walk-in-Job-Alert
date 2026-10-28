@@ -498,55 +498,53 @@ def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
 # =============================================================================
 
 GROQ_MODELS = [GROQ_MODEL, "openai/gpt-oss-120b"]
+_EXHAUSTED: set[str] = set()
 
 def call_groq(listing_text: str, retries: int = 3) -> str:
     api_key = os.environ.get("GROQ_API_KEY", "")
     if not api_key:
         raise ValueError("GROQ_API_KEY not set")
-
     safe = sanitize(listing_text)[:2000]
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     for model in GROQ_MODELS:
+        if model in _EXHAUSTED:
+            continue
         payload = {
             "model": model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
             ],
-            "temperature": 0.1,
-            "max_tokens": 1500,
+            "temperature": 0.1, "max_tokens": 1500,
             "reasoning_effort": "low",
             "response_format": {"type": "json_object"},
         }
         for attempt in range(1, retries + 1):
             try:
                 r = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=45)
-
                 if r.status_code == 429:
                     logger.warning("Groq 429 on %s: %s", model, r.text[:200])
+                    low = r.text.lower()
+                    if "per day" in low or "(tpd)" in low or "(rpd)" in low:
+                        logger.warning("Daily limit on %s — skipping it for the rest of this run", model)
+                        _EXHAUSTED.add(model)
+                        break
                     try:
                         retry_after = float(r.headers.get("retry-after", 0) or 0)
                     except ValueError:
                         retry_after = 0
-                    if retry_after > 120:      # daily limit: waiting is pointless
-                        break                  # try next model
-                    time.sleep(min(max(retry_after + 1, 8 * attempt), 90))
+                    time.sleep(min(max(retry_after + 1, 8 * attempt), 60))
                     continue
-
                 r.raise_for_status()
                 choice  = r.json()["choices"][0]
                 content = (choice["message"].get("content") or "").strip()
                 if not content:
-                    logger.warning("Groq empty content on %s (finish_reason=%s)",
-                                   model, choice.get("finish_reason"))
+                    logger.warning("Empty content on %s (finish_reason=%s)", model, choice.get("finish_reason"))
                     continue
                 return content
-
             except requests.exceptions.Timeout:
-                logger.warning("Groq timeout %s attempt %d/%d", model, attempt, retries)
                 time.sleep(5 * attempt)
-
     raise RuntimeError("Groq failed on all models (rate limit or empty replies)")
 
 
