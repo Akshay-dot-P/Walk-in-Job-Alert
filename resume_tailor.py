@@ -2969,10 +2969,9 @@ def main():
         except Exception as exc:
             logger.error("  ✗ Failed: %s", exc)
             continue
-
-    # [CHANGE I] Log Groq call budget at end of run
     logger.info("=" * 60)
-	logger.info("Done: %d/%d succeeded. | LLM calls: %d | tokens used: %d", success, len(pending), _groq_call_count, _groq_tokens_used)
+    logger.info("Done: %d/%d succeeded. | LLM calls: %d | tokens used: %d",
+                success, len(pending), _groq_call_count, _groq_tokens_used)
     logger.info("=" * 60)
 
 
