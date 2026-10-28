@@ -511,7 +511,8 @@ def call_groq(listing_text: str, retries: int = 4) -> str:
             {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
         ],
         "temperature": 0.1,
-        "max_tokens":  600,
+        "max_tokens":  1200,
+        "reasoning_effort": "low",        # new
     }
 
     headers = {
