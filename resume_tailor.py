@@ -109,8 +109,8 @@ def _split_env_list(raw: str) -> list[str]:
 
 SHEET_NAME        = os.environ.get("SHEET_NAME", "WalkIn Jobs Bangalore")
 GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
-GROQ_GEN_MODEL    = "llama-3.1-8b-instant"
-GROQ_VAL_MODEL    = "llama-3.1-8b-instant"
+GROQ_GEN_MODEL = "openai/gpt-oss-120b"   # resume bullets
+GROQ_VAL_MODEL = "openai/gpt-oss-20b"    # recruiter sim and keyword fallback
 GROQ_URL          = "https://api.groq.com/openai/v1/chat/completions"
 MAX_JOBS_PER_RUN  = 10
 TEMPLATE_PATH     = Path(__file__).parent / "resume_template.docx"
