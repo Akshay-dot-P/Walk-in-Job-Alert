@@ -497,64 +497,57 @@ def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
 # GROQ CALL
 # =============================================================================
 
-def call_groq(listing_text: str, retries: int = 4) -> str:
+GROQ_MODELS = [GROQ_MODEL, "openai/gpt-oss-120b"]
+
+def call_groq(listing_text: str, retries: int = 3) -> str:
     api_key = os.environ.get("GROQ_API_KEY", "")
     if not api_key:
         raise ValueError("GROQ_API_KEY not set")
 
-    safe = sanitize(listing_text)[:2500]
+    safe = sanitize(listing_text)[:2000]
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
-        ],
-        "temperature": 0.1,
-        "max_tokens":  1200,
-        "reasoning_effort": "low",        # new
-    }
+    for model in GROQ_MODELS:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1500,
+            "reasoning_effort": "low",
+            "response_format": {"type": "json_object"},
+        }
+        for attempt in range(1, retries + 1):
+            try:
+                r = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=45)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type":  "application/json",
-    }
-
-    for attempt in range(1, retries + 1):
-        try:
-            r = requests.post(GROQ_API_URL, headers=headers,
-                              json=payload, timeout=30)
-
-            if r.status_code == 429:
-                retry_after = r.headers.get("retry-after") or r.headers.get("x-ratelimit-reset-requests")
-                wait = 8.0 * (2 ** (attempt - 1))
-                if retry_after:
+                if r.status_code == 429:
+                    logger.warning("Groq 429 on %s: %s", model, r.text[:200])
                     try:
-                        w = float(retry_after)
-                        if w <= 120:
-                            wait = max(wait, w + 1.0)
-                    except (TypeError, ValueError):
-                        pass
-                wait = min(wait, 90.0)
-                logger.warning("Groq 429 rate limit (attempt %d/%d) — waiting %.0fs",
-                               attempt, retries, wait)
-                time.sleep(wait)
-                continue
+                        retry_after = float(r.headers.get("retry-after", 0) or 0)
+                    except ValueError:
+                        retry_after = 0
+                    if retry_after > 120:      # daily limit: waiting is pointless
+                        break                  # try next model
+                    time.sleep(min(max(retry_after + 1, 8 * attempt), 90))
+                    continue
 
-            if r.status_code == 400:
-                try:    err_msg = r.json().get("error", {}).get("message", r.text[:200])
-                except: err_msg = r.text[:200]
-                logger.error("Groq 400: %s", err_msg)
+                r.raise_for_status()
+                choice  = r.json()["choices"][0]
+                content = (choice["message"].get("content") or "").strip()
+                if not content:
+                    logger.warning("Groq empty content on %s (finish_reason=%s)",
+                                   model, choice.get("finish_reason"))
+                    continue
+                return content
 
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
-
-        except requests.exceptions.Timeout:
-            logger.warning("Groq timeout attempt %d/%d", attempt, retries)
-            if attempt < retries:
+            except requests.exceptions.Timeout:
+                logger.warning("Groq timeout %s attempt %d/%d", model, attempt, retries)
                 time.sleep(5 * attempt)
 
-    raise RuntimeError(f"Groq failed after {retries} attempts")
+    raise RuntimeError("Groq failed on all models (rate limit or empty replies)")
 
 
 # =============================================================================
