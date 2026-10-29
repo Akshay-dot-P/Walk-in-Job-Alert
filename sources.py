@@ -626,16 +626,6 @@ LINKEDIN_POST_QUERIES = [
     "site:linkedin.com offering internship security bangalore",
     "site:linkedin.com looking for cybersecurity intern bangalore",
   
-    "site:instahyre.com cybersecurity security analyst bangalore",
-    "site:instahyre.com SOC analyst GRC compliance bangalore",
-    "site:instahyre.com information security risk analyst bangalore",
-    "site:instahyre.com cloud security IAM analyst bangalore",
-    "site:instahyre.com VAPT penetration appsec bangalore",
-    "site:instahyre.com fraud KYC AML analyst bangalore",
-    "site:instahyre.com IT audit compliance analyst bangalore",
-    "site:instahyre.com threat intelligence incident response bangalore",
-    "site:instahyre.com security intern internship bangalore",
-    "site:instahyre.com soc intern internship bangalore",
 
    "site:iimjobs.com risk analyst compliance bangalore",
    "site:iimjobs.com GRC IT audit bangalore",
