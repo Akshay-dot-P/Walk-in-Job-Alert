@@ -28,6 +28,7 @@ USER_PROMPT_PREFIX = (
     '  "company_tier": "MNC or startup or mid-tier or unknown",\n'
     '  "domain": "SOC or GRC or AppSec or VAPT or CloudSec or IAM or Forensics or Risk or Fraud-AML or General",\n'
     '  "legitimacy_score": 1-10,\n'
+    '  "score_rule": "rule id such as R10a",\n'
     '  "red_flags": [],\n'
     '  "summary": "one sentence",\n'
     '  "is_intern": true or false,\n'
@@ -37,44 +38,40 @@ USER_PROMPT_PREFIX = (
     '  "apply_url": "direct application URL or null",\n'
     '  "posted_date": "YYYY-MM-DD or null"\n'
     '}\n\n'
-    "SCORING RUBRIC (SIMPLE - 3 categories only):\n"
-    "8-10: ANY entry-level job - MNC, startup, unknown, vague JD, missing details - ALL FINE. "
-    "      If posted date is missing/unknown, ASSUME RECENT. "
-    "      If it's recent (<30 days or date unknown) and not senior, score it 8-10. "
-    "      User will apply to everything.\n"
-    "2:    SCAMS ONLY: Training fees required, guaranteed placement, "
-    "      unrealistic salary (>25 LPA fresher), obvious fake/spam.\n"
-    "1:    AUTO-REJECT: (a) Senior/Lead/Manager/L2/L3/II/III roles, 3+ years required. "
-    "      (b) Posted date CONFIRMED >30 days (if date missing, DON'T reject).\n\n"
-    "IMPORTANT RULES:\n"
-    "- Missing experience = NORMAL — assume entry-level, score 8-10\n"
-    "- Missing salary = NORMAL — score 8-10\n"
-    "- Missing posted_date = ASSUME RECENT — score 8-10 (do NOT reject)\n"
-    "- Vague JD = FINE — score 8-10\n"
-    "- Unknown/startup company = FINE — score 8-10\n"
-    "- ONLY score 1 or 2 for senior roles, old posts, or scams\n"
-    "- Everything else = 8-10\n"
+    "FIRST decide these facts from the listing text only. Never guess.\n"
+    "- fresher_proof: the text literally says fresher, freshers, entry level or graduate trainee, "
+    "OR states a maximum of 2 years or less (e.g. 0-2 years).\n"
+    "- entry_title: title has intern, trainee, apprentice, graduate, junior, associate, L1, Analyst I or Engineer 1.\n"
+    "- senior_level_title: title has Senior, Sr, Grade 2 or higher, L2 to L5, II, III, IV, or Analyst/Engineer followed by 2 to 5.\n"
+    "- role_keyword: title has a security word (cyber, security, soc, siem, vapt, cloud, iam, grc, threat, vulnerability) "
+    "OR an ops/risk word (fraud, kyc, aml, risk, compliance, audit, privacy, investigation, case, operations). "
+    "Both kinds count equally.\n\n"
+    "SCORING: apply the rules IN ORDER. The FIRST rule that matches decides the score. "
+    "Put the matching id in score_rule.\n"
+    "S2: training or registration fee, guaranteed placement, fake or spam listing, salary above 25 LPA for a fresher.\n"
+    "S1: title has Staff, Principal, Lead, Head, Director, Manager, VP, Chief, CISO or Architect; "
+    "OR the text requires 3 or more years; "
+    "OR senior_level_title WITHOUT fresher_proof; "
+    "OR posted date is confirmed older than 30 days (a missing date is NOT a reason to reject).\n"
+    "R10a: company_tier is startup. Score 10.\n"
+    "R9c: senior_level_title WITH fresher_proof. Score 9.\n"
+    "R10b: intern, trainee or apprentice role. Score 10.\n"
+    "R10c: fresher_proof AND (company_tier is MNC OR entry_title). Score 10.\n"
+    "R9a: fresher_proof only. Score 9.\n"
+    "R9b: stated range with minimum 0 or 1 and maximum 3 or less, or 1+ years. Score 9.\n"
+    "R8a: experience not stated AND role_keyword in title AND (entry_title OR company_tier is MNC). Score 8.\n"
+    "R8b: stated minimum of 2 years AND role_keyword in title AND entry_title. Score 8.\n"
+    "R7: role_keyword in title, none of the rules above. Score 7.\n"
+    "R6: role keywords appear only in the description. Score 6.\n"
+    "R5: no role keywords anywhere. Score 5.\n"
+    "Use only these scores: 1, 2, 5, 6, 7, 8, 9, 10.\n\n"
+    "OTHER RULES:\n"
+    "- Missing experience is NOT a reason to reject, but it never scores above 8.\n"
+    "- Missing salary or missing posted_date is never a reason to reject.\n"
+    "- experience_required: copy the wording exactly as written, or null. Never guess.\n"
     "- is_intern=true if: intern, internship, stipend, trainee, apprentice\n"
     "- skills_required must be a STRING, not array\n"
     "- domain: SOC/GRC/AppSec/VAPT/CloudSec/IAM/Forensics/Risk/Fraud-AML/General\n\n"
-    "SCORE 1 (AUTO-REJECT) if ANY:\n"
-    "- Posted date is CONFIRMED >30 days ago (if date missing/null, assume recent)\n"
-    "- Title: Senior (except 'Senior Associate'), Lead, Principal, Staff, Manager, Director, VP, CISO, Chief\n"
-    "- Title: II, III, IV, V, or numbers 2/3/4/5 after role word (e.g., 'Analyst II', 'Engineer 3')\n"
-    "- Title: L2, L3, L4, L5 (e.g., 'L2 SOC Analyst')\n"
-    "  EXCEPTION: 'I', '1', or 'L1' are OK (e.g., 'Analyst I', 'Engineer 1', 'L1 SOC')\n"
-    "- Experience: 5+ years, 4+ years, or 3+ years\n"
-    "- Mid-level/midlevel in title\n\n"
-    "SCORE 2 (SCAM) if ANY:\n"
-    "- Training/registration fees mentioned\n"
-    "- Guaranteed placement/interview\n"
-    "- Unrealistic salary >25 LPA for fresher\n\n"
-    "SCORE 8-10 (EVERYTHING ELSE):\n"
-    "- Entry-level (0-2 years or no experience mentioned)\n"
-    "- Posted ≤30 days\n"
-    "- Any company (MNC, startup, unknown)\n"
-    "- Any JD quality (detailed or vague)\n"
-    "- Analyst I, Engineer 1, L1, Associate, Junior, Fresher, Intern\n\n"
     "LISTING:\n"
 )
  
@@ -599,13 +596,16 @@ def score_listing(listing: dict) -> dict | None:
 
         ai_name = d.get("company") or listing.get("company", "")
         ai_tier = _resolve_tier(ai_name, d.get("company_tier", "unknown"))
+        score = int(d.get("legitimacy_score", 1))
+        if score > 2 and ai_tier == "startup":
+            score = 10
 
         result = {
             "scraped_at":           datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "job_title":            d.get("job_title")  or listing.get("title", ""),
             "company":              _merge_company(ai_name, ai_tier),
             "domain":               d.get("domain", "General"),
-            "legitimacy_score":     int(d.get("legitimacy_score", 1)),
+            "legitimacy_score":     score,
             "red_flags":            d.get("red_flags", []),
             "summary":              d.get("summary", ""),
             "is_intern":            bool(d.get("is_intern", False)),
@@ -622,11 +622,12 @@ def score_listing(listing: dict) -> dict | None:
         }
 
         tag = "INTERN" if result["is_intern"] else "regular"
-        logger.info("  [%s] %s @ %s | score=%d | %s",
+        logger.info("  [%s] %s @ %s | score=%d | %s | exp=%s",
                     tag,
                     result["job_title"][:35],
                     result["company"][:25],
                     result["legitimacy_score"],
+                    d.get("score_rule", "?"),
                     result["experience_required"] or "?")
         return result
 
