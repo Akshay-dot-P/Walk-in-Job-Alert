@@ -43,7 +43,7 @@ USER_PROMPT_PREFIX = (
     "OR states a maximum of 2 years or less (e.g. 0-2 years).\n"
     "- entry_title: title has intern, trainee, apprentice, graduate, junior, associate, L1, Analyst I or Engineer 1.\n"
     "- senior_level_title: title has Senior, Sr, Grade 2 or higher, L2 to L5, II, III, IV, or Analyst/Engineer followed by 2 to 5.\n"
-    "- role_keyword: title has a security word (cyber, security, soc, siem, vapt, cloud, iam, grc, threat, vulnerability) "
+    "- role_keyword: title has a security word (cyber, security, soc, siem, vapt, cloud, iam, grc, threat, vulnerability, network, monitoring) "
     "OR an ops/risk word (fraud, kyc, aml, risk, compliance, audit, privacy, investigation, case, operations). "
     "Both kinds count equally.\n\n"
     "SCORING: apply the rules IN ORDER. The FIRST rule that matches decides the score. "
