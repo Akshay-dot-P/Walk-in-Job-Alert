@@ -260,9 +260,22 @@ def is_relevant(listing: dict) -> bool:
 
 
 def pre_filter(listings: list) -> list:
-    kept    = [l for l in listings if is_relevant(l)]
-    dropped = len(listings) - len(kept)
-    logger.info("Pre-filter: %d/%d kept, %d dropped", len(kept), len(listings), dropped)
+    kept, dropped = [], []
+    for l in listings:
+        (kept if is_relevant(l) else dropped).append(l)
+
+    total_by_src = Counter(l.get("source", "?") for l in listings)
+    kept_by_src = Counter(l.get("source", "?") for l in kept)
+    logger.info("Pre-filter kept/total by source: %s",
+                " | ".join(f"{s} {kept_by_src[s]}/{n}" for s, n in total_by_src.most_common()))
+
+    loose = re.compile(r"secur|cyber|\bsoc\b|siem|grc|risk|compliance|fraud|kyc|aml|audit|privacy", re.I)
+    suspects = [l for l in dropped if loose.search(l.get("title", ""))]
+    logger.info("Pre-filter: %d/%d kept, %d dropped (%d dropped titles look relevant)",
+                len(kept), len(listings), len(dropped), len(suspects))
+    for l in suspects[:40]:
+        logger.info("  dropped?: [%s] %s @ %s", l.get("source", "?"),
+                    sanitize(l.get("title", ""))[:60], sanitize(l.get("company", ""))[:25])
     return kept
 
 
