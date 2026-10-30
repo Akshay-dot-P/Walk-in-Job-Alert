@@ -199,13 +199,7 @@ def is_relevant(listing: dict) -> bool:
     if any(p in combined for p in CONTENT_REJECTS):
         return False
 
-    WALKIN_REJECTS = [
-        "walk-in", "walk in interview", "walkin interview",
-        "walk-in drive", "walkin drive", "direct interview",
-        "mega drive", "hiring drive",
-    ]
-    if any(p in combined for p in WALKIN_REJECTS):
-        return False
+
 
     DOMAIN_REJECTS = [
         "vlsi", "embedded systems", "mechanical engineer",
