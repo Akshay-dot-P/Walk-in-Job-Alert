@@ -2024,8 +2024,172 @@ def _scrape_workable() -> list[dict]:
     logger.info("Workable: %d jobs found", len(all_results))
     return all_results
  
+ 
+# ═══════════════════════════════════════════════════════════════════════
+# ⑥ NAUKRI SCRAPER
+# ═══════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════
+# NAUKRI via jobspy
+# Works from residential IPs. GitHub-hosted runners are usually blocked
+# (HTTP 406 recaptcha), so this has a kill switch and a circuit breaker.
+#   NAUKRI_ENABLED=0  -> skip entirely
+# ═══════════════════════════════════════════════════════════════════════
+NAUKRI_LOCATION         = "Bangalore"
+NAUKRI_RESULTS_PER_TERM = 25
+NAUKRI_MAX_AGE_DAYS     = 30
+NAUKRI_MAX_EXP_YEARS    = 3      # drop roles whose minimum experience is above this
+NAUKRI_FAIL_FAST        = 3      # abort after this many consecutive empty/blocked terms
+
+# Naukri search is plain keywords, not boolean OR queries
+NAUKRI_TERMS = [
+    "soc analyst", "soc analyst fresher", "l1 soc analyst",
+    "security analyst", "cyber security analyst", "information security analyst",
+    "threat intelligence analyst", "incident response analyst",
+    "vulnerability analyst", "vapt", "penetration tester",
+    "siem analyst", "splunk analyst",
+    "cloud security", "application security", "devsecops",
+    "iam analyst", "grc analyst", "it audit", "compliance analyst",
+    "risk analyst", "fraud analyst", "kyc analyst", "aml analyst",
+    "data privacy analyst", "cybersecurity intern", "security intern",
+    "walk in cyber security", "walk in soc analyst",
+]
+
+_NAUKRI_WALK_IN_RE = re.compile(
+    r"walk[\s\-]?in|walkin|direct interview|drive on|interview on|venue\s*:",
+    re.IGNORECASE,
+)
+_NAUKRI_EXP_RE = re.compile(r"(\d+)\s*(?:-|to)\s*(\d+)")
+_NAUKRI_BLOCK_HINTS = ("406", "recaptcha", "captcha", "forbidden", "403", "429")
 
 
+def _nk_clean(v):
+    """NaN / NaT / None -> '' so we never leak the strings 'nan' or 'None'."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip()
+
+
+def _nk_min_experience(exp: str) -> int | None:
+    """'0-2 Yrs' -> 0, '3-5 Yrs' -> 3, '' -> None (unknown, keep the job)."""
+    m = _NAUKRI_EXP_RE.search(exp or "")
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d+)", exp or "")
+    return int(m.group(1)) if m else None
+
+
+def _nk_date(value) -> str:
+    ts = pd.to_datetime(value, errors="coerce")
+    return "" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
+
+
+def _naukri_to_records(df) -> list[dict]:
+    if df is None or df.empty:
+        return []
+
+    cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=NAUKRI_MAX_AGE_DAYS)
+    records = []
+    for _, row in df.iterrows():
+        d = row.to_dict()
+
+        title = _nk_clean(d.get("title"))
+        url   = _nk_clean(d.get("job_url"))
+        if not title or not url:
+            continue
+
+        # Freshness filter
+        posted = _nk_date(d.get("date_posted"))
+        if posted and pd.Timestamp(posted) < cutoff:
+            continue
+
+        # Experience filter: keep fresher-friendly roles, keep unknowns
+        exp = _nk_clean(d.get("experience_range"))
+        min_exp = _nk_min_experience(exp)
+        if min_exp is not None and min_exp > NAUKRI_MAX_EXP_YEARS:
+            continue
+
+        desc = _nk_clean(d.get("description"))
+        skills = _nk_clean(d.get("skills"))
+        extras = []
+        if exp:
+            extras.append(f"Experience: {exp}")
+        if skills:
+            extras.append(f"Skills: {skills}")
+        vac = _nk_clean(d.get("vacancy_count"))
+        if vac:
+            extras.append(f"Vacancies: {vac}")
+
+        # Surface walk-in drives to the scorer LLM through the description,
+        # so no schema change is needed in scorer/storage/notifier.
+        is_walk_in = bool(_NAUKRI_WALK_IN_RE.search(f"{title} {desc}"))
+        prefix = "WALK-IN DRIVE. " if is_walk_in else ""
+
+        records.append({
+            "title":       title,
+            "company":     _nk_clean(d.get("company")),
+            "location":    _nk_clean(d.get("location")) or "Bangalore",
+            "job_url":     url,
+            "description": (prefix + " | ".join(extras) + ". " + desc)[:1500],
+            "date_posted": posted,
+            "source":      "naukri",
+        })
+    return records
+
+
+def _scrape_naukri() -> list[dict]:
+    if os.environ.get("NAUKRI_ENABLED", "1").strip() == "0":
+        logger.info("=== Naukri: disabled via NAUKRI_ENABLED=0 ===")
+        return []
+
+    logger.info("=== Naukri (jobspy): %d terms ===", len(NAUKRI_TERMS))
+    seen: set = set()
+    results: list[dict] = []
+    dead_streak = 0
+
+    for i, term in enumerate(NAUKRI_TERMS):
+        blocked = False
+        batch: list[dict] = []
+        try:
+            df = jobspy.scrape_jobs(
+                site_name=["naukri"],
+                search_term=term,
+                location=NAUKRI_LOCATION,
+                results_wanted=NAUKRI_RESULTS_PER_TERM,
+            )
+            errs = getattr(df, "attrs", {}).get("errors")
+            if errs:
+                logger.warning("  Naukri errors for %r: %s", term, errs)
+                blocked = any(h in str(errs).lower() for h in _NAUKRI_BLOCK_HINTS)
+            batch = _naukri_to_records(df)
+        except Exception as exc:
+            logger.warning("  Naukri failed for %r: %s", term, exc)
+            blocked = any(h in str(exc).lower() for h in _NAUKRI_BLOCK_HINTS)
+
+        new = [r for r in batch if r["job_url"] not in seen]
+        for r in new:
+            seen.add(r["job_url"])
+        results.extend(new)
+        logger.info("  [%d/%d] Naukri +%d (total %d) | %s",
+                    i + 1, len(NAUKRI_TERMS), len(new), len(results), term)
+
+        # Circuit breaker: bail out if we are clearly blocked (GitHub IPs)
+        dead_streak = dead_streak + 1 if (not batch and blocked) or (not batch and not results) else 0
+        if dead_streak >= NAUKRI_FAIL_FAST:
+            logger.warning("Naukri: %d consecutive empty/blocked terms, "
+                           "aborting (likely IP block). Run from a residential "
+                           "IP or self-hosted runner.", dead_streak)
+            break
+
+        time.sleep(4)
+
+    logger.info("Naukri: %d unique (%d walk-in)", len(results),
+                sum(r["description"].startswith("WALK-IN") for r in results))
+    return results
 
 
 
@@ -2034,6 +2198,7 @@ def gather_all_listings() -> list[dict]:
     seen: set   = set()
 
     sources = [
+        ("Naukri",         _scrape_naukri),      # NEW
         ("LinkedIn Jobs",  _scrape_linkedin),
         ("LinkedIn Posts", fetch_linkedin_posts),
         ("Workday",        _scrape_workday),
