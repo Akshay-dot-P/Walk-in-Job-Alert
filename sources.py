@@ -34,6 +34,7 @@ import feedparser
 import httpx
 import jobspy
 import pandas as pd
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -1147,7 +1148,7 @@ async def _scrape_workday_company(
             "source": "workday",
             "job_id": job_id,
         })
-
+    logger.info("%s sample: %s", company_name, [(r["title"][:40], r["location"][:30]) for r in records[:5]])
     filtered = filter_workday_jobs(
         records,
         title_keywords=title_keywords,
@@ -2050,8 +2051,7 @@ NAUKRI_TERMS = [
     "cloud security", "application security", "devsecops",
     "iam analyst", "grc analyst", "it audit", "compliance analyst",
     "risk analyst", "fraud analyst", "kyc analyst", "aml analyst",
-    "data privacy analyst", "cybersecurity intern", "security intern",
-    "walk in cyber security", "walk in soc analyst",
+    "soc intern", "cybersecurity intern", "security intern",
 ]
 
 _NAUKRI_WALK_IN_RE = re.compile(
