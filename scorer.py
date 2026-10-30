@@ -66,6 +66,7 @@ USER_PROMPT_PREFIX = (
     "R5: no role keywords anywhere. Score 5.\n"
     "Use only these scores: 1, 2, 5, 6, 7, 8, 9, 10.\n\n"
     "OTHER RULES:\n"
+    "- If the listing has an EXPERIENCE MENTIONS line, use it as the source for fresher_proof and experience_required.\n"
     "- Missing experience is NOT a reason to reject, but it never scores above 8.\n"
     "- Missing salary or missing posted_date is never a reason to reject.\n"
     "- experience_required: copy the wording exactly as written, or null. Never guess.\n"
@@ -161,6 +162,7 @@ REJECT_REGEX = [
     r'^\d[\d,]+\+?\s+\w',
     r'^\d+\s+\w+.*jobs in',
 ]
+
 
 
 def is_relevant(listing: dict) -> bool:
@@ -513,7 +515,7 @@ def call_groq(listing_text: str, retries: int = 3) -> str:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
             ],
-            "temperature": 0.1, "max_tokens": 1500,
+            "temperature": 0.1, "max_tokens": 1200,
             "reasoning_effort": "low",
             "response_format": {"type": "json_object"},
         }
@@ -572,6 +574,16 @@ def _skills_to_str(skills) -> str:
 # =============================================================================
 # SCORE ONE LISTING
 # =============================================================================
+_EXP_HINT_RE = re.compile(
+    r"[^\n.]{0,50}\b(?:\d{1,2}\s*(?:-|to)\s*\d{1,2}|\d{1,2}\s*\+|\d{1,2})\s*(?:years?|yrs?)\b[^\n.]{0,50}"
+    r"|[^\n.]{0,40}\b(?:freshers?|entry[- ]level|graduate trainee)\b[^\n.]{0,40}",
+    re.IGNORECASE)
+
+
+def experience_hint(description: str) -> str:
+    hits = [m.group(0).strip() for m in _EXP_HINT_RE.finditer(sanitize(description))]
+    return " | ".join(hits[:3])[:300]
+
 
 def score_listing(listing: dict) -> dict | None:
     listing_text = (
@@ -580,6 +592,7 @@ def score_listing(listing: dict) -> dict | None:
         "COMPANY: "      + sanitize(listing.get("company", ""))                       + "\n"
         "LOCATION: "     + sanitize(listing.get("location", ""))                      + "\n"
         "DATE POSTED: "  + sanitize(listing.get("date_posted", ""))                   + "\n"
+        "EXPERIENCE MENTIONS: " + experience_hint(listing.get("description", "")) + "\n"
         "URL: "          + sanitize(listing.get("job_url") or listing.get("url",""))  + "\n"
         "DESCRIPTION:\n" + sanitize(listing.get("description", ""))[:1600]
     )
@@ -597,8 +610,11 @@ def score_listing(listing: dict) -> dict | None:
         ai_name = d.get("company") or listing.get("company", "")
         ai_tier = _resolve_tier(ai_name, d.get("company_tier", "unknown"))
         score = int(d.get("legitimacy_score", 1))
+        rule = d.get("score_rule", "?")
         if score > 2 and ai_tier == "startup":
-            score = 10
+            score, rule = 10, "R10a (override)"
+        elif score > 2 and bool(d.get("is_intern")):
+            score, rule = 10, "R10b (override)"
 
         result = {
             "scraped_at":           datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -627,7 +643,7 @@ def score_listing(listing: dict) -> dict | None:
                     result["job_title"][:35],
                     result["company"][:25],
                     result["legitimacy_score"],
-                    d.get("score_rule", "?"),
+                    rule,
                     result["experience_required"] or "?")
         return result
 
@@ -642,8 +658,7 @@ def score_listing(listing: dict) -> dict | None:
 # =============================================================================
 # SCORE ALL - WITH AGGRESSIVE DEDUP
 # =============================================================================
-
-def score_all(listings: list, min_score: int = 4) -> list:
+def score_all(listings: list, min_score: int = 4, known_urls: set | None = None) -> list:    
     """
     Main entry point. Scoring pipeline:
     1. Pre-filter (relevance check)
@@ -664,10 +679,22 @@ def score_all(listings: list, min_score: int = 4) -> list:
     if not relevant:
         logger.info("Nothing left after freshness filter")
         return []
-
-    # Step 3: AGGRESSIVE DEDUPLICATION - NEW
-    # This is the key fix - happens BEFORE scoring to avoid wasting API calls
+        
+    if known_urls:
+        before = len(deduped)
+        deduped = [l for l in deduped
+                   if (l.get("job_url") or l.get("url") or "").strip().lower() not in known_urls]
+        logger.info("Skipped %d listings already in the sheet", before - len(deduped))
+    # Step 3: AGGRESSIVE DEDUPLICATION
     deduped = aggressive_deduplicate(relevant)
+
+    # Step 3b: skip listings already stored in the sheet
+    if known_urls:
+        before = len(deduped)
+        deduped = [l for l in deduped
+                   if (l.get("job_url") or l.get("url") or "").strip().lower() not in known_urls]
+        logger.info("Skipped %d listings already in the sheet", before - len(deduped))
+
     if not deduped:
         logger.info("Nothing left after deduplication")
         return []
@@ -677,6 +704,9 @@ def score_all(listings: list, min_score: int = 4) -> list:
     logger.info("Scoring %d unique listings via Groq...", len(deduped))
 
     for i, listing in enumerate(deduped):
+        if all(m in _EXHAUSTED for m in GROQ_MODELS):
+            logger.warning("All models are at the daily limit, %d listings left unscored", len(deduped) - i)
+            break        
         logger.info("Scoring %d/%d: %s",
                     i + 1, len(deduped),
                     sanitize(listing.get("title", "?"))[:55])
