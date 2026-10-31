@@ -103,12 +103,14 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
             worksheet.update("A1", [SHEET_COLUMNS])
             _set_status_dropdown(worksheet)
         else:
-            logger.warning(
-                "Sheet has %d rows under OLD headers. "
-                "Clear the sheet manually to fix. "
-                "Dedup still works via URL matching.",
-                data_row_count
-            )
+            missing = [c for c in SHEET_COLUMNS if c not in existing_headers]
+            extra = [c for c in existing_headers if c not in SHEET_COLUMNS]
+            if SHEET_COLUMNS[:len(existing_headers)] == existing_headers:
+                worksheet.update(range_name="A1", values=[SHEET_COLUMNS])
+                logger.info("Extended header row in place (%d rows kept).", data_row_count)
+            else:
+                logger.warning("Sheet has %d rows under OLD headers. missing=%s extra=%s",
+                               data_row_count, missing, extra)
             _set_status_dropdown(worksheet)
     else:
         logger.info("Sheet headers OK.")
