@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS, KNOWN_MNCS
 from listing_filters import entry_level_gate_enabled, passes_entry_level_gate
 from collections import Counter
+from storage import normalize_url, load_known_urls, log_scored_urls
 
 logger = logging.getLogger(__name__)
 
@@ -592,6 +593,30 @@ def experience_hint(description: str) -> str:
     hits = [m.group(0).strip() for m in _EXP_HINT_RE.finditer(sanitize(description))]
     return " | ".join(hits[:3])[:300]
 
+ROLE_KW_RE = re.compile(
+    r"\b(cyber\w*|security|soc|siem|grc|iam|vapt|pentest\w*|penetration|threat|vulnerabilit\w*|infosec|"
+    r"appsec|devsecops|forensic\w*|malware|fraud|kyc|aml|sanctions?|compliance|risk|audit\w*|privacy|"
+    r"data protection)\b", re.IGNORECASE)
+SENIOR_HARD_RE = re.compile(
+    r"\b(staff|principal|lead|head|director|manager|vp|vice president|chief|ciso|architect|supervisor)\b",
+    re.IGNORECASE)
+SENIOR_SOFT_RE = re.compile(
+    r"\b(senior|sr)\b|\bgrade\s*[2-9]\b|\bl[2-5]\b"
+    r"|\b(analyst|engineer|associate|specialist|consultant)\s+(ii|iii|iv|[2-5])\b", re.IGNORECASE)
+FRESHER_PROOF_RE = re.compile(
+    r"\b(freshers?|entry[- ]level|graduate trainee)\b|\b0\s*(?:-|to)\s*[12]\s*(?:years?|yrs?)",
+    re.IGNORECASE)
+
+
+def code_gate(listing: dict) -> str | None:
+    title = sanitize(listing.get("title", ""))
+    text = title + " " + sanitize(listing.get("description", ""))
+    if SENIOR_HARD_RE.search(title):
+        return "senior title"
+    if SENIOR_SOFT_RE.search(title) and not FRESHER_PROOF_RE.search(text):
+        return "senior level title, no fresher proof"
+    return None
+
 
 def score_listing(listing: dict) -> dict | None:
     listing_text = (
@@ -619,7 +644,10 @@ def score_listing(listing: dict) -> dict | None:
         ai_tier = _resolve_tier(ai_name, d.get("company_tier", "unknown"))
         score = int(d.get("legitimacy_score", 1))
         rule = d.get("score_rule", "?")
-        if score > 2 and ai_tier == "startup":
+        title_raw = sanitize(listing.get("title", ""))
+        if score > 2 and not ROLE_KW_RE.search(title_raw):
+            score, rule = min(score, 6), "capped: no role keyword in title"
+        elif score > 2 and ai_tier == "startup":
             score, rule = 10, "R10a (override)"
         elif score > 2 and bool(d.get("is_intern")):
             score, rule = 10, "R10b (override)"
@@ -636,7 +664,8 @@ def score_listing(listing: dict) -> dict | None:
             "experience_required":  d.get("experience_required") or "",
             "skills_required":      _skills_to_str(d.get("skills_required", "")),
             "salary_range":         d.get("salary_range") or "",
-            "apply_url":            d.get("apply_url") or listing.get("job_url", ""),
+            "apply_url":            listing.get("job_url") or listing.get("url") or d.get("apply_url") or "",
+            "score_rule":           rule,
             "posted_date":          d.get("posted_date") or "",
             "source":               listing.get("source", ""),
             "url":                  listing.get("job_url") or listing.get("url", ""),
@@ -666,63 +695,71 @@ def score_listing(listing: dict) -> dict | None:
 # =============================================================================
 # SCORE ALL - WITH AGGRESSIVE DEDUP
 # =============================================================================
-def score_all(listings: list, min_score: int = 4, known_urls: set | None = None) -> list:    
-    """
-    Main entry point. Scoring pipeline:
-    1. Pre-filter (relevance check)
-    2. Freshness filter (age check)
-    3. AGGRESSIVE deduplication ← NEW - BEFORE scoring
-    4. Score each unique listing
-    5. Filter by min_score
-    """
-    # Step 1: Pre-filter
+def score_all(listings: list, min_score: int = 4, known_urls: set | None = None) -> list:
     relevant = pre_filter(listings)
     if not relevant:
         logger.info("Nothing relevant after pre-filter")
         return []
 
-    # Step 2: Freshness filter
     max_age_days = int(os.environ.get("MAX_POST_AGE_DAYS", "21"))
     relevant = freshness_filter(relevant, max_age_days=max_age_days)
     if not relevant:
         logger.info("Nothing left after freshness filter")
         return []
-        
-    # Step 3: AGGRESSIVE DEDUPLICATION
+
     deduped = aggressive_deduplicate(relevant)
 
-    # Step 3b: skip listings already stored in the sheet
+    # Cross-check against the sheet (saved rows) and the scored_log tab (rejected and duplicates)
+    if known_urls is None:
+        try:
+            known_urls = load_known_urls()
+        except Exception as exc:
+            logger.warning("Could not load known URLs: %s", exc)
+            known_urls = set()
     if known_urls:
         before = len(deduped)
         deduped = [l for l in deduped
-                   if (l.get("job_url") or l.get("url") or "").strip().lower() not in known_urls]
-        logger.info("Skipped %d listings already in the sheet", before - len(deduped))
-
+                   if normalize_url(l.get("job_url") or l.get("url") or "") not in known_urls]
+        logger.info("Skipped %d listings already in the sheet or scored_log (%d left)",
+                    before - len(deduped), len(deduped))
     if not deduped:
         logger.info("Nothing left after deduplication")
         return []
 
-    # Step 4: Score each unique listing
-    scored = []
+    scored, rejected = [], []
+    delay = float(os.environ.get("GROQ_SCORE_DELAY_SEC", "8"))
     logger.info("Scoring %d unique listings via Groq...", len(deduped))
 
     for i, listing in enumerate(deduped):
         if all(m in _EXHAUSTED for m in GROQ_MODELS):
             logger.warning("All models are at the daily limit, %d listings left unscored", len(deduped) - i)
-            break        
-        logger.info("Scoring %d/%d: %s",
-                    i + 1, len(deduped),
-                    sanitize(listing.get("title", "?"))[:55])
+            break
+        url = listing.get("job_url") or listing.get("url") or ""
+        title = sanitize(listing.get("title", ""))
+
+        gate = code_gate(listing)
+        if gate:
+            logger.info("  GATE reject (%s): %s", gate, title[:55])
+            rejected.append((url, 1, title))
+            continue
+
+        logger.info("Scoring %d/%d: %s", i + 1, len(deduped), title[:55])
         result = score_listing(listing)
+        time.sleep(delay)          # after EVERY call: dropped listings use tokens too
 
         if result is None:
             continue
         if result["legitimacy_score"] < min_score:
             logger.info("  -> Dropped score=%d", result["legitimacy_score"])
+            rejected.append((url, result["legitimacy_score"], title))
             continue
-
         scored.append(result)
-        time.sleep(float(os.environ.get("GROQ_SCORE_DELAY_SEC", "5")))
+
+    if rejected:
+        try:
+            log_scored_urls(rejected)
+        except Exception as exc:
+            logger.warning("Could not write scored_log: %s", exc)
 
     logger.info("Done: %d/%d passed", len(scored), len(deduped))
     return scored
