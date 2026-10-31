@@ -125,6 +125,8 @@ SHEET_COLUMNS = [
     "posted_date",
     "source",
     "salary_range", 
+    "legitimacy_score", 
+    "score_rule"
 ]
 
 KNOWN_MNCS = [
