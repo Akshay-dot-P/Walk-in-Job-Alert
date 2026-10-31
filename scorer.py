@@ -7,6 +7,7 @@ import requests
 from datetime import datetime, timezone
 from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS, KNOWN_MNCS
 from listing_filters import entry_level_gate_enabled, passes_entry_level_gate
+from collections import Counter
 
 logger = logging.getLogger(__name__)
 
@@ -687,11 +688,6 @@ def score_all(listings: list, min_score: int = 4, known_urls: set | None = None)
         logger.info("Nothing left after freshness filter")
         return []
         
-    if known_urls:
-        before = len(deduped)
-        deduped = [l for l in deduped
-                   if (l.get("job_url") or l.get("url") or "").strip().lower() not in known_urls]
-        logger.info("Skipped %d listings already in the sheet", before - len(deduped))
     # Step 3: AGGRESSIVE DEDUPLICATION
     deduped = aggressive_deduplicate(relevant)
 
