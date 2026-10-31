@@ -2207,8 +2207,6 @@ def gather_all_listings() -> list[dict]:
         ("HN Hiring",      _scrape_hn_hiring),
         ("Ashby",          _scrape_ashby),       # ← NEW: Ashby public API
         ("Workable",       _scrape_workable),
-        ("Google Jobs",    _scrape_google_jobs),
-        ("Indeed",         _scrape_indeed),
       
     ]
 
