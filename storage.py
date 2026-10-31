@@ -5,6 +5,8 @@ import os
 import json
 import logging
 import re
+import time
+from datetime import datetime, timezone
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -133,47 +135,62 @@ def _extract_workday_job_id_from_url(url: str) -> str:
     return m.group(1).strip()
 
 
-def _build_seen_sets(worksheet) -> tuple[set[str], set[str], set[str]]:
-    seen_urls:           set[str] = set()
-    seen_company_titles: set[str] = set()
-    seen_job_ids:        set[str] = set()
 
+
+
+
+
+# =============================================================================
+# SAVE
+# =============================================================================
+SEEN_TAB = "scored_log"
+_TRACKING_HOSTS = ("linkedin.com", "naukri.com", "internshala.com", "iimjobs.com")
+_TIER_SUFFIX_RE = re.compile(r"\s*\((?:mnc|startup|mid-tier|unknown)\)\s*$", re.IGNORECASE)
+
+
+def normalize_url(u: str) -> str:
+    u = (u or "").strip().lower().split("#")[0]
+    if not u:
+        return ""
+    if any(h in u for h in _TRACKING_HOSTS):
+        u = u.split("?")[0]          # drop tracking params only on these hosts
+    return u.rstrip("/")
+
+
+def _ct_key(company: str, title: str) -> str:
+    """Company+title key that ignores the '(MNC)/(startup)' tier suffix and punctuation."""
+    c = _TIER_SUFFIX_RE.sub("", (company or "").strip())
+    c = re.sub(r"[^a-z0-9]+", " ", c.lower()).strip()
+    t = re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+    return f"{c}|{t}" if c and t else ""
+
+
+def _build_seen_sets(worksheet) -> tuple[set[str], set[str], set[str]]:
+    seen_urls, seen_company_titles, seen_job_ids = set(), set(), set()
     try:
         all_values = worksheet.get_all_values()
-
         if not all_values or len(all_values) < 2:
-            logger.info("Sheet is empty or header-only — no dedup history.")
+            logger.info("Sheet is empty or header-only, no dedup history.")
             return seen_urls, seen_company_titles, seen_job_ids
-
-        headers = all_values[0]
-        rows    = all_values[1:]
-        col     = {h: i for i, h in enumerate(headers) if h}
-
-        # Support both old sheets ("url") and new sheets ("apply_url")
-        url_idx     = col.get("apply_url") if col.get("apply_url") is not None else col.get("url")
-        company_idx = col.get("company")
-        title_idx   = col.get("job_title")
-
+        headers, rows = all_values[0], all_values[1:]
+        col = {h: i for i, h in enumerate(headers) if h}
+        url_idx = col.get("apply_url") if col.get("apply_url") is not None else col.get("url")
+        company_idx, title_idx = col.get("company"), col.get("job_title")
         for row in rows:
             if url_idx is not None and url_idx < len(row):
-                url = row[url_idx].strip()
-                if url:
-                    seen_urls.add(url)
-                    workday_id = _extract_workday_job_id_from_url(url)
-                    if workday_id:
-                        seen_job_ids.add(workday_id)
-
-            company = (row[company_idx].lower().strip()
-                       if company_idx is not None and company_idx < len(row) else "")
-            title   = (row[title_idx].lower().strip()
-                       if title_idx   is not None and title_idx   < len(row) else "")
-
-            if company and title:
-                seen_company_titles.add(f"{company}|{title}")
-
+                raw = row[url_idx].strip()
+                if raw:
+                    seen_urls.add(normalize_url(raw))
+                    wid = _extract_workday_job_id_from_url(raw)
+                    if wid:
+                        seen_job_ids.add(wid)
+            company = row[company_idx] if company_idx is not None and company_idx < len(row) else ""
+            title = row[title_idx] if title_idx is not None and title_idx < len(row) else ""
+            key = _ct_key(company, title)
+            if key:
+                seen_company_titles.add(key)
     except Exception as e:
-        logger.error("Dedup read failed: %s — all listings treated as new", e)
-
+        logger.error("Dedup read failed: %s, all listings treated as new", e)
     logger.info("Dedup index: %d URLs, %d company+title pairs, %d Workday IDs",
                 len(seen_urls), len(seen_company_titles), len(seen_job_ids))
     return seen_urls, seen_company_titles, seen_job_ids
@@ -183,45 +200,87 @@ def _is_duplicate(listing, seen_urls, seen_company_titles, seen_job_ids) -> bool
     job_id = str(listing.get("job_id", "")).strip()
     if job_id and job_id in seen_job_ids:
         return True
-
-    # Check both "apply_url" and "url" keys since scorer may use either
-    url = str(listing.get("apply_url", "") or listing.get("url", "")).strip()
+    raw_url = str(listing.get("apply_url", "") or listing.get("url", "")).strip()
+    url = normalize_url(raw_url)
     if url and url in seen_urls:
         return True
-    workday_id_from_url = _extract_workday_job_id_from_url(url)
-    if workday_id_from_url and workday_id_from_url in seen_job_ids:
+    wid = _extract_workday_job_id_from_url(raw_url)
+    if wid and wid in seen_job_ids:
         return True
-
-    company = str(listing.get("company", "")).lower().strip()
-    title   = str(listing.get("job_title", "")).lower().strip()
-    if company and title and f"{company}|{title}" in seen_company_titles:
-        return True
-
-    return False
+    key = _ct_key(str(listing.get("company", "")), str(listing.get("job_title", "")))
+    return bool(key and key in seen_company_titles)
 
 
-# =============================================================================
-# SAVE
-# =============================================================================
-
-def _save_listing(worksheet, listing: dict) -> bool:
+def _get_seen_tab(spreadsheet):
     try:
-        row = []
-        for col in SHEET_COLUMNS:
-            value = listing.get(col, "")
-            if isinstance(value, list):
-                value = ", ".join(str(v) for v in value)
-            elif isinstance(value, bool):
-                value = "TRUE" if value else "FALSE"
-            row.append(str(value) if value is not None else "")
+        return spreadsheet.worksheet(SEEN_TAB)
+    except gspread.WorksheetNotFound:
+        tab = spreadsheet.add_worksheet(title=SEEN_TAB, rows=2000, cols=4)
+        tab.update(range_name="A1", values=[["url", "score", "title", "logged_at"]])
+        return tab
 
-        worksheet.append_row(row, value_input_option="USER_ENTERED")
-        logger.info("Saved: %s | %s",
-                    listing.get("company", "?"), listing.get("job_title", "?"))
-        return True
+
+def load_known_urls() -> set[str]:
+    """Every URL already saved in the sheet plus every URL in the scored_log tab."""
+    known: set[str] = set()
+    try:
+        ws = get_worksheet()
     except Exception as e:
-        logger.error("Failed to save listing: %s", e)
-        return False
+        logger.warning("Pre-scoring dedup unavailable (sheet): %s", e)
+        return known
+    seen_urls, _, _ = _build_seen_sets(ws)
+    known |= seen_urls
+    try:
+        tab = _get_seen_tab(ws.spreadsheet)
+        for row in tab.get_all_values()[1:]:
+            if row and row[0].strip():
+                known.add(normalize_url(row[0]))
+    except Exception as e:
+        logger.warning("Could not read %s tab: %s", SEEN_TAB, e)
+    logger.info("Known URLs for pre-scoring skip: %d", len(known))
+    return known
+
+
+def log_scored_urls(entries) -> None:
+    """entries: (url, score, title) for listings that were scored but NOT saved."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    rows = [[normalize_url(u), str(s), str(t)[:80], now] for u, s, t in entries if normalize_url(u)]
+    if not rows:
+        return
+    ws = get_worksheet()
+    tab = _get_seen_tab(ws.spreadsheet)
+    for i in range(0, len(rows), 200):
+        tab.append_rows(rows[i:i + 200], value_input_option="RAW")
+    logger.info("scored_log: recorded %d URLs", len(rows))
+
+
+def _row_for(listing: dict) -> list[str]:
+    row = []
+    for col in SHEET_COLUMNS:
+        value = listing.get(col, "")
+        if isinstance(value, list):
+            value = ", ".join(str(v) for v in value)
+        elif isinstance(value, bool):
+            value = "TRUE" if value else "FALSE"
+        row.append(str(value) if value is not None else "")
+    return row
+
+
+def _append_rows_safely(worksheet, rows: list, chunk: int = 40) -> int:
+    saved = 0
+    for i in range(0, len(rows), chunk):
+        part = rows[i:i + chunk]
+        for attempt in (1, 2):
+            try:
+                worksheet.append_rows(part, value_input_option="USER_ENTERED")
+                saved += len(part)
+                break
+            except Exception as e:
+                logger.error("Batch append failed (attempt %d): %s", attempt, e)
+                if attempt == 1:
+                    time.sleep(20)
+        time.sleep(1.5)
+    return saved
 
 
 def save_new_listings(scored_listings: list[dict]) -> list[dict]:
@@ -233,50 +292,38 @@ def save_new_listings(scored_listings: list[dict]) -> list[dict]:
         return scored_listings
 
     seen_urls, seen_company_titles, seen_job_ids = _build_seen_sets(worksheet)
+    new_listings, rows_to_write, skipped = [], [], []
 
-    new_listings = []
-    company_stats: dict[str, dict[str, int]] = {}
-    seen_duplicate_logs: set[str] = set()
     for listing in scored_listings:
-        source_company = str(listing.get("source_company", "")).strip() or str(listing.get("company", "")).strip() or "Unknown"
-        stats = company_stats.setdefault(source_company, {"new": 0, "existing": 0})
-
         if _is_duplicate(listing, seen_urls, seen_company_titles, seen_job_ids):
-            stats["existing"] += 1
-            # Compress duplicate spam: only log once per duplicate key in this run
-            company = str(listing.get("company", "?")).strip()
-            title = str(listing.get("job_title", "?")).strip()
-            url = str(listing.get("apply_url", "") or listing.get("url", "")).strip()
-            job_id = str(listing.get("job_id", "")).strip()
-            dup_key = job_id or url or f"{company.lower()}|{title.lower()}"
-            if dup_key not in seen_duplicate_logs:
-                seen_duplicate_logs.add(dup_key)
-                logger.info("Duplicate — skipping: %s | %s", company, title)
+            logger.info("Duplicate, skipping: %s | %s", listing.get("company", "?"), listing.get("job_title", "?"))
+            skipped.append((listing.get("apply_url") or listing.get("url") or "",
+                            listing.get("legitimacy_score", ""), listing.get("job_title", "")))
             continue
+        new_listings.append(listing)
+        rows_to_write.append(_row_for(listing))
+        raw_url = str(listing.get("apply_url", "") or listing.get("url", "")).strip()
+        if raw_url:
+            seen_urls.add(normalize_url(raw_url))
+            wid = _extract_workday_job_id_from_url(raw_url)
+            if wid:
+                seen_job_ids.add(wid)
+        job_id = str(listing.get("job_id", "")).strip()
+        if job_id:
+            seen_job_ids.add(job_id)
+        key = _ct_key(str(listing.get("company", "")), str(listing.get("job_title", "")))
+        if key:
+            seen_company_titles.add(key)
 
-        success = _save_listing(worksheet, listing)
-        if success:
-            stats["new"] += 1
-            new_listings.append(listing)
-            # Update in-memory sets so duplicates within this batch are caught
-            url = str(listing.get("apply_url", "") or listing.get("url", "")).strip()
-            if url:
-                seen_urls.add(url)
-                workday_id = _extract_workday_job_id_from_url(url)
-                if workday_id:
-                    seen_job_ids.add(workday_id)
-            job_id = str(listing.get("job_id", "")).strip()
-            if job_id:
-                seen_job_ids.add(job_id)
-            company = str(listing.get("company", "")).lower().strip()
-            title   = str(listing.get("job_title", "")).lower().strip()
-            if company and title:
-                seen_company_titles.add(f"{company}|{title}")
-
-    for company_name, stat in company_stats.items():
-        logger.info("%s: %d new, %d already in DB",
-                    company_name, stat["new"], stat["existing"])
-
-    logger.info("Storage complete: %d new / %d duplicates skipped",
-                len(new_listings), len(scored_listings) - len(new_listings))
+    saved = _append_rows_safely(worksheet, rows_to_write)
+    if saved < len(rows_to_write):
+        logger.error("Only %d of %d rows were written; the rest will be retried next run.",
+                     saved, len(rows_to_write))
+    if skipped:
+        try:
+            log_scored_urls(skipped)
+        except Exception as e:
+            logger.warning("Could not log skipped duplicates: %s", e)
+    logger.info("Storage complete: %d new / %d duplicates skipped", len(new_listings), len(skipped))
     return new_listings
+
