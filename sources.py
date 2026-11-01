@@ -1041,8 +1041,11 @@ async def _scrape_workday_company(
     query_list = [q.strip() for q in (search_queries or []) if str(q).strip()]
     if not query_list:
         query_list = [""]
-
+      
+    failed_queries = 0
+  
     for search_query in query_list:
+      failed_here = False
         for page_idx in range(WORKDAY_MAX_PAGES):
             offset = page_idx * WORKDAY_PAGE_SIZE
             payload_variants = [
@@ -1082,6 +1085,7 @@ async def _scrape_workday_company(
                     "%s: Workday search failed offset=%s query=%r (tried %d payload variants, last HTTP=%s)",
                     company_name, offset, search_query, len(payload_variants), last_status,
                 )
+                failed_here = True
                 break
 
             total_results = int(response_json.get("total", 0) or 0)
@@ -1095,7 +1099,11 @@ async def _scrape_workday_company(
                 break
             if offset + WORKDAY_PAGE_SIZE >= total_results:
                 break
-
+        if failed_here:
+            failed_queries += 1
+            if failed_queries >= 3:
+                logger.warning("%s: 3 queries failed, skipping the rest of this tenant", company_name)
+                break
         if len(all_postings) >= WORKDAY_MAX_RESULTS:
             break
 
