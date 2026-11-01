@@ -1045,7 +1045,7 @@ async def _scrape_workday_company(
     failed_queries = 0
   
     for search_query in query_list:
-      failed_here = False
+        failed_here = False
         for page_idx in range(WORKDAY_MAX_PAGES):
             offset = page_idx * WORKDAY_PAGE_SIZE
             payload_variants = [
