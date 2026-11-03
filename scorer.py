@@ -125,12 +125,12 @@ def sanitize(text: str) -> str:
 # =============================================================================
 
 REJECT_PATTERNS = [
-    "jobs in united states", "jobs in india", "jobs in united kingdom",
+    "jobs in united states", "jobs in united kingdom",
     "jobs in canada", "jobs in australia", "jobs in singapore",
     "jobs in germany", "jobs in europe", "+ jobs",
     "new jobs", "(1,713 new)", "(244 new)",
     "| ceh certified", "| cissp", "| gcfa", "| ejpt",
-    "penetration tester| python", "cyber security professional",
+    "penetration tester| python",
     "helping organizations secure", "satish kumar", "deepak pokhrel",
     "ramavath rakesh",
     "excited to share that i", "thrilled to share that i",
