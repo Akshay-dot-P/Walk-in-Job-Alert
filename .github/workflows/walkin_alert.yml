@@ -44,3 +44,12 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           GOOGLE_CREDS_JSON:  ${{ secrets.GOOGLE_CREDS_JSON }}
         run: python scanner.py
+
+      - name: Upload skipped-jobs audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skipped-audit-${{ github.run_id }}
+          path: skipped_audit.csv
+          if-no-files-found: ignore
+          retention-days: 14
