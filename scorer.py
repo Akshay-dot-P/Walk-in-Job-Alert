@@ -9,9 +9,41 @@ from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS, KNOWN_MNCS
 from listing_filters import entry_level_gate_enabled, passes_entry_level_gate
 from collections import Counter
 from storage import normalize_url, load_known_urls, log_scored_urls
+import time
+import csv
 
 logger = logging.getLogger(__name__)
 
+
+AUDIT_FILE = os.environ.get("SKIP_AUDIT_FILE", "skipped_audit.csv")
+_AUDIT: list[dict] = []
+
+def _audit(stage: str, reason: str, listing: dict) -> None:
+    _AUDIT.append({
+        "stage":       stage,
+        "reason":      reason,
+        "source":      listing.get("source", ""),
+        "title":       sanitize(listing.get("title", ""))[:120],
+        "company":     sanitize(listing.get("company", ""))[:60],
+        "date_posted": listing.get("date_posted") or listing.get("posted_date") or "",
+        "url":         listing.get("job_url") or listing.get("url") or "",
+    })
+
+def flush_audit() -> None:
+    if not _AUDIT:
+        return
+    by_stage = Counter(r["stage"] for r in _AUDIT)
+    logger.info("SKIP AUDIT: %s", " | ".join(f"{s}={n}" for s, n in by_stage.most_common()))
+    try:
+        with open(AUDIT_FILE, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(_AUDIT[0].keys()))
+            w.writeheader()
+            w.writerows(_AUDIT)
+        logger.info("Skip audit written to %s (%d rows)", AUDIT_FILE, len(_AUDIT))
+    except OSError as exc:
+        logger.warning("Could not write skip audit: %s", exc)
+    _AUDIT.clear()
+    
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 SYSTEM_PROMPT = (
@@ -167,21 +199,23 @@ REJECT_REGEX = [
 
 
 
-def is_relevant(listing: dict) -> bool:
+def reject_reason(listing: dict) -> str | None:
+    """Returns None if the listing is kept, else a string saying why it was dropped."""
     title    = sanitize(listing.get("title", "")).lower()
     desc     = sanitize(listing.get("description", "")).lower()
     combined = title + " " + desc
     url      = (listing.get("url") or listing.get("job_url") or "").lower()
 
     if "linkedin.com/in/" in url:
-        return False
+        return "linkedin profile url"
     for pattern in REJECT_REGEX:
         if re.match(pattern, title, re.IGNORECASE):
-            return False
-    if any(p in title for p in REJECT_PATTERNS):
-        return False
+            return f"REJECT_REGEX: {pattern}"
+    hit = next((p for p in REJECT_PATTERNS if p in title), None)
+    if hit:
+        return f"REJECT_PATTERNS: {hit!r}"
     if re.match(r'^[a-z]+ [a-z]+(,? [a-z]+)? - .{5,} @', title):
-        return False
+        return "profile-card title shape"
 
     CONTENT_REJECTS = [
         "offers free", "free cyber security virtual", "free online cyber",
@@ -198,10 +232,9 @@ def is_relevant(listing: dict) -> bool:
         "is this enough for", "what salary can freshers expect",
         "per month (source:", "leetcode/glassdoor",
     ]
-    if any(p in combined for p in CONTENT_REJECTS):
-        return False
-
-
+    hit = next((p for p in CONTENT_REJECTS if p in combined), None)
+    if hit:
+        return f"CONTENT_REJECTS: {hit!r}"
 
     DOMAIN_REJECTS = [
         "vlsi", "embedded systems", "mechanical engineer",
@@ -212,18 +245,19 @@ def is_relevant(listing: dict) -> bool:
         "supply chain", "logistics", "teacher", "professor",
         "medical officer", "nurse", "chartered accountant",
     ]
-    if any(p in title for p in DOMAIN_REJECTS):
-        return False
+    hit = next((p for p in DOMAIN_REJECTS if p in title), None)
+    if hit:
+        return f"DOMAIN_REJECTS: {hit!r}"
 
     if re.search(r'\b(1[0-9]|20)\+?\s*years?\b', title):
-        return False
+        return "10+ years in title"
 
     if entry_level_gate_enabled():
         if not passes_entry_level_gate(
             sanitize(listing.get("title", "")),
             sanitize(listing.get("description", "")),
         ):
-            return False
+            return "entry_level_gate failed"
     else:
         SENIOR_REJECTS = [
             "lead soc", "lead security", "lead analyst", "lead engineer",
@@ -239,10 +273,9 @@ def is_relevant(listing: dict) -> bool:
             "senior associate",
             "sr associate", "sr. associate",
         ]
-        has_senior = any(p in title for p in SENIOR_REJECTS)
-        has_exception = any(p in title for p in SENIOR_EXCEPTIONS)
-        if has_senior and not has_exception:
-            return False
+        hit = next((p for p in SENIOR_REJECTS if p in title), None)
+        if hit and not any(p in title for p in SENIOR_EXCEPTIONS):
+            return f"SENIOR_REJECTS: {hit!r}"
 
     has_role_in_title   = any(r in title for r in TARGET_ROLES)
     has_intern_in_title = any(k in title for k in INTERN_KEYWORDS)
@@ -251,14 +284,24 @@ def is_relevant(listing: dict) -> bool:
         "fraud", "kyc", "aml", "privacy", "cloud", "network",
         "forensic", "malware", "threat", "vulnerability",
     ])
+    if has_role_in_title or (has_intern_in_title and has_sec_in_combined):
+        return None
+    return "no TARGET_ROLE in title (and no intern+security combo)"
 
-    return has_role_in_title or (has_intern_in_title and has_sec_in_combined)
+
+def is_relevant(listing: dict) -> bool:
+    return reject_reason(listing) is None
 
 
 def pre_filter(listings: list) -> list:
     kept, dropped = [], []
     for l in listings:
-        (kept if is_relevant(l) else dropped).append(l)
+        reason = reject_reason(l)
+        if reason is None:
+            kept.append(l)
+        else:
+            dropped.append(l)
+            _audit("pre_filter", reason, l)
 
     total_by_src = Counter(l.get("source", "?") for l in listings)
     kept_by_src = Counter(l.get("source", "?") for l in kept)
@@ -303,6 +346,7 @@ def freshness_filter(listings: list[dict], max_age_days: int) -> list[dict]:
         age_days = (now - dt).days
         if age_days > max_age_days:
             dropped += 1
+            _audit("freshness", f"{age_days}d old > {max_age_days}d", l)
             continue
         kept.append(l)
 
@@ -451,7 +495,7 @@ def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
     - Title variations ('SOC L1 Analyst' vs 'Security Operations Center Analyst - L1')
     - Year/FY variations ('USI-FY26-Cyber-SSA' vs 'USI-FY25-Cyber-LSA' for same underlying role)
     """
-    seen_keys: set[str] = set()
+    seen_keys: dict[str, dict] = {}
     deduped = []
     
     for l in listings:
@@ -486,12 +530,16 @@ def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
         if title_norm and len(title_norm.split()) >= 3:
             candidate_keys.append(f"t:{title_norm}")
         
-        # Check if any key was seen before
-        if any(k in seen_keys for k in candidate_keys):
-            continue  # Duplicate - skip
-        
-        # Register all keys and keep this listing
-        seen_keys.update(candidate_keys)
+        hit = next((k for k in candidate_keys if k in seen_keys), None)
+        if hit:
+            first = seen_keys[hit]
+            _audit("dedup",
+                   f"key={hit[:70]} | KEPT: {sanitize(first.get('title',''))[:50]}"
+                   f" @ {sanitize(first.get('company',''))[:25]}", l)
+            continue
+
+        for k in candidate_keys:
+            seen_keys[k] = l
         deduped.append(l)
     
     removed = len(listings) - len(deduped)
@@ -695,7 +743,7 @@ def score_listing(listing: dict) -> dict | None:
 # =============================================================================
 # SCORE ALL - WITH AGGRESSIVE DEDUP
 # =============================================================================
-def score_all(listings: list, min_score: int = 4, known_urls: set | None = None) -> list:
+def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None = None) -> list:
     relevant = pre_filter(listings)
     if not relevant:
         logger.info("Nothing relevant after pre-filter")
@@ -718,8 +766,13 @@ def score_all(listings: list, min_score: int = 4, known_urls: set | None = None)
             known_urls = set()
     if known_urls:
         before = len(deduped)
-        deduped = [l for l in deduped
-                   if normalize_url(l.get("job_url") or l.get("url") or "") not in known_urls]
+        fresh = []
+        for l in deduped:
+            if normalize_url(l.get("job_url") or l.get("url") or "") in known_urls:
+                _audit("known_url", "already in sheet or scored_log", l)
+            else:
+                fresh.append(l)
+        deduped = fresh
         logger.info("Skipped %d listings already in the sheet or scored_log (%d left)",
                     before - len(deduped), len(deduped))
     if not deduped:
@@ -733,6 +786,8 @@ def score_all(listings: list, min_score: int = 4, known_urls: set | None = None)
     for i, listing in enumerate(deduped):
         if all(m in _EXHAUSTED for m in GROQ_MODELS):
             logger.warning("All models are at the daily limit, %d listings left unscored", len(deduped) - i)
+            for rest in deduped[i:]:
+                _audit("unscored", "all Groq models at daily limit", rest)
             break
         url = listing.get("job_url") or listing.get("url") or ""
         title = sanitize(listing.get("title", ""))
@@ -740,6 +795,7 @@ def score_all(listings: list, min_score: int = 4, known_urls: set | None = None)
         gate = code_gate(listing)
         if gate:
             logger.info("  GATE reject (%s): %s", gate, title[:55])
+            _audit("code_gate", gate, listing)
             rejected.append((url, 1, title))
             continue
 
@@ -748,9 +804,11 @@ def score_all(listings: list, min_score: int = 4, known_urls: set | None = None)
         time.sleep(delay)          # after EVERY call: dropped listings use tokens too
 
         if result is None:
+            _audit("score_error", "AI call/JSON failed (see error log)", listing)
             continue
         if result["legitimacy_score"] < min_score:
             logger.info("  -> Dropped score=%d", result["legitimacy_score"])
+            _audit("scored_low", f"score={result['legitimacy_score']} rule={result['score_rule']}", listing)
             rejected.append((url, result["legitimacy_score"], title))
             continue
         scored.append(result)
@@ -763,3 +821,10 @@ def score_all(listings: list, min_score: int = 4, known_urls: set | None = None)
 
     logger.info("Done: %d/%d passed", len(scored), len(deduped))
     return scored
+
+
+def score_all(listings: list, min_score: int = 4, known_urls: set | None = None) -> list:
+    try:
+        return _score_all_impl(listings, min_score, known_urls)
+    finally:
+        flush_audit()
