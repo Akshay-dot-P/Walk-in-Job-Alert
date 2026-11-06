@@ -1034,7 +1034,7 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
         logger.info("Nothing relevant after pre-filter")
         return []
 
-    max_age_days = int(os.environ.get("MAX_POST_AGE_DAYS", str(MAX_AGE_DAYS))
+    max_age_days = int(os.environ.get("MAX_POST_AGE_DAYS", str(MAX_AGE_DAYS)))
     relevant = freshness_filter(relevant, max_age_days=max_age_days)
     if not relevant:
         logger.info("Nothing left after freshness filter")
