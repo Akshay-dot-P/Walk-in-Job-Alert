@@ -28,8 +28,10 @@ import asyncio
 import os
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
+import random
+from config import MAX_AGE_DAYS, location_ok
 import feedparser
 import httpx
 import jobspy
@@ -41,7 +43,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 LOCATION            = "Bengaluru/Bangalore, Karnataka, India"
-HOURS_OLD           = 300
+HOURS_OLD           = 24 * MAX_AGE_DAYS 
 RESULTS_PER_TERM    = 40
 WORKDAY_PAGE_SIZE   = 20
 WORKDAY_MAX_PAGES   = 25
@@ -541,7 +543,6 @@ LINKEDIN_TERMS = [
     # Fraud / AML / KYC
     qf('"fraud analyst" OR "fraud detection analyst" OR "fraud prevention analyst"'),
     qf('"AML analyst" OR "anti-money laundering analyst" OR "transaction monitoring analyst"'),
-    qf('"KYC analyst" OR "KYC associate" OR "financial crime analyst"'),
     qf('"sanctions analyst" OR "UBO analyst" OR "customer due diligence analyst"'),
     # Privacy
     qf('"data privacy analyst" OR "privacy analyst" OR "DPO support"'),
@@ -584,6 +585,40 @@ LINKEDIN_TERMS = [
     qi('"security program" OR "security fellowship" OR "security graduate program"'),
 ]
 
+SCRAPE_EXTRA_LOCATIONS = os.environ.get("SCRAPE_EXTRA_LOCATIONS", "1") != "0"
+
+LINKEDIN_CORE_TERMS = [
+    qf('"SOC analyst" OR "security analyst" OR "cyber security analyst"'),
+    qf('"SIEM analyst" OR "SIEM engineer" OR "threat detection" OR "MDR analyst"'),
+    qf('"threat intelligence analyst" OR "incident response analyst" OR "DFIR analyst"'),
+    qf('"VAPT" OR "penetration tester" OR "application security engineer" OR "DevSecOps engineer"'),
+    qf('"vulnerability management" OR "cloud security engineer" OR "network security engineer"'),
+    qf('"IAM analyst" OR "IAM engineer" OR "SailPoint" OR "CyberArk" OR "Okta" OR "PAM analyst"'),
+    qf('"GRC analyst" OR "IT audit" OR "IT auditor" OR "ITGC" OR "SOX"'),
+    qf('"risk analyst" OR "technology risk" OR "operational risk" OR "third party risk"'),
+    qf('"compliance analyst" OR "data privacy analyst" OR "privacy analyst"'),
+    qf('"fraud analyst" OR "AML analyst" OR "sanctions analyst" OR "fraud operations"'),
+    qf('"network engineer" OR "NOC engineer" OR "network operations" OR "network administrator"'),
+    qi('"cybersecurity intern" OR "security intern" OR "SOC intern" OR "GRC intern"'),
+]
+
+# roles the old terms never asked for: network and IT support, AI security, and the non full time types
+LINKEDIN_EXTRA_TERMS = [
+    qf('"network engineer" OR "NOC engineer" OR "WLAN engineer" OR "network operations analyst"'),
+    qf('"IT support" OR "technical support engineer" OR "service desk" OR "IT operations analyst"'),
+    qf('"AI red team" OR "AI security" OR "AI governance" OR "AI risk" OR "AI operations analyst"'),
+    '("fixed term" OR FTC OR "contract role" OR contractual) (security OR cyber OR risk OR compliance OR audit OR IAM)',
+    '(apprentice OR apprenticeship OR "graduate trainee") (security OR cyber OR IT OR operations OR risk OR compliance)',
+    '("walk-in" OR "walk in drive") (fraud OR AML OR security OR risk OR compliance OR investigation)',
+]
+
+LINKEDIN_PLAN = [
+    # (jobspy location, remote only, terms)
+    ("Bengaluru/Bangalore, Karnataka, India", False, LINKEDIN_TERMS + LINKEDIN_EXTRA_TERMS),
+    ("Hyderabad, Telangana, India", False, LINKEDIN_CORE_TERMS + LINKEDIN_EXTRA_TERMS[:3]),
+    ("Pune, Maharashtra, India", False, LINKEDIN_CORE_TERMS + LINKEDIN_EXTRA_TERMS[:3]),
+    ("India", True, LINKEDIN_CORE_TERMS),
+]
 
 LINKEDIN_POST_QUERIES = [
     # Fresher hiring posts
@@ -628,10 +663,7 @@ LINKEDIN_POST_QUERIES = [
     "site:linkedin.com looking for cybersecurity intern bangalore",
   
 
-   "site:iimjobs.com risk analyst compliance bangalore",
-   "site:iimjobs.com GRC IT audit bangalore",
-   "site:iimjobs.com KYC AML fraud analyst bangalore",
-   "site:iimjobs.com information security compliance bangalore",
+
    "site:internshala.com cybersecurity internship bangalore",
    "site:internshala.com information security internship bangalore",
    "site:internshala.com SOC intern bangalore",
@@ -1619,19 +1651,35 @@ def _run_scrape(site: list, term: str, extra_kwargs: dict = None) -> list[dict]:
 
 
 def _scrape_linkedin() -> list[dict]:
-    logger.info("=== LinkedIn Jobs: %d terms ===", len(LINKEDIN_TERMS))
+    plan = LINKEDIN_PLAN if SCRAPE_EXTRA_LOCATIONS else LINKEDIN_PLAN[:1]
+    total_terms = sum(len(t) for _, _, t in plan)
+    logger.info("=== LinkedIn Jobs: %d searches across %d locations ===", total_terms, len(plan))
     seen: set = set()
-    results = []
-    for i, term in enumerate(LINKEDIN_TERMS):
-        # Log BEFORE scrape so a slow/hung term doesn't look like a freeze.
-        logger.info("  [%d/%d] scraping | %s…", i + 1, len(LINKEDIN_TERMS), term[:55])
-        batch = _run_scrape(["linkedin"], term)
-        new   = [r for r in batch if r["job_url"] not in seen]
-        for r in new: seen.add(r["job_url"])
-        results.extend(new)
-        logger.info("  [%d/%d] +%d (total %d) | %s…",
-                    i+1, len(LINKEDIN_TERMS), len(new), len(results), term[:55])
-        time.sleep(5)
+    results: list[dict] = []
+    empty_streak = 0
+    n = 0
+    for location, remote, terms in plan:
+        label = "remote" if remote else location.split(",")[0]
+        for term in terms:
+            n += 1
+            logger.info("  [%d/%d] %s | %s…", n, total_terms, label, term[:50])
+            batch = _run_scrape(["linkedin"], term, {"location": location, "is_remote": remote})
+            new = [r for r in batch if r["job_url"] not in seen]
+            for r in new:
+                seen.add(r["job_url"])
+            results.extend(new)
+            logger.info("      +%d (total %d)", len(new), len(results))
+            if batch:
+                empty_streak = 0
+            else:
+                empty_streak += 1
+                if empty_streak >= 3:
+                    cool = random.uniform(90, 150)
+                    logger.warning("LinkedIn: %d empty batches in a row (likely 429), cooling off %.0fs",
+                                   empty_streak, cool)
+                    time.sleep(cool)
+                    empty_streak = 0
+            time.sleep(random.uniform(8, 14))
     logger.info("LinkedIn Jobs: %d unique", len(results))
     return results
 
@@ -1772,7 +1820,7 @@ def fetch_linkedin_posts() -> list[dict]:
                 if published:
                     import time as _time
                     age_days = (_time.time() - _time.mktime(published)) / 86400
-                    if age_days > 40:
+                    if age_days > MAX_AGE_DAYS:
                         continue
                 # If published_parsed is missing we let it through  
 
@@ -2045,8 +2093,8 @@ def _scrape_workable() -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════
 NAUKRI_LOCATION         = "Bangalore"
 NAUKRI_RESULTS_PER_TERM = 25
-NAUKRI_MAX_AGE_DAYS     = 30
-NAUKRI_MAX_EXP_YEARS    = 3      # drop roles whose minimum experience is above this
+NAUKRI_MAX_AGE_DAYS     = MAX_AGE_DAYS
+NAUKRI_MAX_EXP_YEARS    = 2      # drop roles whose minimum experience is above this
 NAUKRI_FAIL_FAST        = 3      # abort after this many consecutive empty/blocked terms
 
 # Naukri search is plain keywords, not boolean OR queries
@@ -2058,7 +2106,7 @@ NAUKRI_TERMS = [
     "siem analyst", "splunk analyst",
     "cloud security", "application security", "devsecops",
     "iam analyst", "grc analyst", "it audit", "compliance analyst",
-    "risk analyst", "fraud analyst", "kyc analyst", "aml analyst",
+    "risk analyst", "fraud analyst", "aml analyst",
     "soc intern", "cybersecurity intern", "security intern",
 ]
 
