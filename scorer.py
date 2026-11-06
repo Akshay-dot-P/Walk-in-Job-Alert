@@ -587,7 +587,6 @@ def freshness_filter(listings: list[dict], max_age_days: int = MAX_AGE_DAYS) -> 
         kept.append(l)
     logger.info("Freshness filter (max_age_days=%d): %d/%d kept, %d dropped",
                 max_age_days, len(kept), len(listings), len(listings) - len(kept))
-    return keptx_age_days, len(kept), len(listings), dropped)
     return kept
 
 
