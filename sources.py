@@ -424,11 +424,9 @@ SMARTRECRUITERS_COMPANIES = [
 
 
 WORKDAY_SEARCH_QUERIES = [
-    "Tax Intern",
     "VAPT Intern",
     "Cybersecurity Intern",
     "Networking Security Intern",
-    "Senior Security Engineer",
     "Cloud Security Engineer",
     "DevSecOps Engineer",
     "Application Security Engineer",
@@ -440,9 +438,13 @@ WORKDAY_SEARCH_QUERIES = [
     "Data Security Engineer",
     "Risk and Compliance Analyst",
     "Fraud Risk Analyst",
+    "IAM Analyst", 
+    "Network Engineer" ,
+    "IT Audit",
 ]
 WORKDAY_TITLE_KEYWORDS = (
-    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud"
+    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud", "identity",
+    "network", "audit", "privacy", "fraud", "aml", "threat", "detection", "forensic", "noc", "siem",
 )
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
 GREENHOUSE_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
@@ -1052,8 +1054,9 @@ def filter_workday_jobs(
         location = str(job.get("location") or "").lower()
 
         title_ok = True if not title_keywords else any(k in title for k in title_keywords)
-        location_ok = True if not allowed_locations else any(c in location for c in allowed_locations)
-        if title_ok and location_ok:
+        location_ok_flag = location_ok(job.get("location"))
+        #location_ok = True if not allowed_locations else any(c in location for c in allowed_locations)
+        if title_ok and location_ok_flag:
             filtered.append(job)
     return filtered
 
@@ -2108,7 +2111,16 @@ NAUKRI_TERMS = [
     "iam analyst", "grc analyst", "it audit", "compliance analyst",
     "risk analyst", "fraud analyst", "aml analyst",
     "soc intern", "cybersecurity intern", "security intern",
+    "network engineer", "noc engineer", "iam engineer", "sailpoint", "cyberark",
+    "internal audit", "fraud investigation", "ai red team",
+    "security apprentice", "fixed term security", "walk in fraud",
 ]
+NAUKRI_CORE_TERMS = [
+    "soc analyst", "security analyst", "cyber security analyst", "siem analyst", "vapt",
+    "cloud security", "iam analyst", "grc analyst", "it audit", "risk analyst",
+    "fraud analyst", "network engineer", "security intern",
+]
+NAUKRI_PLAN = [("Bangalore", NAUKRI_TERMS), ("Hyderabad", NAUKRI_CORE_TERMS), ("Pune", NAUKRI_CORE_TERMS)]
 
 _NAUKRI_WALK_IN_RE = re.compile(
     r"walk[\s\-]?in|walkin|direct interview|drive on|interview on|venue\s*:",
@@ -2143,8 +2155,7 @@ def _nk_date(value) -> str:
     ts = pd.to_datetime(value, errors="coerce")
     return "" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
 
-
-def _naukri_to_records(df) -> list[dict]:
+def _naukri_to_records(df, default_location="Bangalore"):
     if df is None or df.empty:
         return []
 
@@ -2188,60 +2199,56 @@ def _naukri_to_records(df) -> list[dict]:
         records.append({
             "title":       title,
             "company":     _nk_clean(d.get("company")),
-            "location":    _nk_clean(d.get("location")) or "Bangalore",
+            "location": _nk_clean(d.get("location")) or default_location,
             "job_url":     url,
             "description": (prefix + " | ".join(extras) + ". " + desc)[:1500],
             "date_posted": posted,
             "source":      "naukri",
-        })
+        }) 
     return records
-
-
+  
 def _scrape_naukri() -> list[dict]:
     if os.environ.get("NAUKRI_ENABLED", "1").strip() == "0":
         logger.info("=== Naukri: disabled via NAUKRI_ENABLED=0 ===")
         return []
 
-    logger.info("=== Naukri (jobspy): %d terms ===", len(NAUKRI_TERMS))
+    plan = NAUKRI_PLAN if SCRAPE_EXTRA_LOCATIONS else NAUKRI_PLAN[:1]
+    total_terms = sum(len(t) for _, t in plan)
+    logger.info("=== Naukri (jobspy): %d searches across %d locations ===", total_terms, len(plan))
     seen: set = set()
     results: list[dict] = []
     dead_streak = 0
+    n = 0
+    for location, terms in plan:
+        for term in terms:
+            n += 1
+            blocked = False
+            batch: list[dict] = []
+            try:
+                df = jobspy.scrape_jobs(
+                    site_name=["naukri"], search_term=term, location=location,
+                    results_wanted=NAUKRI_RESULTS_PER_TERM,
+                )
+                errs = getattr(df, "attrs", {}).get("errors")
+                if errs:
+                    logger.warning("  Naukri errors for %r: %s", term, errs)
+                    blocked = any(h in str(errs).lower() for h in _NAUKRI_BLOCK_HINTS)
+                batch = _naukri_to_records(df, default_location=location)
+            except Exception as exc:
+                logger.warning("  Naukri failed for %r: %s", term, exc)
+                blocked = any(h in str(exc).lower() for h in _NAUKRI_BLOCK_HINTS)
 
-    for i, term in enumerate(NAUKRI_TERMS):
-        blocked = False
-        batch: list[dict] = []
-        try:
-            df = jobspy.scrape_jobs(
-                site_name=["naukri"],
-                search_term=term,
-                location=NAUKRI_LOCATION,
-                results_wanted=NAUKRI_RESULTS_PER_TERM,
-            )
-            errs = getattr(df, "attrs", {}).get("errors")
-            if errs:
-                logger.warning("  Naukri errors for %r: %s", term, errs)
-                blocked = any(h in str(errs).lower() for h in _NAUKRI_BLOCK_HINTS)
-            batch = _naukri_to_records(df)
-        except Exception as exc:
-            logger.warning("  Naukri failed for %r: %s", term, exc)
-            blocked = any(h in str(exc).lower() for h in _NAUKRI_BLOCK_HINTS)
+            new = [r for r in batch if r["job_url"] not in seen]
+            for r in new:
+                seen.add(r["job_url"])
+            results.extend(new)
+            logger.info("  [%d/%d] Naukri %s +%d (total %d) | %s", n, total_terms, location, len(new), len(results), term)
 
-        new = [r for r in batch if r["job_url"] not in seen]
-        for r in new:
-            seen.add(r["job_url"])
-        results.extend(new)
-        logger.info("  [%d/%d] Naukri +%d (total %d) | %s",
-                    i + 1, len(NAUKRI_TERMS), len(new), len(results), term)
-
-        # Circuit breaker: bail out if we are clearly blocked (GitHub IPs)
-        dead_streak = dead_streak + 1 if (not batch and blocked) or (not batch and not results) else 0
-        if dead_streak >= NAUKRI_FAIL_FAST:
-            logger.warning("Naukri: %d consecutive empty/blocked terms, "
-                           "aborting (likely IP block). Run from a residential "
-                           "IP or self-hosted runner.", dead_streak)
-            break
-
-        time.sleep(4)
+            dead_streak = dead_streak + 1 if (not batch and blocked) or (not batch and not results) else 0
+            if dead_streak >= NAUKRI_FAIL_FAST:
+                logger.warning("Naukri: %d consecutive empty/blocked terms, aborting (likely IP block).", dead_streak)
+                return results
+            time.sleep(4)
 
     logger.info("Naukri: %d unique (%d walk-in)", len(results),
                 sum(r["description"].startswith("WALK-IN") for r in results))
