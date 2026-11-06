@@ -285,6 +285,34 @@ def _append_rows_safely(worksheet, rows: list, chunk: int = 40) -> int:
     return saved
 
 
+SECTION_TAB = "Walkin_Intern_FTC_Contract"
+
+
+def _col_letter(n: int) -> str:
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def ensure_section_tab(worksheet, headers: list[str]) -> None:
+    if "job_type" not in headers:
+        return
+    col = _col_letter(headers.index("job_type") + 1)
+    spreadsheet = worksheet.spreadsheet
+    try:
+        spreadsheet.worksheet(SECTION_TAB)
+        return
+    except gspread.WorksheetNotFound:
+        pass
+    tab = spreadsheet.add_worksheet(title=SECTION_TAB, rows=500, cols=max(len(headers), 26))
+    formula = (f"=QUERY('{worksheet.title}'!A:{_col_letter(max(len(headers), 26))},"
+               f"\"select * where {col} is not null and {col} <> 'Job'\",1)")
+    tab.update(range_name="A1", values=[[formula]], value_input_option="USER_ENTERED")
+    logger.info("Created tab %s", SECTION_TAB)
+    
+
 def save_new_listings(scored_listings: list[dict]) -> list[dict]:
     try:
         worksheet = get_worksheet()
@@ -318,6 +346,10 @@ def save_new_listings(scored_listings: list[dict]) -> list[dict]:
             seen_company_titles.add(key)
 
     saved = _append_rows_safely(worksheet, rows_to_write)
+        try:
+        ensure_section_tab(worksheet, SHEET_COLUMNS)
+    except Exception as e:
+        logger.warning("Could not create section tab: %s", e)
     if saved < len(rows_to_write):
         logger.error("Only %d of %d rows were written; the rest will be retried next run.",
                      saved, len(rows_to_write))
