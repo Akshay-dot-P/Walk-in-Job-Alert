@@ -563,7 +563,29 @@ def reject_reason(listing: dict) -> str | None:
     return "no TARGET_ROLE in title (and no intern+security combo)"
 
 
+def pre_filter(listings: list) -> list:
+    kept, dropped = [], []
+    for l in listings:
+        reason = reject_reason(l)
+        if reason is None:
+            kept.append(l)
+        else:
+            dropped.append(l)
+            _audit("pre_filter", reason, l)
 
+    total_by_src = Counter(l.get("source", "?") for l in listings)
+    kept_by_src = Counter(l.get("source", "?") for l in kept)
+    logger.info("Pre-filter kept/total by source: %s",
+                " | ".join(f"{s} {kept_by_src[s]}/{n}" for s, n in total_by_src.most_common()))
+
+    loose = re.compile(r"secur|cyber|\bsoc\b|siem|grc|risk|compliance|fraud|kyc|aml|audit|privacy", re.I)
+    suspects = [l for l in dropped if loose.search(l.get("title", ""))]
+    logger.info("Pre-filter: %d/%d kept, %d dropped (%d dropped titles look relevant)",
+                len(kept), len(listings), len(dropped), len(suspects))
+    for l in suspects[:40]:
+        logger.info("  dropped?: [%s] %s @ %s", l.get("source", "?"),
+                    sanitize(l.get("title", ""))[:60], sanitize(l.get("company", ""))[:25])
+    return kept
 
 
 
