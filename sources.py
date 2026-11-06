@@ -1308,8 +1308,8 @@ def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
                 location = str(location_obj)
             
             # Filter: India/Bangalore only
-            if location:
-                loc_lower = location.lower()
+            if location and not location_ok(location):
+                continue
                 if "india" not in loc_lower and "bangalore" not in loc_lower and "bengaluru" not in loc_lower:
                     continue
             
@@ -1329,7 +1329,7 @@ def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
                 "location": location or "India",
                 "job_url": job_url,
                 "description": str(job.get("content") or "")[:1000],  # Truncate long descriptions
-                "date_posted": "",
+                "date_posted": str(job.get("updated_at") or "")[:10],
                 "source": "greenhouse",
             })
         
@@ -1359,7 +1359,14 @@ def _scrape_greenhouse() -> list[dict]:
     
     logger.info(f"Greenhouse: {len(all_results)} jobs found")
     return all_results
- 
+
+
+
+def _lever_date(created_at) -> str:
+    try:
+        return datetime.fromtimestamp(int(created_at) / 1000, timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError):
+        return ""
 # ════════════════════════════════════════════════════════════════════════════
 # LEVER SCRAPER - FIXED (uses requests, proper error handling)
 # ════════════════════════════════════════════════════════════════════════════
@@ -1395,8 +1402,8 @@ def _scrape_lever_company(company_slug: str) -> list[dict]:
                 location = str(categories.get("location", ""))
             
             # Filter: India/Bangalore only
-            if location:
-                loc_lower = location.lower()
+            if location and not location_ok(location):
+                continue
                 if "india" not in loc_lower and "bangalore" not in loc_lower and "bengaluru" not in loc_lower:
                     continue
             
@@ -1412,7 +1419,7 @@ def _scrape_lever_company(company_slug: str) -> list[dict]:
             
             # Get date
             created_at = str(job.get("createdAt", ""))
-            date_posted = created_at[:10] if created_at else ""
+            date_posted = _lever_date(job.get("createdAt"))
             
             results.append({
                 "title": title,
@@ -1916,7 +1923,7 @@ def _scrape_ashby_company(company_slug: str) -> list[dict]:
             # Location filter: India / Bangalore / Remote
             loc_lower = location.lower()
             if not is_remote and location:
-                if not any(kw in loc_lower for kw in ASHBY_ALLOWED_LOCATIONS):
+                if not is_remote and location and not location_ok(location): 
                     continue
  
             # Title keyword filter
@@ -2029,9 +2036,9 @@ def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
             loc_lower = location.lower()
  
             # Location filter
-            if location and not telecommuting:
-                if not any(kw in loc_lower for kw in WORKABLE_ALLOWED_LOCATIONS):
-                    continue
+
+            if location and not telecommuting and not location_ok(location): 
+                continue
  
             # Title keyword filter
             title_lower = title.lower()
