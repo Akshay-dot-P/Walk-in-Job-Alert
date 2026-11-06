@@ -5,12 +5,13 @@ import time
 import logging
 import requests
 from datetime import datetime, timezone
-from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS, KNOWN_MNCS
+from config import GROQ_MODEL, TARGET_ROLES, INTERN_KEYWORDS, KNOWN_MNCS, MAX_AGE_DAYS, EXP_MIN_ALLOWED, EXP_MAX_ALLOWED, location_ok
 from listing_filters import entry_level_gate_enabled, passes_entry_level_gate
 from collections import Counter
 from storage import normalize_url, load_known_urls, log_scored_urls
 import time
 import csv
+import html as _html
 
 logger = logging.getLogger(__name__)
 
@@ -73,28 +74,19 @@ USER_PROMPT_PREFIX = (
     '  "posted_date": "YYYY-MM-DD or null"\n'
     '}\n\n'
     "FIRST decide these facts from the listing text only. Never guess.\n"
-    "- fresher_proof: the text literally says fresher, freshers, entry level or graduate trainee, "
-    "OR states a maximum of 2 years or less (e.g. 0-2 years).\n"
-    "- entry_title: title has intern, trainee, apprentice, graduate, junior, associate, L1, Analyst I or Engineer 1.\n"
-    "- senior_level_title: title has Senior, Sr, Grade 2 or higher, L2 to L5, II, III, IV, or Analyst/Engineer followed by 2 to 5.\n"
+    "- exp_ok: the stated experience range has a lower end of 0, 1 or 2 and an upper end of 5 or less, "
+    "or no experience is stated.\n"
     "- role_keyword: title has a security word (cyber, security, soc, siem, vapt, cloud, iam, grc, threat, vulnerability, network, monitoring) "
-    "OR an ops/risk word (fraud, kyc, aml, risk, compliance, audit, privacy, investigation, case, operations). "
+    "OR an ops/risk word (fraud, aml, risk, compliance, audit, privacy, investigation, operations, noc, identity). "
     "Both kinds count equally.\n\n"
     "SCORING: apply the rules IN ORDER. The FIRST rule that matches decides the score. "
     "Put the matching id in score_rule.\n"
     "S2: training or registration fee, guaranteed placement, fake or spam listing, salary above 25 LPA for a fresher.\n"
-    "S1: title has Staff, Principal, Lead, Head, Director, Manager, VP, Chief, CISO or Architect; "
-    "OR the text requires 3 or more years; "
-    "OR senior_level_title WITHOUT fresher_proof; "
-    "OR posted date is confirmed older than 30 days (a missing date is NOT a reason to reject).\n"
+    "S1: title has Director, Head, VP, Chief, CISO, Principal or Manager; OR exp_ok is false.\n"
     "R10a: company_tier is startup. Score 10.\n"
-    "R9c: senior_level_title WITH fresher_proof. Score 9.\n"
-    "R10b: intern, trainee or apprentice role. Score 10.\n"
-    "R10c: fresher_proof AND (company_tier is MNC OR entry_title). Score 10.\n"
-    "R9a: fresher_proof only. Score 9.\n"
-    "R9b: stated range with minimum 0 or 1 and maximum 3 or less, or 1+ years. Score 9.\n"
-    "R8a: experience not stated AND role_keyword in title AND (entry_title OR company_tier is MNC). Score 8.\n"
-    "R8b: stated minimum of 2 years AND role_keyword in title AND entry_title. Score 8.\n"
+    "R10b: intern, trainee, apprentice, fixed term or contract role. Score 10.\n"
+    "R9: stated range with lower end 0 to 2, or fresher or entry level. Score 9.\n"
+    "R8: experience not stated AND role_keyword in title AND company_tier is MNC. Score 8.\n"
     "R7: role_keyword in title, none of the rules above. Score 7.\n"
     "R6: role keywords appear only in the description. Score 6.\n"
     "R5: no role keywords anywhere. Score 5.\n"
@@ -152,50 +144,332 @@ def sanitize(text: str) -> str:
     return text.strip()
 
 
+
+
+
+
+# ============================================================================
+# JOB RULES
+# ============================================================================
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+
+INCLUDE_AI_ROLES = True
+SKIP_KYC_ONLY = True          # KYC only roles are skipped, "KYC AML" style titles are kept
+
+
+def _clean(text) -> str:
+    if text is None:
+        return ""
+    s = str(text)
+    if s.lower() in ("nan", "none", "nat"):
+        return ""
+    return s.replace("\u2019", "'").replace("\u2013", "-").replace("\u2014", "-").strip()
+
+
+def _rx(pattern: str) -> re.Pattern:
+    return re.compile(pattern, re.IGNORECASE)
+
+
+# ---------- age
+def posted_age_days(value, now: datetime | None = None) -> int | None:
+    """Age in days from any date string the scrapers produce. None means unknown (keep)."""
+    now = now or datetime.now(timezone.utc)
+    s = _clean(value)
+    if not s:
+        return None
+    low = s.lower()
+    if low.startswith("posted"):
+        if "today" in low or "just" in low:
+            return 0
+        if "yesterday" in low:
+            return 1
+        m = re.search(r"(\d+)\s*\+?\s*days?", low)
+        if m:
+            n = int(m.group(1))
+            return 999 if "+" in low and n >= 30 else n      # "30+ Days Ago" is unbounded
+        m = re.search(r"(\d+)\s*weeks?", low)
+        if m:
+            return int(m.group(1)) * 7
+        return None
+    if s.isdigit() and len(s) in (10, 13):                    # epoch seconds / millis (Lever)
+        ts = int(s) / (1000 if len(s) == 13 else 1)
+        return max(0, (now - datetime.fromtimestamp(ts, timezone.utc)).days)
+    try:
+        dt = datetime.strptime(s[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return max(0, (now - dt).days)
+    except ValueError:
+        pass
+    try:                                                      # "Fri, 30 Oct 2026 20:29:01 GMT"
+        dt = parsedate_to_datetime(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, (now - dt).days)
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------- experience
+_SLUG = _rx(r"-(\d{1,2})-to-(\d{1,2})-years")                 # naukri url slug
+_RANGE = _rx(r"(?<![\d.])(\d{1,2})\s*(?:\+\s*)?(?:-|to)\s*(\d{1,2})\s*(?:\+\s*)?(?:years?|yrs?)\b")
+_PLUS = _rx(r"(?<![\d.-])(\d{1,2})\s*\+\s*(?:years?|yrs?)\b")
+_MINIMUM = _rx(r"\b(?:minimum|min\.?|at\s*least)\s*(?:of\s*)?(\d{1,2})\s*(?:years?|yrs?)\b")
+_EXACT = _rx(r"(?<![\d.-])(\d{1,2})\s*(?:years?|yrs?)\s*(?:of\s*)?(?:relevant\s+|work\s+|professional\s+|total\s+|"
+             r"hands[- ]on\s+|industry\s+|prior\s+)?(?:experience|exp)\b")
+_FRESHER = _rx(r"\b(?:freshers?|entry[- ]level|no\s+experience|0\s+years?)\b")
+
+
+def parse_experience(title: str = "", description: str = "", url: str = "") -> tuple[int, int | None] | None:
+    """(min_years, max_years_or_None). None when the listing states nothing."""
+    for text in (_clean(title),):
+        m = _RANGE.search(text)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+        m = _PLUS.search(text) or _MINIMUM.search(text)
+        if m:
+            return int(m.group(1)), None
+    m = _SLUG.search(_clean(url).lower())
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    d = _clean(description)[:3000]
+    m = _RANGE.search(d)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = _MINIMUM.search(d) or _PLUS.search(d) or _EXACT.search(d)
+    if m:
+        n = int(m.group(1))
+        return n, (n if _EXACT.search(d) and not (_PLUS.search(d) or _MINIMUM.search(d)) else None)
+    if _FRESHER.search(_clean(title) + " " + d[:600]):
+        return 0, 0
+    return None
+
+
+def experience_ok(exp: tuple[int, int | None] | None) -> bool:
+    if exp is None:
+        return True
+    lo, hi = exp
+    if lo > EXP_MIN_ALLOWED:
+        return False
+    return hi is None or hi <= EXP_MAX_ALLOWED
+
+
+# ---------- vocabulary
+SEC = (r"cirt|csirt|cert|cyber\w*|infosec|information\s+security|security|secops|soc|siem|xsiam|edr|mdr|xdr|soar|threats?|"
+       r"vulnerabilit\w*|vapt|pentest\w*|penetration|red\s*team\w*|blue\s*team|malware|forensic\w*|dfir|"
+       r"incident\s+(?:response|management)|intrusion|detection|appsec|devsecops|cryptograph\w*|pki|dlp|purview|"
+       r"encryption|sase|ztna|waf|e-?discovery")
+IAM = (r"iam|idam|iga|pam|identity|access\s+management|sailpoint|saviynt|cyberark|okta|delinea|beyondtrust|"
+       r"entra(?:\s+id)?|active\s+directory|ping\s*(?:identity|federate|one)|sod|segregation\s+of\s+duties|"
+       r"fusion\s+security|sso|mfa|privileged\s+access|ciam")
+GRC = (r"grc|governance|compliance|risk|audit\w*|(?<!quality\s)assurance|itgc|sox|privacy|dpdp|gdpr|"
+       r"data\s+protection|tprm|due\s+diligence|resilience|business\s+continuity|bcm|bcp|disaster\s+recovery|"
+       r"iso\s*2\d{3}")
+FRAUD = (r"fraud|aml|anti[\s-]?money|sanctions?|financial\s+crimes?|fincrime|investigat\w*|"
+         r"trust\s*(?:&|and)\s*safety|transaction\s+monitoring|cdd|edd|screening")
+NET = r"network\w*|noc|wlan|wi-?fi|wireless|firewall|sd-?wan|l2\s+l3|vpn"
+ITOPS = (r"it\s+(?:support|operations?|consulting|consultant|helpdesk|service\s*desk)|information\s+technology\s+analyst|"
+         r"(?:technical|tech)\s+support|help\s*desk|service\s*desk|m365|microsoft\s+365|intune")
+AI = (r"ai\s+(?:red\s*team\w*|security|governance|safety|operations?|implementation|risk|trust|engineer|analyst)|"
+      r"(?:gen|generative)\s*ai\s+(?:security|governance)|llm\s+(?:security|red\s*team)|responsible\s+ai")
+ROLE_WORD = (r"engineer|analyst|administrator|consultant|specialist|operations?|support|associate|executive|"
+             r"technician|operator|researcher|tester|hunter|developer|officer|professional|coordinator|"
+             r"automation|intern|trainee|apprentice")
+
+CORE = _rx(rf"\b(?:{SEC}|{IAM}|{GRC}|{FRAUD}|{ITOPS}|noc|l2\s+l3)\b" + (rf"|\b(?:{AI})\b" if INCLUDE_AI_ROLES else ""))
+NETWORK_ROLE = _rx(rf"\b(?:{NET})\b")
+HAS_ROLE_WORD = _rx(rf"\b(?:{ROLE_WORD})\b")
+
+HARD_JUNK = _rx(
+    r"\b(?:tax(?:ation)?|payroll|accountants?|accounts?\s+(?:payable|receivable)|fp&a|treasury|valuation|"
+    r"investment\s+banking|private\s+equity|finance|financial\s+(?:analyst|data|controller|reporting|planning)|"
+    r"human\s+resources?|hr|recruit\w*|talent|marketing|sales|business\s+development|"
+    r"customer\s+(?:success|support|service|experience)|learning|training|trainers?|instructor|facilitator|"
+    r"tutor|coach|legal|counsel|paralegal|company\s+secretary|articleship|article(?:d)?|chartered|ca|"
+    r"pharma\w*|clinical|patient|medical|drug|virology|hotel|resort|chef|restaurant|housekeeping|driver|"
+    r"ground\s+staff|procurement|suppliers?|vendor\s+management|logistics|customs|trade\s+compliance|"
+    r"product\s+compliance|material\s+compliance|regulatory\s+affairs|environmental|safety\s+officer|"
+    r"supply\s+chain|p&c|litigation|capital\s+markets?|regulatory\s+reporting|wealth|equity|investment|"
+    r"audit\s+assistant|middle\s+office|securities|security\s+(?:master|valuations?)|slp|loss\s+prevention|"
+    r"physical\s+security|guard|watchman|facility|facilities|patrol|bouncer|armed|"
+    r"cpu|gpu|asic|vlsi|rtl|fpga|silicon|semiconductor|firmware|embedded|hardware)\b")
+SOFT_JUNK = _rx(
+    r"\b(?:software|developer|sde|sdet|full[\s-]?stack|front[\s-]?end|back[\s-]?end|web|android|ios|java|"
+    r"data\s+(?:scientist|engineer|science)|machine\s+learning|ml|applied\s+scientist|research\s+scientist|"
+    r"quant\w*|actuar\w*|devops|sre|site\s+reliability|platform\s+engineer|cloud\s+(?:engineer|developer|"
+    r"consultant|architect|operations)|solutions?\s+architect|qa|quality|test\s+engineer|production\s+support|"
+    r"business\s+intelligence|\bbi\b)\b")
+SOFT_JUNK_EXEMPT = _rx(r"devsecops|appsec|security\s+(?:automation|testing|engineer|analyst)\b")
+HOSPITALITY = _rx(r"marriott|hilton|hyatt|ritz|radisson|sheraton|taj\b|itc\s+hotels|accor|oberoi|leela|lemon\s+tree")
+SKIP_KYC = _rx(r"\bkyc\b")
+KYC_ALSO_OK = _rx(r"\b(?:aml|fraud|sanctions?|investigat\w*|financial\s+crimes?)\b")
+# fraud / AML / KYC style roles must not be finance, accounting or CA roles
+FRAUD_FAMILY = _rx(rf"\b(?:{FRAUD}|kyc)\b")
+FINANCE_CA_TITLE = _rx(r"\b(?:ca|cpa|cma|acca|chartered|accountants?|accounting|accounts?|articled?|articleship|"
+                       r"statutory|gst|tds|bookkeep\w*|ledger|reconciliations?|treasury|valuation|claims?|"
+                       r"financial\s+(?:reporting|statements|accounting|audit)|finance|forensic\s+accounting)\b")
+FINANCE_CA_DESC = _rx(r"\b(?:chartered\s+accountants?|icai|cpa|acca|cma|articleship|statutory\s+audit|financial\s+statements|"
+                      r"general\s+ledger|bookkeeping|accounts\s+(?:payable|receivable)|"
+                      r"ca\s+(?:inter|final|qualified|freshers?|preferred|required)|qualified\s+ca)\b")
+PROFILE_OR_PAGE = _rx(r"^\d[\d,]*\+?\s+\w.*\bjobs?\b|\bjobs?\s+in\s+|log in or sign up|\bsign up\b|join now|"
+                      r"\bcompany profile\b|\bjobs at\b|\bcareers at\b|\s-\s*linkedin$|iimjobs|"
+                      r"^\W*(?:the\s+)?numbers to watch")
+BPO_VOICE = _rx(r"\bbpo\b|voice\s+process|inbound|outbound|international\s+voice")
+
+# seniority
+ALWAYS_OUT = _rx(r"\b(?:director|vice\s+president|vp|avp|assistant\s+vice\s+president|head\s+of|head|chief|ciso|"
+                 r"principal|distinguished|president|manager|mgr|supervisor|deputy)\b")
+LEAD_ARCH = _rx(r"\b(?:lead|architect|archt)\b")
+STAFF_ROLE = _rx(r"\bstaff\s+(?:\w+\s+){0,3}(?:engineer|developer|scientist|architect|analyst|researcher)\b")
+SENIOR_WORD = _rx(r"\b(?:senior|sr)\b\.?")
+SENIOR_ASSOC = _rx(r"\b(?:senior|sr)\.?\s+associate\b")
+SENIOR_OK_DOMAIN = _rx(r"\b(?:risk|forensic\w*|investigat\w*|audit\w*|compliance|governance|fraud|aml|privacy)\b")
+ROMAN_HIGH = _rx(r"\b(?:iv|v|vi)\s*$|\b(?:engineer|analyst|specialist|consultant)\s+(?:iv|v|vi|[4-9])\b|\bl[4-9]\b")
+
+TYPE_WALKIN = _rx(r"walk[\s-]?ins?\b")
+TYPE_INTERN = _rx(r"\bintern(?:s|ship|ships)?\b")
+TYPE_APPRENTICE = _rx(r"\bapprentice\w*")
+TYPE_TRAINEE = _rx(r"\b(?:trainee|graduate\s+(?:program|programme|trainee)|early\s+career|new\s+grad)\b")
+TYPE_FTC = _rx(r"\b(?:ftc|fixed[\s-]?term|temporary)\b")
+TYPE_CONTRACT = _rx(r"\b(?:contract|contractor|contractual|c2h|freelance)\b")
+CONTRACT_FALSE = _rx(r"contract\s+(?:management|manager|administrat\w*|services?|specialist|analyst|lifecycle|"
+                     r"compliance|negotiat\w*|law|lawyer|counsel|review\w*)|vendor\s*/\s*contract")
+CONTRACT_DESC = _rx(r"contract\s+(?:role|position|basis|job|duration|to\s+hire)|contractual\s+(?:role|position|basis)|"
+                    r"\d+\s*months?\s+contract")
+
+
+def classify_job_type(title: str, description: str = "") -> str:
+    t, d = _clean(title), _clean(description)[:1500]
+    if TYPE_INTERN.search(t):
+        return "Internship"
+    if TYPE_APPRENTICE.search(t):
+        return "Apprenticeship"
+    if TYPE_TRAINEE.search(t):
+        return "Trainee"
+    if TYPE_FTC.search(t) or _rx(r"\bfixed[\s-]?term\b|\bftc\b").search(d):
+        return "FTC"
+    if (TYPE_CONTRACT.search(t) and not CONTRACT_FALSE.search(t)) or CONTRACT_DESC.search(d):
+        return "Contract"
+    if TYPE_WALKIN.search(t) or _rx(r"walk[\s-]?in\s+(?:drive|interview)").search(d):
+        return "Walk-in"
+    return "Job"
+
+
+@dataclass
+class Verdict:
+    keep: bool
+    reason: str = ""
+    job_type: str = "Job"
+    exp: tuple[int, int | None] | None = None
+
+
+def _relevant(title: str, job_type: str) -> bool:
+    if CORE.search(title):
+        return True
+    if NETWORK_ROLE.search(title) and HAS_ROLE_WORD.search(title):
+        return True
+    return job_type == "Apprenticeship"            # a variety of apprenticeship roles
+
+
+def evaluate(listing: dict) -> Verdict:
+    title = _clean(listing.get("title"))
+    desc = _clean(listing.get("description"))
+    company = _clean(listing.get("company"))
+    url = _clean(listing.get("job_url") or listing.get("url"))
+    t = re.sub(r"[_/]+", " ", title.lower())     # "TDR_SOC/SIEM" -> "tdr soc siem"
+
+    jt = classify_job_type(title, desc)
+    exp = parse_experience(title, desc, url)
+
+    def out(reason: str) -> Verdict:
+        return Verdict(False, reason, jt, exp)
+
+    if "linkedin.com/in/" in url.lower():
+        return out("url:linkedin_profile")
+    if len(t) < 4 or PROFILE_OR_PAGE.search(t):
+        return out("title:page_or_headline")
+    if BPO_VOICE.search(t):
+        return out("title:bpo_voice")
+    if not location_ok(listing.get("location")):
+        return out("location")
+    age = posted_age_days(listing.get("date_posted") or listing.get("posted_date"))
+    if age is not None and age > MAX_AGE_DAYS:
+        return out(f"age>{MAX_AGE_DAYS}d")
+
+    m = HARD_JUNK.search(t)
+    if m:
+        word = re.sub(r"\s+", " ", m.group(0).lower())
+        if not (word == "supply chain" and re.search(r"\b(?:risk|security|cyber)\b", t)):   # "Supply Chain Risk Analyst" is a target
+            return out("junk:" + word)
+    if HOSPITALITY.search(company.lower()):
+        return out("junk:hospitality")
+    if SOFT_JUNK.search(t) and not SOFT_JUNK_EXEMPT.search(t):
+        return out("junk:" + SOFT_JUNK.search(t).group(0).lower())
+    if SKIP_KYC_ONLY and SKIP_KYC.search(t) and not KYC_ALSO_OK.search(t):
+        return out("user_skip:kyc")
+    if FRAUD_FAMILY.search(t) and (FINANCE_CA_TITLE.search(t) or FINANCE_CA_DESC.search(desc.lower())):
+        return out("finance_ca")
+    if not _relevant(t, jt):
+        return out("no_relevant_keyword")
+
+    # seniority
+    if ALWAYS_OUT.search(t):
+        return out("senior:" + ALWAYS_OUT.search(t).group(0).lower())
+    ehr = exp is not None and experience_ok(exp)                 # explicit range that passes
+    if (LEAD_ARCH.search(t) or STAFF_ROLE.search(t)) and not ehr:
+        return out("senior:lead_architect_staff")
+    if ROMAN_HIGH.search(t) and not ehr:
+        return out("senior:level_IV_plus")
+    if SENIOR_WORD.search(t) and not (SENIOR_ASSOC.search(t) or ehr or SENIOR_OK_DOMAIN.search(t)):
+        return out("senior:no_range")
+
+    # experience
+    if not experience_ok(exp):
+        lo, hi = exp
+        return out(f"experience:{lo}-{hi if hi is not None else ''}")
+
+    return Verdict(True, "", jt, exp)
+
+
+CONTENT_REJECTS = [
+    "offers free", "free cyber security virtual", "free online cyber",
+    "free cybersecurity online", "virtual internship for college",
+    "with certificate for everyone",
+    "meet our interns", "my internship at", "my internship journey",
+    "officially completed my", "i have completed",
+    "excited to share that i", "thrilled to announce",
+    "cheat sheet", "roadmap to become", "where to find",
+    "how to get into", "tips for", "guide to",
+    "rise of fake internships", "beware of internship",
+    "reality check", "fake internship",
+    "interview experience", "interview process at",
+    "is this enough for", "what salary can freshers expect",
+    "per month (source:", "leetcode/glassdoor",
+]
+
+
+def drop_reason(listing: dict) -> str | None:
+    """None means keep, otherwise a short code saying which rule dropped it."""
+    title = sanitize(listing.get("title", ""))
+    desc = sanitize(listing.get("description", ""))
+    if str(listing.get("source", "")).lower() == "linkedin_post":     # post phrases only apply to LinkedIn posts
+        text = (title + " " + desc).lower()
+        for p in CONTENT_REJECTS:
+            if p in text:
+                return f"content_reject:{p}"
+    v = evaluate({**listing, "title": title, "description": desc})
+    return None if v.keep else v.reason
+
+
+def is_relevant(listing: dict) -> bool:
+    return drop_reason(listing) is None
+
 # =============================================================================
 # PRE-FILTER
 # =============================================================================
 
-REJECT_PATTERNS = [
-    "jobs in united states", "jobs in united kingdom",
-    "jobs in canada", "jobs in australia", "jobs in singapore",
-    "jobs in germany", "jobs in europe", "+ jobs",
-    "new jobs", "(1,713 new)", "(244 new)",
-    "| ceh certified", "| cissp", "| gcfa", "| ejpt",
-    "penetration tester| python",
-    "helping organizations secure", "satish kumar", "deepak pokhrel",
-    "ramavath rakesh",
-    "excited to share that i", "thrilled to share that i",
-    "excited to announce that i", "i have been selected",
-    "i have kicked off my", "officially completed my",
-    "i am starting a new position", "im starting a new position",
-    "i'm starting a new position", "i have started",
-    "my internship at", "my 6-month internship", "my internship journey",
-    "left bangalore to pursue", "kickstart your cybersecurity career!",
-    "roadmap to become", "read this be",
-    "log in or sign up", "sign up", "join now", "linkedin india",
-    "linkedin: log in", "page not found", "404", "jobs at ", "careers at ",
-    "free cybersecurity online", "with certificate for everyone",
-    "per month (source:", "leetcode/glassdoor",
-    "food experience", "chef", "restaurant",
-    "accounts receivable", "accounts payable", "legal entity controller",
-    "head of global finance", "monetization operation",
-    "marketing operations", "lead generation", "payroll",
-    "global people support", "talent acquisition",
-    "content writer", "seo specialist", "social media manager",
-    "graphic designer", "ux designer",
-    "mechanical engineer", "civil engineer", "electrical engineer",
-    "customer support", "customer service", "call center", "bpo",
-    "supply chain", "logistics", "warehouse",
-    "teacher", "professor", "lecturer",
-    "medical officer", "nurse", "doctor",
-    "chartered accountant",
-]
 
-REJECT_REGEX = [
-    r'^\d[\d,]+\+?\s+\w',
-    r'^\d+\s+\w+.*jobs in',
-]
 
 
 
@@ -289,33 +563,8 @@ def reject_reason(listing: dict) -> str | None:
     return "no TARGET_ROLE in title (and no intern+security combo)"
 
 
-def is_relevant(listing: dict) -> bool:
-    return reject_reason(listing) is None
 
 
-def pre_filter(listings: list) -> list:
-    kept, dropped = [], []
-    for l in listings:
-        reason = reject_reason(l)
-        if reason is None:
-            kept.append(l)
-        else:
-            dropped.append(l)
-            _audit("pre_filter", reason, l)
-
-    total_by_src = Counter(l.get("source", "?") for l in listings)
-    kept_by_src = Counter(l.get("source", "?") for l in kept)
-    logger.info("Pre-filter kept/total by source: %s",
-                " | ".join(f"{s} {kept_by_src[s]}/{n}" for s, n in total_by_src.most_common()))
-
-    loose = re.compile(r"secur|cyber|\bsoc\b|siem|grc|risk|compliance|fraud|kyc|aml|audit|privacy", re.I)
-    suspects = [l for l in dropped if loose.search(l.get("title", ""))]
-    logger.info("Pre-filter: %d/%d kept, %d dropped (%d dropped titles look relevant)",
-                len(kept), len(listings), len(dropped), len(suspects))
-    for l in suspects[:40]:
-        logger.info("  dropped?: [%s] %s @ %s", l.get("source", "?"),
-                    sanitize(l.get("title", ""))[:60], sanitize(l.get("company", ""))[:25])
-    return kept
 
 
 def _parse_date_yyyy_mm_dd(value: str) -> datetime | None:
@@ -329,29 +578,16 @@ def _parse_date_yyyy_mm_dd(value: str) -> datetime | None:
     except Exception:
         return None
 
-
-def freshness_filter(listings: list[dict], max_age_days: int) -> list[dict]:
-    if not max_age_days or max_age_days <= 0:
-        return listings
-
-    now = datetime.now(timezone.utc)
+def freshness_filter(listings: list[dict], max_age_days: int = MAX_AGE_DAYS) -> list[dict]:
     kept: list[dict] = []
-    dropped = 0
     for l in listings:
-        raw = str(l.get("date_posted") or l.get("posted_date") or "").strip()
-        dt = _parse_date_yyyy_mm_dd(raw)
-        if not dt:
-            kept.append(l)
-            continue
-        age_days = (now - dt).days
-        if age_days > max_age_days:
-            dropped += 1
-            _audit("freshness", f"{age_days}d old > {max_age_days}d", l)
+        age = posted_age_days(l.get("date_posted") or l.get("posted_date"))
+        if age is not None and age > max_age_days:
             continue
         kept.append(l)
-
     logger.info("Freshness filter (max_age_days=%d): %d/%d kept, %d dropped",
-                max_age_days, len(kept), len(listings), dropped)
+                max_age_days, len(kept), len(listings), len(listings) - len(kept))
+    return keptx_age_days, len(kept), len(listings), dropped)
     return kept
 
 
@@ -693,7 +929,7 @@ def score_listing(listing: dict) -> dict | None:
         score = int(d.get("legitimacy_score", 1))
         rule = d.get("score_rule", "?")
         title_raw = sanitize(listing.get("title", ""))
-        if score > 2 and not ROLE_KW_RE.search(title_raw):
+        if score > 2 and not (CORE.search(title_raw) or NETWORK_ROLE.search(title_raw)):
             score, rule = min(score, 6), "capped: no role keyword in title"
         elif score > 2 and ai_tier == "startup":
             score, rule = 10, "R10a (override)"
@@ -720,6 +956,7 @@ def score_listing(listing: dict) -> dict | None:
             "job_id":               listing.get("job_id", ""),
             "source_company":       listing.get("company", ""),
             "status":               "New",
+            "job_type":             listing.get("job_type") or "Job",
         }
 
         tag = "INTERN" if result["is_intern"] else "regular"
@@ -740,7 +977,56 @@ def score_listing(listing: dict) -> dict | None:
         return None
 
 
+
+
+
+
+
+
+_LINKEDIN_BLOCKED = False
+
+
+def fetch_linkedin_description(job_url: str) -> str:
+    """One request per NEW listing against LinkedIn's public guest endpoint. '' on any failure."""
+    global _LINKEDIN_BLOCKED
+    if _LINKEDIN_BLOCKED:
+        return ""
+    m = re.search(r"/jobs/view/(?:[^/?#]*?-)?(\d{6,})", job_url or "")
+    if not m:
+        return ""
+    try:
+        r = requests.get(
+            f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{m.group(1)}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=15)
+    except requests.RequestException:
+        return ""
+    if r.status_code in (429, 999):
+        _LINKEDIN_BLOCKED = True
+        logger.warning("LinkedIn description fetch blocked (HTTP %s), skipping it for the rest of this run",
+                       r.status_code)
+        return ""
+    if r.status_code != 200:
+        return ""
+    block = re.search(r"show-more-less-html__markup[^>]*>(.*?)</div>", r.text, re.S)
+    body = block.group(1) if block else r.text
+    text = _html.unescape(re.sub(r"<[^>]+>", " ", body))
+    return re.sub(r"\s+", " ", text).strip()[:3000]
+
+
+
 # =============================================================================
+
+
+
+
+
+
+
+
+
+
+
 # SCORE ALL - WITH AGGRESSIVE DEDUP
 # =============================================================================
 def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None = None) -> list:
@@ -749,7 +1035,7 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
         logger.info("Nothing relevant after pre-filter")
         return []
 
-    max_age_days = int(os.environ.get("MAX_POST_AGE_DAYS", "21"))
+    max_age_days = int(os.environ.get("MAX_POST_AGE_DAYS", str(MAX_AGE_DAYS))
     relevant = freshness_filter(relevant, max_age_days=max_age_days)
     if not relevant:
         logger.info("Nothing left after freshness filter")
@@ -792,10 +1078,16 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
         url = listing.get("job_url") or listing.get("url") or ""
         title = sanitize(listing.get("title", ""))
 
-        gate = code_gate(listing)
-        if gate:
-            logger.info("  GATE reject (%s): %s", gate, title[:55])
-            _audit("code_gate", gate, listing)
+        # LinkedIn search results carry no description, so fetch it for NEW listings only
+        if str(listing.get("source", "")).lower() == "linkedin" and not listing.get("description"):
+            desc = fetch_linkedin_description(url)
+            if desc:
+                listing["description"] = desc
+                time.sleep(2)
+        verdict = evaluate(listing)
+        listing["job_type"] = verdict.job_type
+        if not verdict.keep:
+            logger.info("  RULES reject (%s): %s", verdict.reason, title[:55])
             rejected.append((url, 1, title))
             continue
 
