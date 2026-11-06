@@ -1,3 +1,10 @@
+import re as _re
+
+MAX_AGE_DAYS = 31            # keep jobs up to 31 days old, never older
+EXP_MIN_ALLOWED = 2          # lower end of a stated range must be 0, 1 or 2
+EXP_MAX_ALLOWED = 5          # upper end must be 5 or less, so 2-5 is the widest range accepted
+ALLOWED_CITIES = ("bengaluru", "bangalore", "hyderabad", "pune")
+
 TARGET_ROLES = [
     # SOC / Blue Team
     "soc analyst", "security operations", "blue team", "cyber defense analyst",
@@ -117,16 +124,25 @@ MIN_LEGITIMACY_SCORE = 2
 # config.py
 GROQ_MODEL = "openai/gpt-oss-20b"   # was llama-3.1-8b-instant
 
+#SHEET_COLUMNS = [
+ #   "scraped_at", "job_title", "company", "domain", 
+  #  "apply_url", "status",
+   # "summary",
+    #"experience_required",
+    #"posted_date",
+    #"source",
+    #"salary_range", 
+    #"legitimacy_score", 
+    #"score_rule"
+#]
+
+
 SHEET_COLUMNS = [
-    "scraped_at", "job_title", "company", "domain", 
-    "apply_url", "status",
-    "summary",
-    "experience_required",
-    "posted_date",
-    "source",
-    "salary_range", 
-    "legitimacy_score", 
-    "score_rule"
+    "scraped_at", "job_title", "company", "domain", "apply_url", "status", "summary",
+    "experience_required", "posted_date", "source", "salary_range",
+    "resume_doc_link", "resume_pdf_link", "validation_notes", "keyword_coverage", "keyword_density",
+    "total_skills_count", "credibility", "stuffing_suspicion", "hireability", "research_sources",
+    "job_type", "legitimacy_score", "score_rule",
 ]
 
 KNOWN_MNCS = [
@@ -149,5 +165,27 @@ KNOWN_MNCS = [
     "oracle", "sap", "salesforce", "google", "amazon", "meta",
 ]
  
+_OTHER_CITY = _re.compile(
+    r"\b(?:mumbai|navi\s+mumbai|delhi|new\s+delhi|gurgaon|gurugram|noida|chennai|kolkata|ahmedabad|jaipur|kochi|"
+    r"cochin|coimbatore|chandigarh|indore|trivandrum|thiruvananthapuram|vadodara|nagpur|mysuru|mysore|mangaluru|"
+    r"hubballi|lucknow|bhopal|bhubaneswar|visakhapatnam|surat)\b", _re.I)
+_FOREIGN = _re.compile(
+    r"\b(?:us|usa|united\s+states|canada|uk|united\s+kingdom|europe|emea|latam|mexico|germany|poland|singapore|"
+    r"australia|philippines|malaysia|dubai|uae|japan|ireland|netherlands|france|romania)\b", _re.I)
 
+
+def location_ok(location) -> bool:
+    """Bengaluru, Hyderabad, Pune and remote (not remote-US). Unknown location passes."""
+    loc = str(location if location is not None else "").strip().lower()
+    if loc in ("", "nan", "none"):
+        return True
+    if _re.search(r"\b\d+\s+locations?\b", loc):
+        return True
+    if _re.search(r"\b(?:" + "|".join(ALLOWED_CITIES) + r")\b", loc):
+        return True
+    if "remote" in loc or "work from home" in loc or "wfh" in loc:
+        return not _FOREIGN.search(loc) or bool(_re.search(r"\bindia\b", loc))
+    if _OTHER_CITY.search(loc):
+        return False
+    return bool(_re.search(r"\b(?:india|karnataka|telangana)\b", loc))
  
