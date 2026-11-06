@@ -346,7 +346,7 @@ def save_new_listings(scored_listings: list[dict]) -> list[dict]:
             seen_company_titles.add(key)
 
     saved = _append_rows_safely(worksheet, rows_to_write)
-        try:
+    try:
         ensure_section_tab(worksheet, SHEET_COLUMNS)
     except Exception as e:
         logger.warning("Could not create section tab: %s", e)
