@@ -38,6 +38,65 @@ import jobspy
 import pandas as pd
 from collections import Counter
 
+
+
+from jobboards import fetch_company   # add to the imports at top
+
+# board types: "oracle", "atlassian" (the new ones), plus greenhouse/lever/ashby/workable
+JOBRADAR_COMPANIES = [
+    {"name": "Atlassian", "board": "atlassian", "slug": "atlassian"},
+    # slug = "<oracle-host>/<siteNumber>"; this one is the docstring example, verify it
+    {"name": "Oracle", "board": "oracle", "slug": "eeho.fa.us2.oraclecloud.com/CX_1"},
+]
+
+JOBRADAR_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
+
+
+def _jr_to_record(j: dict) -> dict:
+    """jobradar schema -> your schema (job_url, date_posted as YYYY-MM-DD)."""
+    ts = j.get("posted_at")
+    date_posted = (
+        datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d") if ts else ""
+    )
+    return {
+        "title":       j["title"],
+        "company":     j["company"],
+        "location":    j["location"] or "India",
+        "job_url":     j["url"] or "",
+        "description": (j["description"] or "")[:1500],
+        "date_posted": date_posted,
+        "source":      j["source"],
+    }
+
+
+def _scrape_jobradar() -> list[dict]:
+    logger.info("=== JobRadar boards: %d companies ===", len(JOBRADAR_COMPANIES))
+    results: list[dict] = []
+    for entry in JOBRADAR_COMPANIES:
+        jobs, err = fetch_company(entry)
+        if err:
+            logger.warning("  %s: %s", entry["name"], err)
+            continue
+        kept = 0
+        for j in jobs:
+            title = (j["title"] or "").lower()
+            if not any(k in title for k in JOBRADAR_TITLE_KEYWORDS):
+                continue
+            if not location_ok(j["location"]):
+                continue
+            ts = j.get("posted_at")
+            if ts and (time.time() - ts) / 86400 > MAX_AGE_DAYS:
+                continue   # posted_at None (e.g. Workday) is kept
+            if not j["url"]:
+                continue
+            results.append(_jr_to_record(j))
+            kept += 1
+        logger.info("  %s: %d/%d kept", entry["name"], kept, len(jobs))
+        time.sleep(1)
+    logger.info("JobRadar boards: %d jobs", len(results))
+    return results
+
+
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -2277,6 +2336,7 @@ def gather_all_listings() -> list[dict]:
         ("HN Hiring",      _scrape_hn_hiring),
         ("Ashby",          _scrape_ashby),       # ← NEW: Ashby public API
         ("Workable",       _scrape_workable),
+        ("JobRadar boards", _scrape_jobradar), 
       
     ]
 
