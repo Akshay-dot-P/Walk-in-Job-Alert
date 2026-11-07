@@ -37,7 +37,8 @@ import httpx
 import jobspy
 import pandas as pd
 from collections import Counter
-
+from urllib.parse import urlparse, quote
+import html as _html
 
 
 from jobboards import fetch_company   # add to the imports at top
@@ -238,7 +239,8 @@ GREENHOUSE_COMPANIES = [
     "transmitsecurity",   # identity fraud
     "cybereason",         # EDR
     "axonius",            # asset management
- 
+    "cloudsek",       # Bengaluru security company, confirmed on job-boards.greenhouse.io/cloudsek
+    "quince-careers",    # SOC Engineer role in Bengaluru, confirmed on job-boards.greenhouse.io/quince-careers
     # ── Cybersecurity (new additions) ──
     "hackerone",          # bug bounty / vuln disclosure — confirmed India security analyst role
     "bugcrowd",           # bug bounty platform
@@ -2325,6 +2327,455 @@ def _scrape_naukri() -> list[dict]:
 
 
 
+
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# BIG EMPLOYER CAREER SITES + BUILT IN BENGALURU + SECURITY RSS FEEDS
+# ═══════════════════════════════════════════════════════════════════════
+# Prefix-boundary match, so "soc" hits "SOC Analyst" but not "Associate"
+_BIG_TITLE_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(k) for k in WORKDAY_TITLE_KEYWORDS) + ")", re.I
+)
+_JSON_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
+_HTML_HEADERS = {**_JSON_HEADERS, "Accept": "text/html,application/xhtml+xml"}
+
+
+def _plain(text) -> str:
+    return re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", str(text or "")))).strip()
+
+
+def _title_ok(title: str) -> bool:
+    return bool(_BIG_TITLE_RE.search(title or ""))
+
+
+def _epoch_date(ts) -> str:
+    try:
+        ts = float(ts)
+        if ts > 1e11:          # milliseconds
+            ts /= 1000
+        return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+# ── Amazon (public search.json behind amazon.jobs) ───────────────────────
+AMAZON_SEARCH_URL = "https://www.amazon.jobs/en/search.json"
+AMAZON_CITIES  = ("Bengaluru", "Hyderabad", "Pune")   # Amazon's city filter is exact: "Bangalore" returns nothing
+AMAZON_QUERIES = [
+    "security analyst", "cyber security", "information security", "SOC", "security engineer",
+    "vulnerability", "penetration", "application security", "cloud security",
+    "identity access management", "GRC compliance", "risk analyst", "fraud", "audit",
+    "network engineer", "security intern",
+]
+AMAZON_PAGE_SIZE = 50
+AMAZON_MAX_PAGES = 3
+
+
+def _amazon_date(raw) -> str:
+    raw = str(raw or "").strip()
+    for fmt in ("%B %d, %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return ""
+
+
+def _scrape_amazon() -> list[dict]:
+    logger.info("=== Amazon Jobs: %d cities x %d queries ===", len(AMAZON_CITIES), len(AMAZON_QUERIES))
+    results: list[dict] = []
+    seen: set[str] = set()
+    blocked = False
+    for city in AMAZON_CITIES:
+        if blocked:
+            break
+        for q in AMAZON_QUERIES:
+            if blocked:
+                break
+            for page in range(AMAZON_MAX_PAGES):
+                params = {"base_query": q, "country": "IND", "city": city, "sort": "recent",
+                          "offset": page * AMAZON_PAGE_SIZE, "result_limit": AMAZON_PAGE_SIZE}
+                try:
+                    r = requests.get(AMAZON_SEARCH_URL, params=params, headers=_JSON_HEADERS, timeout=20)
+                except requests.RequestException as exc:
+                    logger.debug("Amazon %s/%s: %s", city, q, type(exc).__name__)
+                    break
+                if r.status_code in (403, 429):
+                    logger.warning("Amazon Jobs: HTTP %s, skipping it for the rest of this run", r.status_code)
+                    blocked = True
+                    break
+                if r.status_code != 200:
+                    break
+                try:
+                    data = r.json()
+                except ValueError:
+                    break
+                jobs = data.get("jobs") if isinstance(data, dict) else None
+                if not jobs:
+                    break
+                for j in jobs:
+                    job_path = str(j.get("job_path") or "")
+                    jid = str(j.get("id_icims") or j.get("id") or job_path)
+                    if not jid or jid in seen:
+                        continue
+                    title = str(j.get("title") or "").strip()
+                    if not _title_ok(title):
+                        continue
+                    country = str(j.get("country_code") or "")
+                    if country and country != "IND":
+                        continue
+                    location = str(j.get("normalized_location") or j.get("location") or city)
+                    if not location_ok(location):
+                        continue
+                    url = ("https://www.amazon.jobs" + job_path) if job_path.startswith("/") \
+                        else str(j.get("url_next_step") or "")
+                    if not url:
+                        continue
+                    parts = [_plain(j.get("description_short"))]
+                    basic = _plain(j.get("basic_qualifications"))
+                    if basic:   # feeds the experience rule ("3+ years of experience")
+                        parts.append("Basic qualifications: " + basic)
+                    seen.add(jid)
+                    results.append({
+                        "title": title, "company": "Amazon", "location": location,
+                        "job_url": url, "description": " ".join(p for p in parts if p)[:1500],
+                        "date_posted": _amazon_date(j.get("posted_date")), "source": "amazon",
+                    })
+                if len(jobs) < AMAZON_PAGE_SIZE:
+                    break
+                time.sleep(1)
+            time.sleep(1)
+    logger.info("Amazon Jobs: %d jobs", len(results))
+    return results
+
+
+# ── Eightfold-hosted career sites (best effort, add more rows as you find them) ──
+EIGHTFOLD_SITES = [
+    # (display name, careers base URL, eightfold domain)
+    ("Microsoft", "https://apply.careers.microsoft.com", "microsoft.com"),
+]
+EIGHTFOLD_QUERIES = ["security analyst", "cyber security", "security engineer", "SOC", "compliance",
+                     "risk analyst", "fraud", "identity", "network engineer", "security intern"]
+
+
+def _scrape_eightfold() -> list[dict]:
+    logger.info("=== Eightfold sites: %d ===", len(EIGHTFOLD_SITES))
+    results: list[dict] = []
+    seen: set[str] = set()
+    for name, base, domain in EIGHTFOLD_SITES:
+        dead = False
+        for q in EIGHTFOLD_QUERIES:
+            if dead:
+                break
+            for start in range(0, 40, 10):                   # 10 rows per page
+                try:
+                    r = requests.get(
+                        f"{base}/api/pcsx/search",
+                        params={"domain": domain, "query": q, "location": "India",
+                                "start": start, "sort_by": "timestamp"},
+                        headers=_JSON_HEADERS, timeout=20)
+                except requests.RequestException as exc:
+                    logger.debug("Eightfold %s: %s", name, type(exc).__name__)
+                    dead = True
+                    break
+                if r.status_code != 200:
+                    logger.warning("Eightfold %s: HTTP %s (endpoint may differ), skipping this site",
+                                   name, r.status_code)
+                    dead = True
+                    break
+                try:
+                    data = r.json()
+                except ValueError:
+                    dead = True
+                    break
+                block = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+                positions = block.get("positions") if isinstance(block, dict) else None
+                if not positions:
+                    break
+                for p in positions:
+                    pid = str(p.get("id") or "")
+                    title = str(p.get("name") or p.get("title") or "").strip()
+                    if not pid or pid in seen or not _title_ok(title):
+                        continue
+                    locs = p.get("locations") or p.get("location") or ""
+                    location = ", ".join(map(str, locs)) if isinstance(locs, list) else str(locs)
+                    if location and not location_ok(location):
+                        continue
+                    rel = str(p.get("positionUrl") or p.get("canonicalPositionUrl") or f"/careers/job/{pid}")
+                    seen.add(pid)
+                    results.append({
+                        "title": title, "company": name, "location": location or "India",
+                        "job_url": base + rel if rel.startswith("/") else rel,
+                        "description": "",                    # search results carry no description
+                        "date_posted": _epoch_date(p.get("postedTs")), "source": "eightfold",
+                    })
+                if len(positions) < 10:
+                    break
+                time.sleep(1)
+            time.sleep(1)
+    logger.info("Eightfold: %d jobs", len(results))
+    return results
+
+
+# ── Built In Bengaluru ───────────────────────────────────────────────────
+
+_LDJSON_RE = re.compile(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', re.S | re.I)
+
+
+def _jobposting_from_html(html_text: str) -> dict | None:
+    for m in _LDJSON_RE.finditer(html_text or ""):
+        try:
+            obj = json.loads(m.group(1))
+        except ValueError:
+            continue
+        stack = obj if isinstance(obj, list) else [obj]
+        for o in stack:
+            if not isinstance(o, dict):
+                continue
+            nodes = o.get("@graph") if isinstance(o.get("@graph"), list) else [o]
+            for n in nodes:
+                t = n.get("@type") if isinstance(n, dict) else None
+                if t == "JobPosting" or (isinstance(t, list) and "JobPosting" in t):
+                    return n
+    return None
+
+
+def _jobposting_location(jp: dict) -> str:
+    loc = jp.get("jobLocation")
+    loc = loc[0] if isinstance(loc, list) and loc else loc
+    addr = loc.get("address") if isinstance(loc, dict) else None
+    if not isinstance(addr, dict):
+        return ""
+    country = addr.get("addressCountry")
+    country = country.get("name") if isinstance(country, dict) else country
+    return ", ".join(str(x) for x in (addr.get("addressLocality"), addr.get("addressRegion"), country) if x)
+
+def _scrape_builtin_hub(hub: str, base: str) -> list[dict]:
+    session = requests.Session()
+    session.headers.update(_HTML_HEADERS)
+    candidates: dict[str, str] = {}
+    template: str | None = None
+    for q in BUILTIN_QUERIES:
+        for page in range(1, BUILTIN_PAGES + 1):
+            found = False
+            for tpl in ([template] if template else BUILTIN_LIST_TEMPLATES):
+                try:
+                    r = session.get(base + tpl.format(q=quote(q), p=page), timeout=20)
+                except requests.RequestException:
+                    continue
+                if r.status_code in (403, 429):
+                    logger.warning("Built In %s: HTTP %s, skipping this hub", hub, r.status_code)
+                    return []
+                if r.status_code != 200:
+                    continue
+                links = _BUILTIN_JOB_RE.findall(r.text)
+                if links:
+                    if template is None:
+                        template = tpl
+                        logger.info("  Built In %s: list template that works: %s", hub, tpl)
+                    for path in links:
+                        candidates.setdefault(path, path.split("/")[2])
+                    found = True
+                    break
+            if not found:
+                break
+            time.sleep(1.5)
+    todo = [p for p, slug in candidates.items() if _title_ok(slug.replace("-", " "))][:BUILTIN_MAX_DETAIL]
+    logger.info("  Built In %s: %d links, %d pass the title prefilter", hub, len(candidates), len(todo))
+
+    results: list[dict] = []
+    for path in todo:
+        try:
+            r = session.get(base + path, timeout=20)
+        except requests.RequestException:
+            continue
+        if r.status_code in (403, 429):
+            logger.warning("Built In %s: HTTP %s on a job page, stopping", hub, r.status_code)
+            break
+        if r.status_code != 200 or "this job was removed" in r.text.lower():
+            continue
+        jp = _jobposting_from_html(r.text)
+        if jp:
+            title = str(jp.get("title") or "").strip()
+            org = jp.get("hiringOrganization")
+            company = str(org.get("name") if isinstance(org, dict) else org or "")
+            location = _jobposting_location(jp) or hub
+            desc = _plain(jp.get("description"))
+            posted = str(jp.get("datePosted") or "")[:10]
+        else:                                    # no JSON-LD: title/company from <title>, short description
+            t = _TITLE_TAG_RE.search(r.text)
+            raw = _plain(t.group(1)).rsplit("|", 1)[0].strip() if t else ""
+            title, _, company = raw.rpartition(" - ") if " - " in raw else (raw, "", "")
+            m = _META_DESC_RE.search(r.text)
+            location, desc, posted = hub, _plain(m.group(1)) if m else "", ""
+        if not title or not _title_ok(title) or not location_ok(location):
+            continue
+        results.append({
+            "title": title, "company": company.strip(), "location": location,
+            "job_url": base + path, "description": desc[:1500],
+            "date_posted": posted, "source": f"builtin_{hub.lower()}",
+        })
+        time.sleep(1.5)
+    logger.info("Built In %s: %d jobs", hub, len(results))
+    return results
+
+
+def _scrape_builtin() -> list[dict]:
+    logger.info("=== Built In hubs: %d ===", len(BUILTIN_HUBS))
+    results: list[dict] = []
+    for hub, base in BUILTIN_HUBS:
+        results.extend(_scrape_builtin_hub(hub, base))
+        time.sleep(2)
+    return results
+
+# ── Built In hubs: Bengaluru, Hyderabad, Pune ────────────────────────────
+BUILTIN_HUBS = [
+    ("Bengaluru", "https://builtinbengaluru.in"),
+    ("Hyderabad", "https://builtinhyderabad.in"),
+    ("Pune",      "https://builtinpune.in"),
+]
+BUILTIN_QUERIES = ["security", "cyber", "soc analyst", "grc", "compliance", "risk analyst",
+                   "fraud", "iam", "vapt", "network engineer", "audit", "privacy"]
+BUILTIN_PAGES = 2
+BUILTIN_MAX_DETAIL = 40          # job pages fetched per hub
+# /jobs/<category>/search/<query> is a confirmed pattern; the security category slug is not,
+# so these are tried in order and the first that returns job links is reused (see the log)
+BUILTIN_LIST_TEMPLATES = [
+    "/jobs/cybersecurity-it/search/{q}?page={p}",
+    "/jobs/search/{q}?page={p}",
+    "/jobs?search={q}&page={p}",
+]
+_BUILTIN_JOB_RE = re.compile(r'href="(?:https?://[a-z.]+)?(/job/[a-z0-9\-]+/\d+)"', re.I)
+_TITLE_TAG_RE = re.compile(r"<title>(.*?)</title>", re.S | re.I)
+_META_DESC_RE = re.compile(r'<meta[^>]+name="description"[^>]+content="([^"]*)"', re.I)
+
+
+
+
+# ── Oracle HCM career sites (JPMorgan Chase). Add more (name, host, siteNumber) rows later. ──
+ORACLE_HCM_SITES = [
+    ("JPMorgan Chase", "jpmc.fa.oraclecloud.com", "CX_1001"),
+]
+ORACLE_HCM_QUERIES = ["security analyst", "cyber", "SOC", "information security", "risk analyst",
+                      "compliance", "fraud", "audit", "identity access", "vulnerability",
+                      "network engineer", "security intern"]
+ORACLE_HCM_PAGE = 25
+ORACLE_HCM_MAX_PAGES = 5
+
+
+def _scrape_oracle_hcm() -> list[dict]:
+    logger.info("=== Oracle HCM sites: %d ===", len(ORACLE_HCM_SITES))
+    results: list[dict] = []
+    for name, host, site in ORACLE_HCM_SITES:
+        api = f"https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+        seen: set[str] = set()
+        use_sort, dead = True, False
+        for q in ORACLE_HCM_QUERIES:
+            if dead:
+                break
+            for page in range(ORACLE_HCM_MAX_PAGES):
+                finder = (f"findReqs;siteNumber={site},limit={ORACLE_HCM_PAGE},"
+                          f"offset={page * ORACLE_HCM_PAGE},keyword={q}")
+                if use_sort:
+                    finder += ",sortBy=POSTING_DATES_DESC"
+                try:
+                    r = requests.get(api, params={"onlyData": "true", "expand": "requisitionList",
+                                                  "finder": finder},
+                                     headers=_JSON_HEADERS, timeout=30)
+                except requests.RequestException as exc:
+                    logger.debug("Oracle HCM %s: %s", name, type(exc).__name__)
+                    break
+                if r.status_code == 400 and use_sort:      # sortBy value not accepted: drop it for later requests
+                    use_sort = False
+                    break
+                if r.status_code != 200:
+                    logger.warning("Oracle HCM %s: HTTP %s, skipping this site", name, r.status_code)
+                    dead = True
+                    break
+                try:
+                    items = (r.json() or {}).get("items") or []
+                except ValueError:
+                    dead = True
+                    break
+                reqs = (items[0].get("requisitionList") if items and isinstance(items[0], dict) else None) or []
+                for rq in reqs:
+                    rid = str(rq.get("Id") or "")
+                    title = str(rq.get("Title") or "").strip()
+                    if not rid or rid in seen or not _title_ok(title):
+                        continue
+                    location = str(rq.get("PrimaryLocation") or "")
+                    country = str(rq.get("PrimaryLocationCountry") or "").upper()
+                    if country not in ("IN", "IND", "INDIA") and "india" not in location.lower():
+                        continue
+                    if not location_ok(location):
+                        continue
+                    seen.add(rid)
+                    results.append({
+                        "title": title, "company": name, "location": location,
+                        "job_url": f"https://{host}/hcmUI/CandidateExperience/en/sites/{site}/job/{rid}",
+                        "description": _plain(rq.get("ShortDescriptionStr"))[:1500],
+                        "date_posted": str(rq.get("PostedDate") or "")[:10],
+                        "source": "oracle_hcm",
+                    })
+                if len(reqs) < ORACLE_HCM_PAGE:
+                    break
+                time.sleep(1)
+            time.sleep(1)
+    logger.info("Oracle HCM: %d jobs", len(results))
+    return results
+
+
+
+# ── Security job-board RSS feeds (global feeds, India filtered here) ─────
+SECURITY_JOB_FEEDS = [
+    # (source name, RSS/Atom URL). Open the site, copy its "RSS Feed" link, paste it here, e.g.
+    # ("nulljobs", "<link from jobs.null.community>"),
+    # ("isecjobs", "<link from isecjobs.com>"),
+]
+_FEED_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|hyderabad|pune)\b", re.I)
+
+
+def _scrape_security_feeds() -> list[dict]:
+    if not SECURITY_JOB_FEEDS:
+        return []
+    logger.info("=== Security RSS feeds: %d ===", len(SECURITY_JOB_FEEDS))
+    results: list[dict] = []
+    seen: set[str] = set()
+    for name, url in SECURITY_JOB_FEEDS:
+        try:
+            feed = feedparser.parse(url)
+        except Exception as exc:
+            logger.warning("  %s feed failed: %s", name, exc)
+            continue
+        kept = 0
+        for e in feed.entries:
+            link, title = e.get("link", ""), _plain(e.get("title", ""))
+            summary = _plain(e.get("summary", "") or e.get("description", ""))
+            if not link or link in seen or not title:
+                continue
+            if not _FEED_INDIA_RE.search(f"{title} {summary}"):
+                continue
+            pub = e.get("published_parsed")
+            if pub and (time.time() - time.mktime(pub)) / 86400 > MAX_AGE_DAYS:
+                continue
+            seen.add(link)
+            kept += 1
+            results.append({
+                "title": title, "company": "", "location": "India", "job_url": link,
+                "description": summary[:1500], "date_posted": e.get("published", ""), "source": name,
+            })
+        logger.info("  %s: %d/%d kept", name, kept, len(feed.entries))
+    return results
+
+
+
+
+
+
 def gather_all_listings() -> list[dict]:
     all_results = []
     seen: set   = set()
@@ -2340,6 +2791,12 @@ def gather_all_listings() -> list[dict]:
         ("Ashby",          _scrape_ashby),       # ← NEW: Ashby public API
         ("Workable",       _scrape_workable),
         ("JobRadar boards", _scrape_jobradar), 
+        ("Amazon",            _scrape_amazon),
+        ("Eightfold",         _scrape_eightfold),
+        ("Security feeds",    _scrape_security_feeds),
+        ("Oracle HCM",        _scrape_oracle_hcm),
+        ("BuiltIn",           _scrape_builtin),
+      
       
     ]
 
