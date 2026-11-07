@@ -474,22 +474,8 @@ def is_relevant(listing: dict) -> bool:
 
 
 def reject_reason(listing: dict) -> str | None:
-    """Returns None if the listing is kept, else a string saying why it was dropped."""
-    title    = sanitize(listing.get("title", "")).lower()
-    desc     = sanitize(listing.get("description", "")).lower()
-    combined = title + " " + desc
-    url      = (listing.get("url") or listing.get("job_url") or "").lower()
-
-    if "linkedin.com/in/" in url:
-        return "linkedin profile url"
-    for pattern in REJECT_REGEX:
-        if re.match(pattern, title, re.IGNORECASE):
-            return f"REJECT_REGEX: {pattern}"
-    hit = next((p for p in REJECT_PATTERNS if p in title), None)
-    if hit:
-        return f"REJECT_PATTERNS: {hit!r}"
-    if re.match(r'^[a-z]+ [a-z]+(,? [a-z]+)? - .{5,} @', title):
-        return "profile-card title shape"
+    """Pre-filter now uses the rules engine (evaluate/drop_reason)."""
+    return drop_reason(listing)
 
     CONTENT_REJECTS = [
         "offers free", "free cyber security virtual", "free online cyber",
