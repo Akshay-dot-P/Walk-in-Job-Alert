@@ -49,6 +49,11 @@ JOBRADAR_COMPANIES = [
     {"name": "Oracle", "board": "oracle", "slug": "eeho.fa.us2.oraclecloud.com/CX_1"},
 ]
 
+WORKDAY_TITLE_KEYWORDS = (
+    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud", "identity",
+    "network", "audit", "privacy", "fraud", "aml", "threat", "detection", "forensic", "noc", "siem",
+)
+
 JOBRADAR_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
 
@@ -501,10 +506,8 @@ WORKDAY_SEARCH_QUERIES = [
     "Network Engineer" ,
     "IT Audit",
 ]
-WORKDAY_TITLE_KEYWORDS = (
-    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud", "identity",
-    "network", "audit", "privacy", "fraud", "aml", "threat", "detection", "forensic", "noc", "siem",
-)
+
+
 WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
 GREENHOUSE_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
