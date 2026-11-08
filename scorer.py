@@ -1122,8 +1122,11 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
     return scored
 
 
+
 def score_all(listings: list, min_score: int = 4, known_urls: set | None = None) -> list:
     try:
         return _score_all_impl(listings, min_score, known_urls)
     finally:
         flush_audit()
+        for m, u in _USAGE.items():
+            logger.info("Groq usage %s: %s", m, u)
