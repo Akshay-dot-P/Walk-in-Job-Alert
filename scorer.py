@@ -811,8 +811,23 @@ def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
 # GROQ CALL
 # =============================================================================
 
-GROQ_MODELS = [GROQ_MODEL, "openai/gpt-oss-120b"]
+GROQ_MODELS = list(dict.fromkeys([GROQ_MODEL, "openai/gpt-oss-120b",
+                                  "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]))
 _EXHAUSTED: set[str] = set()
+_TOKEN_CAP: dict[str, int] = {}      # smaller max_tokens once a model's daily budget is nearly gone
+_USAGE: dict[str, dict] = {}         # what each model actually used this run
+DEFAULT_MAX_TOKENS = 1200
+MIN_USABLE_TOKENS = 450              # below this the JSON reply can get cut off
+_TPD_RE = re.compile(r"Limit\s+(\d+),\s*Used\s+(\d+),\s*Requested\s+(\d+)", re.I)
+
+
+def _note_usage(model: str, usage: dict) -> None:
+    u = _USAGE.setdefault(model, {"calls": 0, "prompt": 0, "completion": 0, "cached": 0})
+    u["calls"] += 1
+    u["prompt"] += int(usage.get("prompt_tokens") or 0)
+    u["completion"] += int(usage.get("completion_tokens") or 0)
+    u["cached"] += int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+
 
 def call_groq(listing_text: str, retries: int = 3) -> str:
     api_key = os.environ.get("GROQ_API_KEY", "")
@@ -824,41 +839,66 @@ def call_groq(listing_text: str, retries: int = 3) -> str:
     for model in GROQ_MODELS:
         if model in _EXHAUSTED:
             continue
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
-            ],
-            "temperature": 0.1, "max_tokens": 1200,
-            "reasoning_effort": "low",
-            "response_format": {"type": "json_object"},
-        }
+        squeezed = False
         for attempt in range(1, retries + 1):
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": USER_PROMPT_PREFIX + safe},
+                ],
+                "temperature": 0.1,
+                "max_tokens": _TOKEN_CAP.get(model, DEFAULT_MAX_TOKENS),
+                "response_format": {"type": "json_object"},
+            }
+            if model.startswith("openai/gpt-oss"):
+                payload["reasoning_effort"] = "low"          # llama models reject this parameter
             try:
                 r = requests.post(GROQ_API_URL, headers=headers, json=payload, timeout=45)
-                if r.status_code == 429:
-                    logger.warning("Groq 429 on %s: %s", model, r.text[:200])
-                    low = r.text.lower()
-                    if "per day" in low or "(tpd)" in low or "(rpd)" in low:
-                        logger.warning("Daily limit on %s — skipping it for the rest of this run", model)
-                        _EXHAUSTED.add(model)
-                        break
-                    try:
-                        retry_after = float(r.headers.get("retry-after", 0) or 0)
-                    except ValueError:
-                        retry_after = 0
-                    time.sleep(min(max(retry_after + 1, 8 * attempt), 60))
-                    continue
-                r.raise_for_status()
-                choice  = r.json()["choices"][0]
-                content = (choice["message"].get("content") or "").strip()
-                if not content:
-                    logger.warning("Empty content on %s (finish_reason=%s)", model, choice.get("finish_reason"))
-                    continue
-                return content
-            except requests.exceptions.Timeout:
+            except requests.exceptions.RequestException:
                 time.sleep(5 * attempt)
+                continue
+
+            if r.status_code == 429:
+                logger.warning("Groq 429 on %s: %s", model, r.text[:200])
+                low = r.text.lower()
+                if "per day" in low or "(tpd)" in low or "(rpd)" in low:
+                    m = _TPD_RE.search(r.text)
+                    if m and "(tpd)" in low and not squeezed:
+                        limit, used, requested = map(int, m.groups())
+                        prompt_tokens = max(requested - payload["max_tokens"], 0)
+                        room = limit - used - prompt_tokens - 50
+                        if MIN_USABLE_TOKENS <= room < payload["max_tokens"]:
+                            squeezed = True
+                            _TOKEN_CAP[model] = room
+                            logger.info("%s: %d tokens left today, retrying with max_tokens=%d",
+                                        model, limit - used, room)
+                            continue
+                    logger.warning("Daily limit on %s, skipping it for the rest of this run", model)
+                    _EXHAUSTED.add(model)
+                    break
+                try:
+                    retry_after = float(r.headers.get("retry-after", 0) or 0)
+                except ValueError:
+                    retry_after = 0
+                time.sleep(min(max(retry_after + 1, 8 * attempt), 60))
+                continue
+
+            if r.status_code >= 400:
+                logger.warning("Groq HTTP %s on %s: %s", r.status_code, model, r.text[:160])
+                if r.status_code < 500:
+                    break                                    # this model rejected the request: try the next one
+                time.sleep(3 * attempt)
+                continue
+
+            data = r.json()
+            choice = data["choices"][0]
+            content = (choice["message"].get("content") or "").strip()
+            _note_usage(model, data.get("usage") or {})
+            if not content:
+                logger.warning("Empty content on %s (finish_reason=%s)", model, choice.get("finish_reason"))
+                continue
+            return content
     raise RuntimeError("Groq failed on all models (rate limit or empty replies)")
 
 
