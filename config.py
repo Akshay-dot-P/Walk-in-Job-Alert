@@ -166,7 +166,7 @@ KNOWN_MNCS = [
 _OTHER_CITY = _re.compile(
     r"\b(?:mumbai|navi\s+mumbai|delhi|new\s+delhi|gurgaon|gurugram|noida|chennai|kolkata|ahmedabad|jaipur|kochi|"
     r"cochin|coimbatore|chandigarh|indore|trivandrum|thiruvananthapuram|vadodara|nagpur|mysuru|mysore|mangaluru|"
-    r"hubballi|lucknow|bhopal|bhubaneswar|visakhapatnam|surat)\b", _re.I)
+    r"hubballi|lucknow|bhopal|bhubaneswar|visakhapatnam|surat|hyderabad|secunderabad|pune|pimpri)\b", _re.I)
 _FOREIGN = _re.compile(
     r"\b(?:us|usa|united\s+states|canada|uk|united\s+kingdom|europe|emea|latam|mexico|germany|poland|singapore|"
     r"australia|philippines|malaysia|dubai|uae|japan|ireland|netherlands|france|romania)\b", _re.I)
