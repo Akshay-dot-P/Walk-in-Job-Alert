@@ -681,8 +681,6 @@ LINKEDIN_EXTRA_TERMS = [
 LINKEDIN_PLAN = [
     # (jobspy location, remote only, terms)
     ("Bengaluru/Bangalore, Karnataka, India", False, LINKEDIN_TERMS + LINKEDIN_EXTRA_TERMS),
-    ("Hyderabad, Telangana, India", False, LINKEDIN_CORE_TERMS + LINKEDIN_EXTRA_TERMS[:3]),
-    ("Pune, Maharashtra, India", False, LINKEDIN_CORE_TERMS + LINKEDIN_EXTRA_TERMS[:3]),
     ("India", True, LINKEDIN_CORE_TERMS),
 ]
 
