@@ -3,7 +3,7 @@ import re as _re
 MAX_AGE_DAYS = 31            # keep jobs up to 31 days old, never older
 EXP_MIN_ALLOWED = 2          # lower end of a stated range must be 0, 1 or 2
 EXP_MAX_ALLOWED = 5          # upper end must be 5 or less, so 2-5 is the widest range accepted
-ALLOWED_CITIES = ("bengaluru", "bangalore", "hyderabad", "pune")
+ALLOWED_CITIES = ("bengaluru", "bangalore")
 
 TARGET_ROLES = [
     # SOC / Blue Team
@@ -14,7 +14,7 @@ TARGET_ROLES = [
     "security monitoring analyst", "log analysis",
     # Threat Intelligence
     "threat intelligence", "cti analyst", "threat hunting", "osint analyst",
-    "threat research", "dark web analyst",
+    "threat research", 
     # Incident Response / DFIR
     "incident response", "ir analyst", "dfir", "digital forensics",
     "computer forensics", "ediscovery", "forensic analyst", "forensic investigator",
@@ -25,9 +25,7 @@ TARGET_ROLES = [
     # Vulnerability Management
     "vulnerability analyst", "vulnerability management", "va analyst",
     "patch management", "qualys", "tenable", "nessus", "threat assessment",
-    # AppSec / DevSecOps
-    "application security", "appsec", "devsecops", "dast", "sast",
-    "secure code review", "software security", "product security",
+    
     # Network / Infra Security
     "network security", "firewall engineer", "ids ips", "palo alto",
     "fortinet", "cisco security", "endpoint security", "systems security",
