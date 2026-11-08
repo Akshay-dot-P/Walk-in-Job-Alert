@@ -1225,10 +1225,8 @@ async def _scrape_workday_company(
         raw_external = str(posting.get("externalPath") or "")
         ext_path = raw_external.strip("/")
         location = str(
-            posting.get("locationsText")
-            or posting.get("location")
-            or posting.get("formattedLocation")
-            or ""
+            posting.get("locationsText") or posting.get("location")
+            or posting.get("formattedLocation") or ""
         ).strip()
         job_id = _extract_workday_job_id(posting) or ext_path
         external_url = (
@@ -1236,29 +1234,21 @@ async def _scrape_workday_company(
             or _workday_detail_json_url(jobs_url, raw_external)
             or jobs_url
         )
-
-        description = await _fetch_workday_job_description(
-            client=client,
-            jobs_url=jobs_url,
-            company_name=company_name,
-            posting=posting,
-        )
         records.append({
-            "title": title,
-            "company": company_name,
-            "location": location,
-            "job_url": external_url,
-            "description": description,
-            "date_posted": _extract_posted_date(posting),
-            "source": "workday",
-            "job_id": job_id,
+            "title": title, "company": company_name, "location": location,
+            "job_url": external_url, "description": "",
+            "date_posted": _extract_posted_date(posting), "source": "workday",
+            "job_id": job_id, "_posting": posting,
         })
     logger.info("%s sample: %s", company_name, [(r["title"][:40], r["location"][:30]) for r in records[:5]])
     filtered = filter_workday_jobs(
-        records,
-        title_keywords=title_keywords,
-        allowed_locations=allowed_locations,
+        records, title_keywords=title_keywords, allowed_locations=allowed_locations,
     )
+    for rec in filtered:
+        rec["description"] = await _fetch_workday_job_description(
+            client=client, jobs_url=jobs_url, company_name=company_name,
+            posting=rec.pop("_posting"),
+        )
     logger.info("%s: %d jobs found (filtered)", company_name, len(filtered))
     return filtered
 
@@ -1736,6 +1726,9 @@ def _scrape_linkedin() -> list[dict]:
             n += 1
             logger.info("  [%d/%d] %s | %s…", n, total_terms, label, term[:50])
             batch = _run_scrape(["linkedin"], term, {"location": location, "is_remote": remote})
+            if remote:
+                for r in batch:
+                    r["is_remote"] = True
             new = [r for r in batch if r["job_url"] not in seen]
             for r in new:
                 seen.add(r["job_url"])
@@ -2189,7 +2182,7 @@ NAUKRI_CORE_TERMS = [
     "cloud security", "iam analyst", "grc analyst", "it audit", "risk analyst",
     "fraud analyst", "network engineer", "security intern",
 ]
-NAUKRI_PLAN = [("Bangalore", NAUKRI_TERMS), ("Hyderabad", NAUKRI_CORE_TERMS), ("Pune", NAUKRI_CORE_TERMS)]
+NAUKRI_PLAN = [("Bangalore", NAUKRI_TERMS)]
 
 _NAUKRI_WALK_IN_RE = re.compile(
     r"walk[\s\-]?in|walkin|direct interview|drive on|interview on|venue\s*:",
