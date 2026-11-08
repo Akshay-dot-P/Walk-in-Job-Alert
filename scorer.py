@@ -312,6 +312,14 @@ FINANCE_CA_TITLE = _rx(r"\b(?:ca|cpa|cma|acca|chartered|accountants?|accounting|
 FINANCE_CA_DESC = _rx(r"\b(?:chartered\s+accountants?|icai|cpa|acca|cma|articleship|statutory\s+audit|financial\s+statements|"
                       r"general\s+ledger|bookkeeping|accounts\s+(?:payable|receivable)|"
                       r"ca\s+(?:inter|final|qualified|freshers?|preferred|required)|qualified\s+ca)\b")
+
+# Naukri only: skip risk, KYC and finance-related titles
+NAUKRI_RISK = _rx(r"\brisk\b")
+NAUKRI_RISK_KEEP = _rx(r"\b(?:cyber\w*|security|infosec|information|it|technology|tech|grc|isms)\b")
+NAUKRI_KYC = _rx(r"\bkyc\b")
+NAUKRI_FINANCE = _rx(r"\b(?:finance|financial|accounts?|accounting|accountants?|credit|loans?|lending|"
+                     r"mortgage|cpa|chartered|ca)\b")
+
 PROFILE_OR_PAGE = _rx(r"^\d[\d,]*\+?\s+\w.*\bjobs?\b|\bjobs?\s+in\s+|log in or sign up|\bsign up\b|join now|"
                       r"\bcompany profile\b|\bjobs at\b|\bcareers at\b|\s-\s*linkedin$|iimjobs|"
                       r"^\W*(?:the\s+)?numbers to watch")
@@ -410,6 +418,13 @@ def evaluate(listing: dict) -> Verdict:
         return out("user_skip:kyc")
     if FRAUD_FAMILY.search(t) and (FINANCE_CA_TITLE.search(t) or FINANCE_CA_DESC.search(desc.lower())):
         return out("finance_ca")
+    if str(listing.get("source", "")).lower() == "naukri":
+        if NAUKRI_KYC.search(t):
+            return out("naukri_skip:kyc")
+        if NAUKRI_FINANCE.search(t):
+            return out("naukri_skip:finance")
+        if NAUKRI_RISK.search(t) and not NAUKRI_RISK_KEEP.search(t):
+            return out("naukri_skip:risk")        
     if not _relevant(t, jt):
         return out("no_relevant_keyword")
 
