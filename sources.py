@@ -2626,8 +2626,7 @@ def _scrape_builtin() -> list[dict]:
 # ── Built In hubs: Bengaluru, Hyderabad, Pune ────────────────────────────
 BUILTIN_HUBS = [
     ("Bengaluru", "https://builtinbengaluru.in"),
-    ("Hyderabad", "https://builtinhyderabad.in"),
-    ("Pune",      "https://builtinpune.in"),
+
 ]
 BUILTIN_QUERIES = ["security", "cyber", "soc analyst", "grc", "compliance", "risk analyst",
                    "fraud", "iam", "vapt", "network engineer", "audit", "privacy"]
@@ -2727,7 +2726,7 @@ SECURITY_JOB_FEEDS = [
     # ("nulljobs", "<link from jobs.null.community>"),
     # ("isecjobs", "<link from isecjobs.com>"),
 ]
-_FEED_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|hyderabad|pune)\b", re.I)
+_FEED_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore)\b", re.I)
 
 
 def _scrape_security_feeds() -> list[dict]:
