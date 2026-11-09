@@ -8,6 +8,26 @@ from storage  import save_new_listings
 from notifier import notify_all
 from config   import MIN_LEGITIMACY_SCORE
 
+import json, os
+
+RAW_CACHE = os.environ.get("RAW_CACHE", "raw_listings.json")
+
+
+def load_or_scrape() -> list[dict]:
+    if os.environ.get("REUSE_RAW") == "1" and os.path.exists(RAW_CACHE):
+        with open(RAW_CACHE, encoding="utf-8") as f:
+            data = json.load(f)
+        logger.info("Loaded %d listings from %s (no scraping)", len(data), RAW_CACHE)
+        return data
+    data = gather_all_listings()
+    try:
+        with open(RAW_CACHE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError as exc:
+        logger.warning("Could not write %s: %s", RAW_CACHE, exc)
+    return data
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -24,11 +44,18 @@ def main():
     logger.info("=" * 60)
 
     logger.info("--- PHASE 1: Scraping ---")
-    raw_listings = gather_all_listings()
+    raw_listings = load_or_scrape()
     if not raw_listings:
         logger.info("No listings found. Exiting.")
         sys.exit(0)
     logger.info("Phase 1: %d listings collected", len(raw_listings))
+
+    if os.environ.get("DRY_RUN") == "1":
+        from scorer import pre_filter, freshness_filter, aggressive_deduplicate, flush_audit
+        kept = aggressive_deduplicate(freshness_filter(pre_filter(raw_listings)))
+        logger.info("DRY RUN: %d listings would go to scoring", len(kept))
+        flush_audit()
+        sys.exit(0)    
 
     logger.info("--- PHASE 2: AI Scoring ---")
     scored = score_all(raw_listings, min_score=MIN_LEGITIMACY_SCORE)
