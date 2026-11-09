@@ -399,7 +399,8 @@ def evaluate(listing: dict) -> Verdict:
         return out("title:page_or_headline")
     if BPO_VOICE.search(t):
         return out("title:bpo_voice")
-    if not location_ok(listing.get("location")):
+    loc = _clean(listing.get("location")) + (" remote" if listing.get("is_remote") else "")
+    if not location_ok(loc):
         return out("location")
     age = posted_age_days(listing.get("date_posted") or listing.get("posted_date"))
     if age is not None and age > MAX_AGE_DAYS:
