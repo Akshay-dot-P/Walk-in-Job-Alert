@@ -40,7 +40,6 @@ from collections import Counter
 from urllib.parse import urlparse, quote
 import html as _html
 
-
 from jobboards import fetch_company   # add to the imports at top
 
 # board types: "oracle", "atlassian" (the new ones), plus greenhouse/lever/ashby/workable
@@ -1380,7 +1379,7 @@ def _scrape_greenhouse_company(company_slug: str) -> list[dict]:
                 "company": company_slug.replace("-", " ").title(),
                 "location": location or "India",
                 "job_url": job_url,
-                "description": str(job.get("content") or "")[:1000],  # Truncate long descriptions
+                "description": _html_to_text(job.get("content"))[:4000], # Truncate long descriptions
                 "date_posted": str(job.get("updated_at") or "")[:10],
                 "source": "greenhouse",
             })
@@ -1478,7 +1477,7 @@ def _scrape_lever_company(company_slug: str) -> list[dict]:
                 "company": company_slug.replace("-", " ").title(),
                 "location": location or "India",
                 "job_url": job_url,
-                "description": str(job.get("description") or job.get("descriptionPlain") or "")[:1000],
+                "description": _html_to_text(job.get("descriptionPlain") or job.get("description"))[:4000],
                 "date_posted": date_posted,
                 "source": "lever",
             })
@@ -2114,7 +2113,7 @@ def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
                 "company": company_name,
                 "location": location or ("Remote" if telecommuting else "India"),
                 "job_url": job_url,
-                "description": description,
+                "description" = _html_to_text(job.get("description") or job.get("full_description"))[:4000],
                 "date_posted": date_posted,
                 "source": "workable",
             })
@@ -2334,6 +2333,10 @@ _JSON_HEADERS = {
 }
 _HTML_HEADERS = {**_JSON_HEADERS, "Accept": "text/html,application/xhtml+xml"}
 
+def _html_to_text(value) -> str:
+    s = _html.unescape(str(value or ""))          # Greenhouse content is escaped markup
+    s = re.sub(r"<[^>]+>", " ", s)
+    return re.sub(r"\s+", " ", _html.unescape(s)).strip()
 
 def _plain(text) -> str:
     return re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", str(text or "")))).strip()
