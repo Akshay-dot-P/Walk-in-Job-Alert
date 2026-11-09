@@ -772,8 +772,8 @@ def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
         candidate_keys: list[str] = []
         
         # Key 1: Exact job_id (if present - Workday etc)
-        if job_id:
-            candidate_keys.append(f"id:{job_id}")
+        if job_id and company_norm:
+            candidate_keys.append(f"id:{company_norm}:{job_id}")
         
         # Key 2: Exact URL (catches reposts at same link)
         if url:
@@ -785,7 +785,7 @@ def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
         
         # Key 4: Just normalized title if company unknown (risky but catches more)
         # Only use if title is specific enough (>= 3 words after normalization)
-        if title_norm and len(title_norm.split()) >= 3:
+        elif title_norm and len(title_norm.split()) >= 3:
             candidate_keys.append(f"t:{title_norm}")
         
         hit = next((k for k in candidate_keys if k in seen_keys), None)
