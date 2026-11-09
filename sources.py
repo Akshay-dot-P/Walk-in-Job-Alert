@@ -2106,14 +2106,14 @@ def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
             created_at = str(job.get("created_at") or "").strip()
             date_posted = created_at[:10] if created_at else ""
  
-            description = str(job.get("description") or job.get("full_description") or "")[:1200]
+            description = _html_to_text(job.get("description") or job.get("full_description"))[:4000]
  
             results.append({
                 "title": title,
                 "company": company_name,
                 "location": location or ("Remote" if telecommuting else "India"),
                 "job_url": job_url,
-                "description" = _html_to_text(job.get("description") or job.get("full_description"))[:4000],
+                "description" = description,
                 "date_posted": date_posted,
                 "source": "workable",
             })
