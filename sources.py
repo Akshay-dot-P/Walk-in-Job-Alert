@@ -1006,7 +1006,7 @@ def _extract_detail_description(detail_payload: dict) -> str:
     ]
     for c in candidates:
         if c:
-            return str(c)
+            return _html_to_text(str(c))
     return ""
 
 
