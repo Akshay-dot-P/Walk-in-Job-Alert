@@ -233,7 +233,7 @@ def parse_experience(title: str = "", description: str = "", url: str = "") -> t
     m = _SLUG.search(_clean(url).lower())
     if m:
         return int(m.group(1)), int(m.group(2))
-    d = _clean(description)[:3000]
+    d = _clean(description)[:5000]
     m = _RANGE.search(d)
     if m:
         return int(m.group(1)), int(m.group(2))
