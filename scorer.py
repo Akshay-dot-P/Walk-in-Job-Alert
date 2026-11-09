@@ -811,8 +811,7 @@ def aggressive_deduplicate(listings: list[dict]) -> list[dict]:
 # GROQ CALL
 # =============================================================================
 
-GROQ_MODELS = list(dict.fromkeys([GROQ_MODEL, "openai/gpt-oss-120b",
-                                  "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]))
+GROQ_MODELS = list(dict.fromkeys([GROQ_MODEL, "openai/gpt-oss-120b"]))
 _EXHAUSTED: set[str] = set()
 _TOKEN_CAP: dict[str, int] = {}      # smaller max_tokens once a model's daily budget is nearly gone
 _USAGE: dict[str, dict] = {}         # what each model actually used this run
@@ -886,6 +885,9 @@ def call_groq(listing_text: str, retries: int = 3) -> str:
 
             if r.status_code >= 400:
                 logger.warning("Groq HTTP %s on %s: %s", r.status_code, model, r.text[:160])
+                if r.status_code == 404:                     # model missing or no access: skip it for this run
+                    _EXHAUSTED.add(model)
+                    break
                 if r.status_code < 500:
                     break                                    # this model rejected the request: try the next one
                 time.sleep(3 * attempt)
