@@ -43,7 +43,7 @@ body{
   border-bottom:1px solid var(--sep2);
 }
 .nav-inner{
-  max-width:900px;margin:0 auto;padding:0 24px;
+  max-width:1180px;margin:0 auto;padding:0 24px;
   min-height:62px;display:flex;align-items:center;gap:14px;
 }
 .nav-logo{font-size:.9rem;font-weight:650;color:var(--t1);white-space:nowrap;flex-shrink:0;}
@@ -76,7 +76,7 @@ body{
 /* FILTER RAIL */
 .filter-rail{border-bottom:1px solid var(--sep2);background:rgba(248,248,245,.8);backdrop-filter:blur(12px);}
 .filter-inner{
-  max-width:900px;margin:0 auto;padding:0 24px;
+  max-width:1180px;margin:0 auto;padding:0 24px;
   display:flex;align-items:center;gap:8px;min-height:50px;
   overflow-x:auto;scrollbar-width:none;
 }
@@ -99,13 +99,28 @@ body{
 .chip .pip{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
 
 /* PAGE */
-.page{max-width:900px;margin:0 auto;padding:26px 24px 64px;}
-.updated-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
-.updated-bar .ul{font-size:.72rem;color:var(--t3);}
-.updated-bar .ul strong{color:var(--t2);font-weight:600;}
-.updated-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}
-.res-count{font-size:.72rem;color:var(--t3);font-variant-numeric:tabular-nums;}
-.res-count strong{color:var(--t1);font-weight:650;}
+.page{max-width:1180px;margin:0 auto;padding:26px 24px 64px;display:grid;grid-template-columns:250px minmax(0,1fr);gap:28px;align-items:start;}
+.content{min-width:0;max-width:860px;}
+.sidebar{position:sticky;top:126px;max-height:calc(100vh - 146px);overflow:auto;
+  background:linear-gradient(180deg,rgba(255,254,251,.98),rgba(250,251,248,.94));
+  border:1px solid rgba(226,230,224,.92);border-radius:12px;padding:18px 16px;
+  box-shadow:0 1px 2px rgba(39,42,36,.025),0 8px 24px rgba(39,42,36,.025);}
+.sb-head{display:flex;align-items:center;gap:12px;padding-bottom:14px;margin-bottom:6px;border-bottom:1px solid var(--sep2);}
+.sb-head svg{width:22px;height:22px;color:var(--t2);flex-shrink:0;}
+.sb-title{font-size:.95rem;font-weight:700;color:var(--t1);}
+.sb-sub{font-size:.72rem;color:var(--t3);}
+.sb-label{display:block;margin:16px 0 6px;font-size:.6rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--t4);}
+.sb-select{width:100%;appearance:none;-webkit-appearance:none;cursor:pointer;outline:none;font:inherit;font-size:.8rem;color:var(--t1);
+  padding:9px 30px 9px 11px;border:1px solid var(--sep);border-radius:9px;
+  background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23899088' stroke-width='2.4'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 10px center;}
+.sb-select:focus{border-color:rgba(47,142,216,.35);}
+.sb-toggle{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:18px;padding:11px 12px;border:1px solid var(--sep);border-radius:10px;background:#fff;cursor:pointer;}
+.sb-toggle .tt{font-size:.82rem;font-weight:620;color:var(--t1);}
+.sb-toggle .ts{font-size:.7rem;color:var(--t3);}
+.sb-toggle input{width:16px;height:16px;accent-color:var(--blue);flex-shrink:0;}
+.sb-reset{margin-top:16px;width:100%;padding:8px;border-radius:9px;border:1px solid var(--sep2);background:transparent;color:var(--t2);font:inherit;font-size:.72rem;font-weight:600;cursor:pointer;}
+.sb-reset:hover{background:rgba(255,255,255,.7);color:var(--t1);}
+@media(max-width:1180px){.page{grid-template-columns:1fr;}.sidebar{position:static;max-height:none;}}
 
 /* SECTION HEADERS */
 .section-head{padding:20px 0 9px;border-bottom:1px solid var(--sep2);margin-bottom:8px;display:flex;align-items:baseline;gap:6px;}
@@ -281,18 +296,45 @@ body{
 </div>
 
 <main class="page">
-  <div class="updated-bar">
-    <span class="ul">Last updated <strong id="updatedAt">—</strong></span>
-    <div class="updated-right">
-      <span class="res-count"><strong id="shownCount">—</strong> listings shown</span>
+  <aside class="sidebar" aria-label="Filters">
+    <div class="sb-head">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M20 7h0M4 12h4M14 12h6M4 17h10M20 17h0"/><circle cx="17" cy="7" r="2"/><circle cx="11" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg>
+      <div><div class="sb-title">Filters</div><div class="sb-sub">Narrow your search</div></div>
     </div>
-  </div>
-  <div id="feed"></div>
-  <div id="empty">
-    <div class="ei">🔍</div>
-    <p class="et">No listings match</p>
-    <p class="es">Adjust your filters or clear search.</p>
-  </div>
+    <label class="sb-label" for="companySel">Company</label>
+    <select class="sb-select" id="companySel"><option value="all">All companies</option></select>
+    <label class="sb-label" for="expSel">Experience</label>
+    <select class="sb-select" id="expSel">
+      <option value="all">All Levels</option>
+      <option value="fresher">Fresher / entry (0 yrs min)</option>
+      <option value="1-2">1-2 years</option>
+      <option value="3+">3+ years</option>
+      <option value="unspecified">Not specified</option>
+    </select>
+    <label class="sb-label" for="srcSel">Source</label>
+    <select class="sb-select" id="srcSel"><option value="all">All sources</option></select>
+    <label class="sb-label" for="postedSel">Posted within</label>
+    <select class="sb-select" id="postedSel"></select>
+    <label class="sb-toggle" for="remoteChk">
+      <span><div class="tt">Remote Only</div><div class="ts">Show fully remote roles</div></span>
+      <input type="checkbox" id="remoteChk">
+    </label>
+    <button type="button" class="sb-reset" id="sbReset">Reset filters</button>
+  </aside>
+  <section class="content">
+    <div class="updated-bar">
+      <span class="ul">Last updated <strong id="updatedAt">—</strong></span>
+      <div class="updated-right">
+        <span class="res-count"><strong id="shownCount">—</strong> listings shown</span>
+      </div>
+    </div>
+    <div id="feed"></div>
+    <div id="empty">
+      <div class="ei">🔍</div>
+      <p class="et">No listings match</p>
+      <p class="es">Adjust your filters or clear search.</p>
+    </div>
+  </section>
 </main>
 
 <script>
@@ -515,6 +557,11 @@ function getFiltered(){
   return JOBS.filter(j => {
     if(domF    !== 'all' && j.domain !== domF) return false;
     if(tierF   !== 'all' && getTier(j.company) !== tierF) return false;
+	if(companyF !== 'all' && j._co  !== companyF) return false;
+    if(srcF     !== 'all' && j._src !== srcF)     return false;
+    if(!expMatch(j, expF))                        return false;
+    if(!postedMatch(j, postedF))                  return false;
+    if(remoteF && !j._remote)                     return false;  
     if(statusF === 'all' && isInvalid(j)) return false;
     if(statusF !== 'all' && normStatus(j) !== statusF.toLowerCase()) return false;
     if(searchQ){
@@ -676,6 +723,103 @@ document.getElementById('feed').addEventListener('click', e => {
   render();
 });
 
+// ───────── Sidebar filters ─────────
+let companyF='all', expF='all', srcF='all', postedF='any', remoteF=false;
+
+const SRC_LABEL = {
+  linkedin:'LinkedIn', linkedin_post:'LinkedIn / Google posts', naukri:'Naukri', workday:'Workday',
+  greenhouse:'Greenhouse', lever:'Lever', ashby:'Ashby', workable:'Workable', amazon:'Amazon Jobs',
+  oracle_hcm:'Oracle HCM', oracle:'Oracle', atlassian:'Atlassian', eightfold:'Eightfold',
+  builtin_bengaluru:'Built In', hn_hiring:"HN Who's Hiring"
+};
+const REMOTE_RE = /\b(?:remote|work[\s-]?from[\s-]?home|wfh)\b/i;
+const EXP_KEYWORD_RE = /\b(?:intern(?:ship)?s?|apprentice(?:ship)?|trainee|freshers?|entry[\s-]?level|graduate\s+trainee)\b/i;
+const POSTED_OPTS = [['any','Any time'],['1','Today or yesterday'],['3','Last 3 days'],['7','Last 7 days'],['14','Last 14 days'],['30','Last 30 days']];
+
+function parseExp(j){
+  const txt = String(j.experience_required || '');
+  let m = txt.match(/(\d{1,2})\s*(?:\+\s*)?(?:-|–|to)\s*(\d{1,2})\s*\+?\s*(?:years?|yrs?)/i);
+  if(m) return {min:+m[1], max:+m[2]};
+  m = txt.match(/(\d{1,2})\s*\+?\s*(?:years?|yrs?)/i);
+  if(m) return {min:+m[1], max:/\+/.test(m[0]) ? null : +m[1]};
+  m = String(j.apply_url || '').toLowerCase().match(/-(\d{1,2})-to-(\d{1,2})-years/);   // naukri url slug
+  if(m) return {min:+m[1], max:+m[2]};
+  if(EXP_KEYWORD_RE.test(`${j.job_title || ''} ${txt}`)) return {min:0, max:0};
+  return null;
+}
+function expMatch(j, f){
+  if(f === 'all') return true;
+  const e = j._exp;
+  if(f === 'unspecified') return !e;
+  if(!e) return false;
+  if(f === 'fresher') return e.min === 0;
+  if(f === '1-2') return e.min >= 1 && e.min <= 2;
+  if(f === '3+') return e.min >= 3;
+  return true;
+}
+function ageDays(j){
+  const d = String(j.posted_date || '').slice(0, 10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  const n = new Date(), today = Date.UTC(n.getFullYear(), n.getMonth(), n.getDate());
+  return Math.max(0, Math.round((today - Date.parse(d + 'T00:00:00Z')) / 864e5));
+}
+function postedMatch(j, f){ return f === 'any' || (j._age != null && j._age <= +f); }
+function isRemoteJob(j){
+  if(j.is_remote === true) return true;
+  const text = `${j.job_title || ''} ${j.summary || ''}`
+    .replace(/\bremote\s+(?:access|desktop|support|control|monitoring|administration)\b/gi, '');
+  return REMOTE_RE.test(text) && !/\bhybrid\b/i.test(text);
+}
+
+JOBS.forEach(j => {
+  j._co = stripTier(j.company).trim().toLowerCase();
+  j._src = String(j.source || '').toLowerCase();
+  j._exp = parseExp(j);
+  j._age = ageDays(j);
+  j._remote = isRemoteJob(j);
+});
+
+const companySel = document.getElementById('companySel');
+const expSel = document.getElementById('expSel');
+const srcSel = document.getElementById('srcSel');
+const postedSel = document.getElementById('postedSel');
+const remoteChk = document.getElementById('remoteChk');
+
+function fillSelect(sel, entries){
+  entries.forEach(([v, l]) => {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = l; sel.appendChild(o);
+  });
+}
+(function buildFilterOptions(){
+  const live = JOBS.filter(j => !isInvalid(j));
+  const co = new Map(), src = new Map();
+  live.forEach(j => {
+    if(j._co){
+      const e = co.get(j._co) || {name: stripTier(j.company).trim(), n: 0};
+      e.n++; co.set(j._co, e);
+    }
+    src.set(j._src, (src.get(j._src) || 0) + 1);
+  });
+  fillSelect(companySel, [...co.entries()]
+    .sort((a, b) => b[1].n - a[1].n || a[1].name.localeCompare(b[1].name))
+    .map(([k, e]) => [k, `${e.name} (${e.n})`]));
+  fillSelect(srcSel, [...src.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => [k, `${SRC_LABEL[k] || k} (${n})`]));
+  fillSelect(postedSel, POSTED_OPTS);
+})();
+
+companySel.addEventListener('change', e => { companyF = e.target.value; render(); });
+expSel.addEventListener('change',     e => { expF     = e.target.value; render(); });
+srcSel.addEventListener('change',     e => { srcF     = e.target.value; render(); });
+postedSel.addEventListener('change',  e => { postedF  = e.target.value; render(); });
+remoteChk.addEventListener('change',  e => { remoteF  = e.target.checked; render(); });
+document.getElementById('sbReset').addEventListener('click', () => {
+  companyF = expF = srcF = 'all'; postedF = 'any'; remoteF = false;
+  companySel.value = expSel.value = srcSel.value = 'all'; postedSel.value = 'any'; remoteChk.checked = false;
+  render();
+});	
 render();
 </script>
 </body>
