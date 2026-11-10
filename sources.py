@@ -2113,7 +2113,7 @@ def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
                 "company": company_name,
                 "location": location or ("Remote" if telecommuting else "India"),
                 "job_url": job_url,
-                "description" = description,
+                "description": description,
                 "date_posted": date_posted,
                 "source": "workable",
             })
