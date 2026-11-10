@@ -1080,6 +1080,25 @@ def fetch_linkedin_description(job_url: str) -> str:
 
 
 
+
+def _interleave_by_source(listings: list) -> list:
+    """Round-robin across sources so LinkedIn can't use the whole daily token budget first."""
+    buckets: dict[str, list] = {}
+    for l in listings:
+        key = str(l.get("source") or "?").lower() + ("/remote" if l.get("is_remote") else "")
+        buckets.setdefault(key, []).append(l)
+    n = len(buckets)
+    ordered: list = []
+    while buckets:
+        for key in list(buckets):
+            ordered.append(buckets[key].pop(0))
+            if not buckets[key]:
+                del buckets[key]
+    logger.info("Scoring order: round-robin across %d source buckets", n)
+    return ordered
+
+
+
 # =============================================================================
 
 
@@ -1129,7 +1148,7 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
     if not deduped:
         logger.info("Nothing left after deduplication")
         return []
-
+    deduped = _interleave_by_source(deduped)
     scored, rejected = [], []
     delay = float(os.environ.get("GROQ_SCORE_DELAY_SEC", "8"))
     logger.info("Scoring %d unique listings via Groq...", len(deduped))
