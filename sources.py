@@ -680,7 +680,7 @@ LINKEDIN_EXTRA_TERMS = [
 LINKEDIN_PLAN = [
     # (jobspy location, remote only, terms)
     ("Bengaluru/Bangalore, Karnataka, India", False, LINKEDIN_TERMS + LINKEDIN_EXTRA_TERMS),
-    ("India", True, LINKEDIN_CORE_TERMS),
+    ("India", True, [f'{t} (remote OR "work from home")' for t in LINKEDIN_CORE_TERMS]),
 ]
 
 LINKEDIN_POST_QUERIES = [
@@ -1725,9 +1725,11 @@ def _scrape_linkedin() -> list[dict]:
             n += 1
             logger.info("  [%d/%d] %s | %s…", n, total_terms, label, term[:50])
             batch = _run_scrape(["linkedin"], term, {"location": location, "is_remote": remote})
+            _REMOTE_RE = re.compile(r"\b(?:remote|work\s+from\s+home|wfh)\b", re.I)
             if remote:
                 for r in batch:
-                    r["is_remote"] = True
+                    if _REMOTE_RE.search(f"{r.get('title','')} {r.get('location','')}"):
+                        r["is_remote"] = True
             new = [r for r in batch if r["job_url"] not in seen]
             for r in new:
                 seen.add(r["job_url"])
