@@ -186,4 +186,16 @@ def location_ok(location) -> bool:
     if _OTHER_CITY.search(loc):
         return False
     return bool(_re.search(r"\b(?:india|karnataka|telangana)\b", loc))
- 
+
+RULES_VERSION = "2026-11-10a"     # bump this when rules change: scored_log rows from older versions are evaluated again
+
+_ALLOWED_RE = _re.compile(r"\b(?:" + "|".join(ALLOWED_CITIES) + r")\b", _re.I)
+_REMOTE_RE = _re.compile(r"\b(?:remote|work\s+from\s+home|wfh)\b", _re.I)
+
+
+def title_location_ok(title) -> bool:
+    """False when the TITLE itself names another city ("... Internships in Chennai") and not Bengaluru or remote."""
+    t = str(title or "")
+    if _ALLOWED_RE.search(t) or _REMOTE_RE.search(t):
+        return True
+    return not _OTHER_CITY.search(t)
