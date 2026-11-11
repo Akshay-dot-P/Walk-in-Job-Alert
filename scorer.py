@@ -266,6 +266,7 @@ HARD_JUNK = _rx(
     r"supply\s+chain|p&c|litigation|capital\s+markets?|regulatory\s+reporting|wealth|equity|investment|"
     r"audit\s+assistant|middle\s+office|securities|security\s+(?:master|valuations?)|slp|loss\s+prevention|"
     r"physical\s+security|guard|watchman|facility|facilities|patrol|bouncer|armed|"
+    r"account\s+executives?|pre[\s-]?sales|insurance|financial\s+(?:security\s+)?advis\w+|bids?\s*(?:&|and)\s*proposals?|"
     r"cpu|gpu|hpc|asic|vlsi|rtl|fpga|silicon|semiconductor|firmware|embedded|hardware|network\s+transport)\b")
 SOFT_JUNK = _rx(
     r"\b(?:software|developer|sde|sdet|full[\s-]?stack|front[\s-]?end|back[\s-]?end|web|android|ios|java|"
@@ -278,7 +279,7 @@ SOFT_JUNK_EXEMPT = _rx(r"appsec|pentest\w*|penetration|vapt|ethical\s+hack\w*|re
 HOSPITALITY = _rx(r"marriott|hilton|hyatt|ritz|radisson|sheraton|taj\b|itc\s+hotels|accor|oberoi|leela|lemon\s+tree")
 
 # your exclusions (each returns "junk:<name>" so the audit shows which one fired)
-LANG_JUNK = _rx(r"\b(?:french|spanish|german|italian|dutch|portuguese|japanese|mandarin|cantonese|chinese|korean|arabic|"
+LANG_JUNK = _rx(r"\b(?:bilingual|french|spanish|german|italian|dutch|portuguese|japanese|mandarin|cantonese|chinese|korean|arabic|"
                 r"hebrew|russian|polish|turkish|swedish|danish|norwegian|finnish|thai|vietnamese|bahasa|indonesian|nordic)\b"
                 r"|\b(?!english\b|kannada\b|hindi\b)[a-z]+\s+speaking\b")
 HW_SOC = _rx(r"\bsoc\b.*\b(?:logic|design|verification|validation|functional|silicon|rtl|dft|bring[\s-]?up|physical|hardware|firmware|asic|fpga)\b"
