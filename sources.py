@@ -606,13 +606,7 @@ LINKEDIN_TERMS = [
     qf('"SEBI compliance analyst" OR "IRDAI compliance" OR "PDPB analyst"'),
     qf('"data governance analyst" OR "compliance monitoring analyst"'),
     # Fraud / AML / KYC
-    qf('"fraud analyst" OR "fraud detection analyst" OR "fraud prevention analyst"'),
-    qf('"AML analyst" OR "anti-money laundering analyst" OR "transaction monitoring analyst"'),
-    qf('"sanctions analyst" OR "UBO analyst" OR "customer due diligence analyst"'),
-    # Privacy
-    qf('"data privacy analyst" OR "privacy analyst" OR "DPO support"'),
-    qf('"data protection analyst" OR "GDPR analyst" OR "PDPB compliance analyst"'),
-    qf('"privacy compliance analyst" OR "CIPP" OR "consent management analyst"'),
+ 
     # Malware / Forensics
     qf('"malware analyst" OR "malware researcher" OR "sandbox analyst"'),
     qf('"reverse engineer" OR "binary analysis analyst" OR "memory forensics analyst"'),
@@ -661,8 +655,7 @@ LINKEDIN_CORE_TERMS = [
     qf('"IAM analyst" OR "IAM engineer" OR "SailPoint" OR "CyberArk" OR "Okta" OR "PAM analyst"'),
     qf('"GRC analyst" OR "IT audit" OR "IT auditor" OR "ITGC" OR "SOX"'),
     qf('"risk analyst" OR "technology risk" OR "operational risk" OR "third party risk"'),
-    qf('"compliance analyst" OR "data privacy analyst" OR "privacy analyst"'),
-    qf('"fraud analyst" OR "AML analyst" OR "sanctions analyst" OR "fraud operations"'),
+    qf('"compliance analyst"'),
     qf('"network engineer" OR "NOC engineer" OR "network operations" OR "network administrator"'),
     qi('"cybersecurity intern" OR "security intern" OR "SOC intern" OR "GRC intern"'),
 ]
@@ -698,8 +691,6 @@ LINKEDIN_POST_QUERIES = [
     "site:linkedin.com bangalore cloud security AWS GCP fresher hiring",
     "site:linkedin.com bangalore risk analyst compliance fresher opening",
     "site:linkedin.com bangalore IT audit CISA fresher hiring",
-    "site:linkedin.com bangalore AML KYC fraud analyst fresher hiring",
-    "site:linkedin.com bangalore data privacy GDPR analyst fresher",
     "site:linkedin.com bangalore incident response DFIR analyst fresher",
     "site:linkedin.com bangalore threat intelligence CTI analyst fresher",
     "site:linkedin.com bangalore DevSecOps appsec engineer fresher",
@@ -713,7 +704,6 @@ LINKEDIN_POST_QUERIES = [
     "site:linkedin.com cloud security intern bangalore",
     "site:linkedin.com network security intern bangalore",
     "site:linkedin.com VAPT intern bangalore hiring",
-    "site:linkedin.com fraud KYC AML intern bangalore",
     "site:linkedin.com threat intelligence intern bangalore",
     "site:linkedin.com data privacy intern bangalore",
     "site:linkedin.com appsec DevSecOps intern bangalore",
@@ -741,7 +731,6 @@ LINKEDIN_POST_QUERIES = [
    "site:naukri.com information security analyst bangalore junior",
    "site:naukri.com cloud security engineer bangalore fresher",
    "site:naukri.com VAPT penetration tester bangalore",
-   "site:naukri.com KYC AML fraud analyst bangalore fresher",
    "site:naukri.com IT audit risk analyst bangalore",
    "site:naukri.com cybersecurity intern bangalore stipend",
    "site:naukri.com security engineer bangalore 0-3 years",
@@ -1725,11 +1714,9 @@ def _scrape_linkedin() -> list[dict]:
             n += 1
             logger.info("  [%d/%d] %s | %s…", n, total_terms, label, term[:50])
             batch = _run_scrape(["linkedin"], term, {"location": location, "is_remote": remote})
-            _REMOTE_RE = re.compile(r"\b(?:remote|work\s+from\s+home|wfh)\b", re.I)
             if remote:
                 for r in batch:
-                    if _REMOTE_RE.search(f"{r.get('title','')} {r.get('location','')}"):
-                        r["is_remote"] = True
+                    r["is_remote"] = True
             new = [r for r in batch if r["job_url"] not in seen]
             for r in new:
                 seen.add(r["job_url"])
@@ -2172,7 +2159,7 @@ NAUKRI_TERMS = [
     "siem analyst", "splunk analyst",
     "cloud security", "application security",
     "iam analyst", "grc analyst", "it audit", "compliance analyst",
-    "risk analyst", "fraud analyst", "aml analyst",
+    "risk analyst",
     "soc intern", "cybersecurity intern", "security intern",
     "network engineer", "noc engineer", "iam engineer", "sailpoint", "cyberark",
     "internal audit", "ai red team",
@@ -2360,7 +2347,7 @@ def _epoch_date(ts) -> str:
 
 # ── Amazon (public search.json behind amazon.jobs) ───────────────────────
 AMAZON_SEARCH_URL = "https://www.amazon.jobs/en/search.json"
-AMAZON_CITIES  = ("Bengaluru", "Hyderabad", "Pune")   # Amazon's city filter is exact: "Bangalore" returns nothing
+AMAZON_CITIES  = ("Bengaluru")   # Amazon's city filter is exact: "Bangalore" returns nothing
 AMAZON_QUERIES = [
     "security analyst", "cyber security", "information security", "SOC", "security engineer",
     "vulnerability", "penetration", "application security", "cloud security",
@@ -2768,6 +2755,103 @@ def _scrape_security_feeds() -> list[dict]:
 
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# REMOTE JOB BOARDS: Remotive, Himalayas, RemoteOK (public JSON, no key)
+# Each board asks for a link back to the job, which the stored job_url already is.
+# ═══════════════════════════════════════════════════════════════════════
+REMOTE_TITLE_RE = re.compile(
+    r"\b(?:security|cyber\w*|infosec|soc|siem|iam|identity|grc|compliance|audit\w*|privacy|threat|vulnerabilit\w*|"
+    r"pentest\w*|penetration|appsec|fraud|detection|incident|forensic\w*|risk)\b", re.I)
+_REMOTE_OK_RE = re.compile(r"worldwide|anywhere|global|\bapac\b|\basia\b|any\s+location|open\s+to\s+all|\bindia\b", re.I)
+
+
+def _remote_loc_ok(loc) -> bool:
+    s = str(loc or "").strip()
+    return (not s) or bool(_REMOTE_OK_RE.search(s))
+
+
+def _remote_record(title, company, loc, url, desc, date, source) -> dict:
+    return {
+        "title": str(title or "").strip(), "company": str(company or "").strip(),
+        "location": f"Remote ({str(loc or '').strip() or 'Worldwide'})", "is_remote": True,
+        "job_url": str(url or "").strip(), "description": _html_to_text(desc)[:4000],
+        "date_posted": str(date or "")[:10], "source": source,
+    }
+
+
+def _scrape_remotive() -> list[dict]:
+    try:
+        r = requests.get("https://remotive.com/api/remote-jobs", headers=_JSON_HEADERS, timeout=30)
+        jobs = (r.json() or {}).get("jobs", []) if r.status_code == 200 else []
+    except (requests.RequestException, ValueError):
+        return []
+    out = []
+    for j in jobs:                                   # one call, filtered here (the API allows about 2 requests a minute)
+        if REMOTE_TITLE_RE.search(str(j.get("title") or "")) and _remote_loc_ok(j.get("candidate_required_location")):
+            out.append(_remote_record(j.get("title"), j.get("company_name"), j.get("candidate_required_location"),
+                                      j.get("url"), j.get("description"), j.get("publication_date"), "remotive"))
+    logger.info("Remotive: %d/%d kept", len(out), len(jobs))
+    return out
+
+
+def _scrape_himalayas() -> list[dict]:
+    out, seen = [], set()
+    for q in ("security", "cyber", "soc analyst", "grc compliance", "fraud", "identity access"):
+        try:
+            r = requests.get("https://himalayas.app/jobs/api/search",
+                             params={"q": q, "country": "IN", "sort": "recent", "page": 1},
+                             headers=_JSON_HEADERS, timeout=30)
+            data = r.json() if r.status_code == 200 else {}
+        except (requests.RequestException, ValueError):
+            continue
+        for j in (data.get("jobs") or []):
+            url = j.get("applicationLink") or j.get("guid") or ""
+            if not url or url in seen or not REMOTE_TITLE_RE.search(str(j.get("title") or "")):
+                continue
+            restr = j.get("locationRestrictions") or []
+            loc = ", ".join(map(str, restr)) if isinstance(restr, list) else str(restr)
+            if not _remote_loc_ok(loc):
+                continue
+            seen.add(url)
+            out.append(_remote_record(j.get("title"), j.get("companyName"), loc, url,
+                                      j.get("description") or j.get("excerpt"), _epoch_date(j.get("pubDate")), "himalayas"))
+        time.sleep(1.5)
+    logger.info("Himalayas: %d kept", len(out))
+    return out
+
+
+def _scrape_remoteok() -> list[dict]:
+    try:
+        r = requests.get("https://remoteok.com/api", headers=_JSON_HEADERS, timeout=30)
+        rows = r.json() if r.status_code == 200 else []
+    except (requests.RequestException, ValueError):
+        return []
+    out = []
+    for j in rows:
+        if not isinstance(j, dict) or not j.get("position"):          # first element is a legal notice
+            continue
+        tags = " ".join(map(str, j.get("tags") or []))
+        if not REMOTE_TITLE_RE.search(f"{j.get('position')} {tags}") or not _remote_loc_ok(j.get("location")):
+            continue
+        out.append(_remote_record(j.get("position"), j.get("company"), j.get("location"), j.get("url") or j.get("apply_url"),
+                                  j.get("description"), j.get("date") or _epoch_date(j.get("epoch")), "remoteok"))
+    logger.info("RemoteOK: %d/%d kept", len(out), len(rows))
+    return out
+
+
+def _scrape_remote_boards() -> list[dict]:
+    logger.info("=== Remote boards: Remotive, Himalayas, RemoteOK ===")
+    results: list[dict] = []
+    for fn in (_scrape_remotive, _scrape_himalayas, _scrape_remoteok):
+        try:
+            results.extend(fn())
+        except Exception as exc:
+            logger.warning("%s failed: %s", fn.__name__, exc)
+        time.sleep(2)
+    logger.info("Remote boards: %d jobs", len(results))
+    return results
+
+
 
 
 
@@ -2782,7 +2866,6 @@ def gather_all_listings() -> list[dict]:
         ("Workday",        _scrape_workday),
         ("Greenhouse",     _scrape_greenhouse),       # ← ACTIVE
         ("Lever",          _scrape_lever), 
-        ("HN Hiring",      _scrape_hn_hiring),
         ("Ashby",          _scrape_ashby),       # ← NEW: Ashby public API
         ("Workable",       _scrape_workable),
         ("JobRadar boards", _scrape_jobradar), 
@@ -2791,7 +2874,7 @@ def gather_all_listings() -> list[dict]:
         ("Security feeds",    _scrape_security_feeds),
         ("Oracle HCM",        _scrape_oracle_hcm),
         ("BuiltIn",           _scrape_builtin),
-      
+        ("Remote boards", _scrape_remote_boards),
       
     ]
 
