@@ -2009,11 +2009,8 @@ def _scrape_ashby_company(company_slug: str) -> list[dict]:
             published_at = str(job.get("publishedAt") or "").strip()
             date_posted = published_at[:10] if published_at else ""
  
-            description = str(
-                job.get("descriptionPlain")
-                or job.get("descriptionHtml")
-                or ""
-            )[:1200]
+          
+            description = _html_to_text(job.get("descriptionPlain") or job.get("descriptionHtml"))[:4000]
  
             results.append({
                 "title": title,
