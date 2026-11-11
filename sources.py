@@ -56,6 +56,29 @@ WORKDAY_TITLE_KEYWORDS = (
 
 JOBRADAR_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
+def _detail_locations(payload: dict) -> list[str]:
+    info = payload.get("jobPostingInfo", {}) if isinstance(payload, dict) else {}
+    out = []
+    for v in [info.get("location")] + list(info.get("additionalLocations") or []):
+        if isinstance(v, str) and v.strip():
+            out.append(v.strip())
+    return out
+
+
+async def _fetch_workday_detail(client, jobs_url, company_name, posting):
+    raw_ext = str(posting.get("externalPath") or "").strip()
+    fallback = str(posting.get("description") or "")
+    detail_url = _workday_detail_json_url(jobs_url, raw_ext) if raw_ext else ""
+    if not detail_url:
+        return fallback, []
+    try:
+        r = await client.get(detail_url)
+        if r.status_code == 200 and (r.text or "").strip():
+            payload = json.loads(r.text)
+            return (_extract_detail_description(payload) or fallback), _detail_locations(payload)
+    except Exception:
+        pass
+    return fallback, []
 
 def _jr_to_record(j: dict) -> dict:
     """jobradar schema -> your schema (job_url, date_posted as YYYY-MM-DD)."""
@@ -1232,11 +1255,16 @@ async def _scrape_workday_company(
     filtered = filter_workday_jobs(
         records, title_keywords=title_keywords, allowed_locations=allowed_locations,
     )
+    kept = []
     for rec in filtered:
-        rec["description"] = await _fetch_workday_job_description(
-            client=client, jobs_url=jobs_url, company_name=company_name,
-            posting=rec.pop("_posting"),
-        )
+        desc, locs = await _fetch_workday_detail(client, jobs_url, company_name, rec.pop("_posting"))
+        rec["description"] = desc
+        if locs:
+            if not any(location_ok(x) for x in locs):
+                continue                         # "3 Locations" posts whose real locations are all outside Bengaluru
+            rec["location"] = " | ".join(locs)
+        kept.append(rec)
+    filtered = kept
     logger.info("%s: %d jobs found (filtered)", company_name, len(filtered))
     return filtered
 
@@ -2347,7 +2375,7 @@ def _epoch_date(ts) -> str:
 
 # ── Amazon (public search.json behind amazon.jobs) ───────────────────────
 AMAZON_SEARCH_URL = "https://www.amazon.jobs/en/search.json"
-AMAZON_CITIES  = ("Bengaluru")   # Amazon's city filter is exact: "Bangalore" returns nothing
+AMAZON_CITIES  = ("Bengaluru",)   # Amazon's city filter is exact: "Bangalore" returns nothing
 AMAZON_QUERIES = [
     "security analyst", "cyber security", "information security", "SOC", "security engineer",
     "vulnerability", "penetration", "application security", "cloud security",
