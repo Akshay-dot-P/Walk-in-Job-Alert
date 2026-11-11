@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import gspread
 from google.oauth2.service_account import Credentials
 
-from config import SHEET_COLUMNS
+from config import SHEET_COLUMNSfrom config import SHEET_COLUMNS, RULES_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -213,17 +213,40 @@ def _is_duplicate(listing, seen_urls, seen_company_titles, seen_job_ids) -> bool
     return bool(key and key in seen_company_titles)
 
 
+SEEN_HEADER = ["url", "score", "title", "logged_at", "rules_v"]
+
+
 def _get_seen_tab(spreadsheet):
     try:
-        return spreadsheet.worksheet(SEEN_TAB)
+        tab = spreadsheet.worksheet(SEEN_TAB)
+        if tab.col_count < len(SEEN_HEADER):
+            tab.resize(cols=len(SEEN_HEADER))
+        if (tab.acell("E1").value or "") != "rules_v":
+            tab.update(range_name="E1", values=[["rules_v"]])
+        return tab
     except gspread.WorksheetNotFound:
-        tab = spreadsheet.add_worksheet(title=SEEN_TAB, rows=2000, cols=4)
-        tab.update(range_name="A1", values=[["url", "score", "title", "logged_at"]])
+        tab = spreadsheet.add_worksheet(title=SEEN_TAB, rows=2000, cols=len(SEEN_HEADER))
+        tab.update(range_name="A1", values=[SEEN_HEADER])
         return tab
 
+def _known_from_tab(tab) -> set[str]:
+    """Only rows written under the CURRENT rules version count as known. Older rows are evaluated again."""
+    known = set()
+    for row in tab.get_all_values()[1:]:
+        if len(row) > 4 and row[0].strip() and row[4].strip() == RULES_VERSION:
+            known.add(normalize_url(row[0]))
+    return known
+
+def _append_seen(tab, entries) -> int:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    rows = [[normalize_url(u), str(s), str(t)[:80], now, RULES_VERSION] for u, s, t in entries if normalize_url(u)]
+    for i in range(0, len(rows), 200):
+        tab.append_rows(rows[i:i + 200], value_input_option="RAW")
+    return len(rows)
+    
 
 def load_known_urls() -> set[str]:
-    """Every URL already saved in the sheet plus every URL in the scored_log tab."""
+    """Every URL already saved in the sheet plus every scored_log URL from the current rules version."""
     known: set[str] = set()
     try:
         ws = get_worksheet()
@@ -233,10 +256,7 @@ def load_known_urls() -> set[str]:
     seen_urls, _, _ = _build_seen_sets(ws)
     known |= seen_urls
     try:
-        tab = _get_seen_tab(ws.spreadsheet)
-        for row in tab.get_all_values()[1:]:
-            if row and row[0].strip():
-                known.add(normalize_url(row[0]))
+        known |= _known_from_tab(_get_seen_tab(ws.spreadsheet))
     except Exception as e:
         logger.warning("Could not read %s tab: %s", SEEN_TAB, e)
     logger.info("Known URLs for pre-scoring skip: %d", len(known))
@@ -245,15 +265,10 @@ def load_known_urls() -> set[str]:
 
 def log_scored_urls(entries) -> None:
     """entries: (url, score, title) for listings that were scored but NOT saved."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-    rows = [[normalize_url(u), str(s), str(t)[:80], now] for u, s, t in entries if normalize_url(u)]
-    if not rows:
-        return
     ws = get_worksheet()
-    tab = _get_seen_tab(ws.spreadsheet)
-    for i in range(0, len(rows), 200):
-        tab.append_rows(rows[i:i + 200], value_input_option="RAW")
-    logger.info("scored_log: recorded %d URLs", len(rows))
+    n = _append_seen(_get_seen_tab(ws.spreadsheet), entries)
+    if n:
+        logger.info("scored_log: recorded %d URLs", n)
 
 
 def _row_for(listing: dict) -> list[str]:
