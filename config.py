@@ -134,13 +134,12 @@ GROQ_MODEL = "openai/gpt-oss-20b"   # was llama-3.1-8b-instant
     #"score_rule"
 #]
 
-
 SHEET_COLUMNS = [
     "scraped_at", "job_title", "company", "domain", "apply_url", "status", "summary",
     "experience_required", "posted_date", "source", "salary_range",
     "resume_doc_link", "resume_pdf_link", "validation_notes", "keyword_coverage", "keyword_density",
     "total_skills_count", "credibility", "stuffing_suspicion", "hireability", "research_sources",
-    "job_type", "legitimacy_score", "score_rule",
+    "job_type", "legitimacy_score", "score_rule", "location", "work_mode",
 ]
 
 KNOWN_MNCS = [
