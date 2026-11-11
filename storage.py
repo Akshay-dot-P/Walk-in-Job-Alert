@@ -100,7 +100,7 @@ def get_worksheet(sheet_name: str = DEFAULT_SHEET_NAME):
         if data_row_count == 0:
             logger.info("Wrong headers, no data — rewriting headers.")
             worksheet.clear()
-            worksheet.update("A1", [SHEET_COLUMNS])
+            worksheet.update(range_name="A1", values=[SHEET_COLUMNS])
             _set_status_dropdown(worksheet)
         else:
             missing = [c for c in SHEET_COLUMNS if c not in existing_headers]
@@ -321,7 +321,7 @@ def ensure_section_tab(worksheet, headers: list[str]) -> None:
         return
     except gspread.WorksheetNotFound:
         pass
-    tab = spreadsheet.add_worksheet(title=SECTION_TAB, rows=500, cols=max(len(headers), 26))
+    tab = spreadsheet.add_worksheet(title=SECTION_TAB, rows=2000, cols=max(len(headers), 26))
     formula = (f"=QUERY('{worksheet.title}'!A:{_col_letter(max(len(headers), 26))},"
                f"\"select * where {col} is not null and {col} <> 'Job'\",1)")
     tab.update(range_name="A1", values=[[formula]], value_input_option="USER_ENTERED")
