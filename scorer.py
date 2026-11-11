@@ -1133,13 +1133,7 @@ def score_listing(listing: dict, verdict: Verdict | None = None, use_llm: bool =
                 "INTERN" if is_intern else "regular", result["job_title"][:35], result["company"][:25],
                 score, rule, result["experience_required"] or "?", result["domain"])
     return result
-    
-    except json.JSONDecodeError as e:
-        logger.error("JSON error '%s': %s", listing.get("title","?")[:40], e)
-        return None
-    except Exception as e:
-        logger.error("Error '%s': %s", listing.get("title","?")[:40], e)
-        return None
+ 
 
 
 
