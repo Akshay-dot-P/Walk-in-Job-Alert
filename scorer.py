@@ -1254,11 +1254,6 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
     logger.info("Scoring %d unique listings via Groq...", len(deduped))
 
     for i, listing in enumerate(deduped):
-        if all(m in _EXHAUSTED for m in GROQ_MODELS):
-            logger.warning("All models are at the daily limit, %d listings left unscored", len(deduped) - i)
-            for rest in deduped[i:]:
-                _audit("unscored", "all Groq models at daily limit", rest)
-            break
         url = listing.get("job_url") or listing.get("url") or ""
         title = sanitize(listing.get("title", ""))
 
@@ -1271,16 +1266,21 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
         verdict = evaluate(listing)
         listing["job_type"] = verdict.job_type
         if not verdict.keep:
-            logger.info("  RULES reject (%s): %s", verdict.reason, title[:55])
+            snippet = f" [{verdict.exp_src}]" if verdict.reason.startswith("experience") and verdict.exp_src else ""
+            logger.info("  RULES reject (%s)%s: %s", verdict.reason, snippet, title[:55])
+            _audit("rules_after_fetch", verdict.reason + snippet, listing)
             rejected.append((url, 1, title))
             continue
 
-        logger.info("Scoring %d/%d: %s", i + 1, len(deduped), title[:55])
-        result = score_listing(listing)
-        time.sleep(delay)          # after EVERY call: dropped listings use tokens too
+        llm_ok = not all(m in _EXHAUSTED for m in GROQ_MODELS)
+        logger.info("Scoring %d/%d: %s%s", i + 1, len(deduped), title[:55],
+                    "" if llm_ok else " (rules only, Groq quota used up)")
+        result = score_listing(listing, verdict, use_llm=llm_ok)
+        if llm_ok:
+            time.sleep(delay)
 
         if result is None:
-            _audit("score_error", "AI call/JSON failed (see error log)", listing)
+            _audit("score_error", "scoring failed (see error log)", listing)
             continue
         if result["legitimacy_score"] < min_score:
             logger.info("  -> Dropped score=%d", result["legitimacy_score"])
