@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import gspread
 from google.oauth2.service_account import Credentials
 
-from config import SHEET_COLUMNSfrom config import SHEET_COLUMNS, RULES_VERSION
+from config import SHEET_COLUMNS, RULES_VERSION
 
 logger = logging.getLogger(__name__)
 
