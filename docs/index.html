@@ -394,7 +394,14 @@ function jobKey(j){ return (j.apply_url || `${j.company || ''}|${j.job_title || 
 function normStatus(j){ return (j.status || '').trim().toLowerCase(); }
 function isApplied(j){ return normStatus(j) === 'applied'; }
 function isInvalid(j){ return normStatus(j) === 'invalid'; }
-function isNewJob(j){ return !isApplied(j) && !isInvalid(j) && j._idx >= newCutoff; }
+const NEW_WINDOW_HOURS = 48;
+function isFresh(j){
+  const s = String(j.scraped_at || '').trim();
+  const t = s ? Date.parse(s.replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? '' : 'Z')) : NaN;
+  if(!isNaN(t)) return (Date.now() - t) <= NEW_WINDOW_HOURS * 3600e3;
+  return j._idx >= newCutoff;                    // no scraped_at in the data: use sheet order
+}
+function isNewJob(j){ return !isApplied(j) && !isInvalid(j) && isFresh(j); }
 function looksLikeDirectoryListing(j){
   const title = (j.job_title || '').trim(), summary = (j.summary || '').trim();
   if(/^\d[\d,]*\+?\s+.*\binternships\b/i.test(title) || /^\d[\d,]*\+?\s+.*\binternships\b/i.test(summary)) return true;
@@ -543,6 +550,7 @@ function buildCard(j, animIdx){
 }
 
 const SECTIONS = [
+  { id:'fresh', label:'Newly added', sub:'— from the latest runs', test: j => isNewJob(j) },
   { id:'top',    label:'Top Matches',       sub:'— Excellent fit',        test: j => (j.hireability||0) >= 5.5 },
   { id:'strong', label:'Strong Matches',    sub:'— Good fit, some gaps',  test: j => (j.hireability||0) >= 4 && (j.hireability||0) < 5.5 },
   { id:'maybe',  label:'Potential Matches', sub:'— Worth exploring',       test: j => (j.hireability||0) >= 2.5 && (j.hireability||0) < 4 },
