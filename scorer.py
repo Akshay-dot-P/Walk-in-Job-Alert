@@ -257,7 +257,7 @@ HAS_ROLE_WORD = _rx(rf"\b(?:{ROLE_WORD})\b")
 HARD_JUNK = _rx(
     r"\b(?:tax(?:ation)?|payroll|accountants?|accounts?\s+(?:payable|receivable)|fp&a|treasury|valuation|"
     r"investment\s+banking|private\s+equity|finance|financial\s+(?:analyst|data|controller|reporting|planning)|"
-    r"human\s+resources?|hr|recruit\w*|talent|marketing|sales|business\s+development|"
+    r"human\s+resources?|hr|recruit\w*|(?<!early\s)talent|marketing|sales|business\s+development|"
     r"customer\s+(?:success|support|service|experience)|learning|training|trainers?|instructor|facilitator|"
     r"tutor|coach|legal|counsel|paralegal|company\s+secretary|articleship|article(?:d)?|chartered|ca|"
     r"pharma\w*|clinical|patient|medical|drug|virology|hotel|resort|chef|restaurant|housekeeping|driver|"
@@ -267,7 +267,7 @@ HARD_JUNK = _rx(
     r"audit\s+assistant|middle\s+office|securities|security\s+(?:master|valuations?)|slp|loss\s+prevention|"
     r"physical\s+security|guard|watchman|facility|facilities|patrol|bouncer|armed|"
     r"account\s+executives?|pre[\s-]?sales|insurance|financial\s+(?:security\s+)?advis\w+|bids?\s*(?:&|and)\s*proposals?|"
-    r"cpu|gpu|hpc|asic|vlsi|rtl|fpga|silicon|semiconductor|firmware|embedded|hardware|network\s+transport)\b")
+    r"cpu|gpu|hpc|asic|vlsi|rtl|fpga|silicon|firmware|hardware|network\s+transport)\b")
 SOFT_JUNK = _rx(
     r"\b(?:software|developer|sde|sdet|full[\s-]?stack|front[\s-]?end|back[\s-]?end|web|android|ios|java|"
     r"data\s+(?:scientist|engineer|science)|machine\s+learning|ml|applied\s+scientist|research\s+scientist|"
@@ -275,7 +275,7 @@ SOFT_JUNK = _rx(
     r"consultant|architect|operations)|solutions?\s+architect|qa|quality|test\s+engineer|production\s+support|"
     r"business\s+intelligence|\bbi\b)\b")
 SOFT_JUNK_EXEMPT = _rx(r"appsec|pentest\w*|penetration|vapt|ethical\s+hack\w*|red\s*team\w*|"
-                       r"security\s+(?:automation|testing|engineer|analyst|tester)\b")
+                       r"security\s+(?:automation|test(?:ing)?|engineer|analyst|tester)\b")
 HOSPITALITY = _rx(r"marriott|hilton|hyatt|ritz|radisson|sheraton|taj\b|itc\s+hotels|accor|oberoi|leela|lemon\s+tree")
 
 # your exclusions (each returns "junk:<name>" so the audit shows which one fired)
@@ -289,6 +289,8 @@ FIN_RISK = _rx(r"\b(?:financial|market|credit|liquidity|counterparty|interest[\s
 FIN_RISK_DESC = _rx(r"\b(?:credit|market|liquidity|counterparty|financial|interest[\s-]rate)\s+risk\b")
 AML_KYC = _rx(r"\b(?:aml|kyc|cdd|edd|odd|ubo|fcrm)\b|anti[\s-]?money|money\s+laundering|\bsanctions?\b|financial\s+crimes?|"
               r"\bfincrime\b|transaction\s+monitoring|customer\s+due\s+diligence")
+HW_WORDS = _rx(r"\b(?:semiconductor|embedded)\b")
+HW_KEEP = _rx(r"\b(?:cyber\w*|security|infosec|vulnerabilit\w*|risk|compliance|audit\w*)\b")
 EXTRA_JUNK = [
     ("field", _rx(r"\bfield\b")),
     ("researcher", _rx(r"\bresearchers?\b")),
@@ -316,7 +318,7 @@ FINANCE_CA_DESC = _rx(r"\b(?:chartered\s+accountants?|icai|cpa|acca|cma|articles
 NAUKRI_RISK = _rx(r"\brisk\b")
 NAUKRI_RISK_KEEP = _rx(r"\b(?:cyber\w*|security|infosec|information|it|technology|tech|grc|isms)\b")
 
-PROFILE_OR_PAGE = _rx(r"^\d[\d,]*\+?\s+\w.*\bjobs?\b|\bjobs?\s+in\s+|log in or sign up|\bsign up\b|join now|"
+PROFILE_OR_PAGE = _rx(r"^\d[\d,]*\+?\s+\w.*\bjobs?\b|\bjobs\s+in\s+|log in or sign up|\bsign up\b|join now|"
                       r"\bcompany profile\b|\bjobs at\b|\bcareers at\b|\s-\s*linkedin$|iimjobs|"
                       r"^\d[\d,]*\+?\s+.*\binternships\b|^\W*(?:the\s+)?numbers to watch")
 BPO_VOICE = _rx(r"\bbpo\b|voice\s+process|inbound|outbound|international\s+voice")
@@ -392,6 +394,9 @@ def evaluate(listing: dict) -> Verdict:
     company = _clean(listing.get("company"))
     url = _clean(listing.get("job_url") or listing.get("url"))
     t = re.sub(r"[_/]+", " ", title.lower())
+    if str(listing.get("source", "")).lower() == "linkedin_post" or "internshala" in t:
+        t = re.sub(r"\s+-\s+internshala.*$", "", t)
+        t = re.split(r"\s+at\s+", t, maxsplit=1)[0]    
 
     jt = classify_job_type(title, desc)
     exp, exp_src = parse_experience_full(title, desc, url)
@@ -426,6 +431,8 @@ def evaluate(listing: dict) -> Verdict:
     for name, rx in EXTRA_JUNK:
         if rx.search(t):
             return out("junk:" + name)
+    if HW_WORDS.search(t) and not HW_KEEP.search(t):
+        return out("junk:hardware")        
     if _business_junk(t):
         return out("junk:business")
     if DEVSECOPS.search(t) and jt != "Internship":
