@@ -1260,9 +1260,10 @@ async def _scrape_workday_company(
         desc, locs = await _fetch_workday_detail(client, jobs_url, company_name, rec.pop("_posting"))
         rec["description"] = desc
         if locs:
-            if not any(location_ok(x) for x in locs):
-                continue                         # "3 Locations" posts whose real locations are all outside Bengaluru
-            rec["location"] = " | ".join(locs)
+            ok_locs = [x for x in locs if location_ok(x)]
+            if not ok_locs:
+                continue
+            rec["location"] = " | ".join(ok_locs)
         kept.append(rec)
     filtered = kept
     logger.info("%s: %d jobs found (filtered)", company_name, len(filtered))
