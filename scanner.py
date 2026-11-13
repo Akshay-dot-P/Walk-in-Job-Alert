@@ -41,6 +41,11 @@ def main():
 
     logger.info("--- PHASE 2: AI Scoring ---")
     scored = score_all(raw_listings, min_score=MIN_LEGITIMACY_SCORE)
+    try:
+        from recruiters import save_contacts_and_targets
+        save_contacts_and_targets(raw_listings)
+    except Exception as exc:
+        logger.warning("Recruiter tabs skipped: %s", exc)    
     if not scored:
         logger.info("No listings passed scoring. Exiting.")
         sys.exit(0)
