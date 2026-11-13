@@ -542,8 +542,15 @@ SR_API = "https://api.smartrecruiters.com/v1/companies/{cid}/postings"
 def _sr_get(url, params=None):
     try:
         r = requests.get(url, params=params, headers=_JSON_HEADERS, timeout=20)
-        return r.json() if r.status_code == 200 else None
-    except (requests.RequestException, ValueError):
+    except requests.RequestException as exc:
+        logger.warning("SmartRecruiters %s: %s", url, type(exc).__name__)
+        return None
+    if r.status_code != 200:
+        logger.warning("SmartRecruiters HTTP %s for %s", r.status_code, url)
+        return None
+    try:
+        return r.json()
+    except ValueError:
         return None
 
 
@@ -977,7 +984,7 @@ def _to_records(df) -> list[dict]:
             "description": str(d.get("description") or ""),
             "date_posted": str(d.get("date_posted") or ""),
             "source":      str(d.get("site") or ""),
-            "emails": _emails_text(d.get("emails") or ""),
+            "emails":      _nk_clean(d.get("emails")),
         })
     return records
 
@@ -1833,7 +1840,7 @@ def _scrape_linkedin() -> list[dict]:
         for term in terms:
             n += 1
             logger.info("  [%d/%d] %s | %s…", n, total_terms, label, term[:50])
-            batch = _run_scrape(["linkedin"], term, {"location": location, "is_remote": remote})
+            batch = _run_scrape(["linkedin"], term, {"location": location})
             if remote:
                 for r in batch:
                     r["is_remote"] = True
@@ -1944,7 +1951,7 @@ def fetch_linkedin_posts() -> list[dict]:
                 len(LINKEDIN_POST_QUERIES))
     results = []
     seen: set = set()
-
+    rejects = Counter()
     for i, query in enumerate(LINKEDIN_POST_QUERIES):
         encoded = query.replace(" ", "+").replace(":", "%3A")
         url = (f"https://news.google.com/rss/search"
@@ -1956,61 +1963,23 @@ def fetch_linkedin_posts() -> list[dict]:
                 link  = entry.get("link", "")
                 title = entry.get("title", "")
                 desc  = entry.get("summary", "") or entry.get("description", "")
-
-                if not link or link in seen:
+                reason = None
+                if not link or link in seen:                reason = "dup_or_empty"
+                elif not _is_valid_post(title, link):       reason = "garbage"
+                elif _is_profile_headline(title):           reason = "profile_headline"
+                elif len(desc.strip()) < 80:                reason = "short_desc"
+                else:
+                    pub = entry.get("published_parsed")
+                    if pub and (time.time() - time.mktime(pub)) / 86400 > MAX_AGE_DAYS:
+                        reason = "too_old"
+                if reason:
+                    rejects[reason] += 1
                     continue
-
-                # ── CHECK 1: URL + title garbage filter (login pages, company pages etc.) ──
-                if not _is_valid_post(title, link):
-                    continue
-
-                # ── CHECK 2: LinkedIn profile URL filter ──
-                # GARBAGE_URL_PATTERNS already includes linkedin.com/in/ so this
-                # is caught by _is_valid_post above, but keeping explicit check
-                # here as belt-and-suspenders in case URL format varies
-                if "linkedin.com/in/" in link.lower():
-                    continue
-
-                # ── CHECK 3: Profile headline title filter ──
-                # Catches profiles that slipped past URL check because they came
-                # from a non /in/ URL (e.g. Google cached version, redirect URL)
-                # Examples caught:
-                #   "Sushmitha Sonkamble - SailPoint IdentityIQ/ISC Certified"
-                #   "Ashish Gangavaram, CISA - LinkedIn"
-                #   "Anand Kumar - Cyber Threat Intelligence @ adidas"
-                if _is_profile_headline(title):
-                    continue
-
-                # ── CHECK 4: Minimum description quality ──
-                # Real job posts have substantive descriptions.
-                # Profile stub pages and login redirects have almost nothing.
-                if len(desc.strip()) < 80:
-                    continue
-
-              
-                # ADDED — 8 lines
-                published = entry.get("published_parsed")
-                if published:
-                    import time as _time
-                    age_days = (_time.time() - _time.mktime(published)) / 86400
-                    if age_days > MAX_AGE_DAYS:
-                        continue
-                # If published_parsed is missing we let it through  
-
-
-              
-                # ── All checks passed — keep this entry ──
                 seen.add(link)
                 valid += 1
-                results.append({
-                    "title":       title,
-                    "company":     "",
-                    "location":    "Bangalore",
-                    "job_url":     link,
-                    "description": f"{title}. {desc[:600]}",
-                    "date_posted": entry.get("published", ""),
-                    "source":      "linkedin_post",
-                })
+                results.append({"title": title, "company": "", "location": "Bangalore", "job_url": link,
+                                "description": f"{title}. {desc[:600]}", "date_posted": entry.get("published", ""),
+                                "source": "linkedin_post"})
 
             logger.info("  [%d/%d] '%s…' → %d valid / %d total",
                         i+1, len(LINKEDIN_POST_QUERIES), query[:45],
@@ -2020,7 +1989,7 @@ def fetch_linkedin_posts() -> list[dict]:
             logger.error("  Posts RSS error: %s", e)
 
         time.sleep(1)
-
+    logger.info("LinkedIn Posts rejected: %s", dict(rejects))
     logger.info("LinkedIn Posts: %d valid posts", len(results))
     return results
 
@@ -2152,91 +2121,37 @@ WORKABLE_ALLOWED_LOCATIONS = ASHBY_ALLOWED_LOCATIONS
  
  
 def _scrape_workable_company(company_name: str, subdomain: str) -> list[dict]:
-    """
-    Workable public job listing API — no authentication required.
-    GET https://www.workable.com/api/accounts/{subdomain}?details=true
-    Returns JSON: {"jobs": [{"title", "location", "url", "created_at", "description"}]}
-    Docs: https://help.workable.com/hc/en-us/articles/4903195036183
-    """
-    url = f"https://www.workable.com/api/accounts/{subdomain}?details=true"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-    }
- 
     try:
-        resp = requests.get(url, headers=headers, timeout=12)
-        if resp.status_code != 200:
-            return []
- 
-        data = resp.json()
-        if not isinstance(data, dict):
-            return []
- 
-        jobs = data.get("jobs", [])
-        if not isinstance(jobs, list):
-            return []
- 
-        results = []
-        for job in jobs:
-            title = str(job.get("title") or "").strip()
- 
-            # Location — Workable flat string or nested dict
-            location_obj = job.get("location") or {}
-            if isinstance(location_obj, dict):
-                city    = str(location_obj.get("city") or "")
-                country = str(location_obj.get("country") or "")
-                region  = str(location_obj.get("region") or "")
-                telecommuting = bool(location_obj.get("telecommuting"))
-                location = ", ".join(filter(None, [city, region, country]))
-            else:
-                location = str(location_obj)
-                telecommuting = False
- 
-            loc_lower = location.lower()
- 
-            # Location filter
-
-            if location and not telecommuting and not location_ok(location): 
-                continue
- 
-            # Title keyword filter
-            title_lower = title.lower()
-            if not any(kw in title_lower for kw in WORKABLE_TITLE_KEYWORDS):
-                continue
- 
-            job_url = str(job.get("url") or job.get("application_url") or job.get("shortlink") or "").strip()
-            if not job_url:
-                job_url = f"https://{subdomain}.workable.com"
- 
-            created_at = str(job.get("created_at") or "").strip()
-            date_posted = created_at[:10] if created_at else ""
- 
-            description = _html_to_text(job.get("description") or job.get("full_description"))[:4000]
- 
-            results.append({
-                "title": title,
-                "company": company_name,
-                "location": location or ("Remote" if telecommuting else "India"),
-                "job_url": job_url,
-                "description": description,
-                "date_posted": date_posted,
-                "source": "workable",
-            })
- 
-        if results:
-            logger.info("  workable/%s: %d security jobs", subdomain, len(results))
-        return results
- 
-    except requests.exceptions.Timeout:
-        logger.debug("workable/%s: Timeout", subdomain)
+        resp = requests.get(f"https://apply.workable.com/api/v1/widget/accounts/{subdomain}",
+                            params={"details": "true"}, headers=_JSON_HEADERS, timeout=15)
+        jobs = (resp.json() or {}).get("jobs") or [] if resp.status_code == 200 else []
+    except (requests.RequestException, ValueError):
         return []
-    except requests.exceptions.RequestException as e:
-        logger.debug("workable/%s: %s", subdomain, type(e).__name__)
-        return []
-    except Exception as e:
-        logger.debug("workable/%s: unexpected %s", subdomain, type(e).__name__)
-        return []
+    out = []
+    for job in jobs:
+        title = str(job.get("title") or "").strip()
+        if not title or not any(kw in title.lower() for kw in WORKABLE_TITLE_KEYWORDS):
+            continue
+        locs = job.get("locations") or []
+        first = locs[0] if locs and isinstance(locs[0], dict) else {}
+        place = ", ".join(x for x in (first.get("city") or job.get("city") or "",
+                                      first.get("region") or job.get("state") or "",
+                                      first.get("country") or job.get("country") or "") if x)
+        country = str(first.get("country") or job.get("country") or "")
+        remote = bool(job.get("telecommuting"))
+        if place and not remote and not location_ok(place):
+            continue
+        out.append({
+            "title": title, "company": company_name, "location": place or ("Remote" if remote else "India"),
+            "is_remote": remote and (not country or country.lower() in ("india", "in")),
+            "job_url": str(job.get("shortlink") or job.get("url") or f"https://apply.workable.com/{subdomain}/"),
+            "description": _html_to_text(job.get("description"))[:4000],
+            "date_posted": str(job.get("published_on") or job.get("created_at") or "")[:10],
+            "source": "workable",
+        })
+    if out:
+        logger.info("  workable/%s: %d security jobs", subdomain, len(out))
+    return out
  
  
 def _scrape_workable() -> list[dict]:
@@ -2371,6 +2286,8 @@ def _naukri_to_records(df, default_location="Bangalore"):
             "description": (prefix + " | ".join(extras) + ". " + desc)[:1500],
             "date_posted": posted,
             "source":      "naukri",
+            "emails":      _nk_clean(d.get("emails")),
+            "tail":        desc[-800:],
         }) 
     return records
   
