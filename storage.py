@@ -146,6 +146,7 @@ def _extract_workday_job_id_from_url(url: str) -> str:
 # SAVE
 # =============================================================================
 SEEN_TAB = "scored_log"
+KNOWN_COMPANY_TITLES: set[str] = set()
 _TRACKING_HOSTS = ("linkedin.com", "naukri.com", "internshala.com", "iimjobs.com")
 _TIER_SUFFIX_RE = re.compile(r"\s*\((?:mnc|startup|mid-tier|unknown)\)\s*$", re.IGNORECASE)
 
@@ -254,6 +255,9 @@ def load_known_urls() -> set[str]:
         logger.warning("Pre-scoring dedup unavailable (sheet): %s", e)
         return known
     seen_urls, _, _ = _build_seen_sets(ws)
+    seen_urls, seen_ct, _ = _build_seen_sets(ws)
+    KNOWN_COMPANY_TITLES.clear()
+    KNOWN_COMPANY_TITLES.update(seen_ct)
     known |= seen_urls
     try:
         known |= _known_from_tab(_get_seen_tab(ws.spreadsheet))
