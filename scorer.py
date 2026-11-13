@@ -12,6 +12,8 @@ from storage import normalize_url, load_known_urls, log_scored_urls
 import time
 import csv
 import html as _html
+import KNOWN_COMPANY_TITLES, _ct_key from storage
+
 
 logger = logging.getLogger(__name__)
 
@@ -1261,7 +1263,11 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
     for i, listing in enumerate(deduped):
         url = listing.get("job_url") or listing.get("url") or ""
         title = sanitize(listing.get("title", ""))
-
+        ck = _ct_key(str(listing.get("company", "")), str(listing.get("title", "")))
+        if ck and ck in KNOWN_COMPANY_TITLES:
+            _audit("known_company_title", "same company and title already in the sheet", listing)
+            rejected.append((url, 0, title))
+            continue        
         # LinkedIn search results carry no description, so fetch it for NEW listings only
         if str(listing.get("source", "")).lower() == "linkedin" and not listing.get("description"):
             desc = fetch_linkedin_description(url)
