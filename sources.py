@@ -952,6 +952,16 @@ def _is_profile_headline(title: str) -> bool:
     """
     return bool(PROFILE_HEADLINE_REGEX.match(title))
 
+def _emails_text(v) -> str:
+    if isinstance(v, (list, tuple, set)):
+        return ", ".join(map(str, v))
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return "" if v is None else str(v)
+
 
 def _to_records(df) -> list[dict]:
     if df is None or df.empty:
@@ -967,6 +977,7 @@ def _to_records(df) -> list[dict]:
             "description": str(d.get("description") or ""),
             "date_posted": str(d.get("date_posted") or ""),
             "source":      str(d.get("site") or ""),
+            "emails": _emails_text(d.get("emails") or ""),
         })
     return records
 
