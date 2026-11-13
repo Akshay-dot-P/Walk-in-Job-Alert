@@ -156,6 +156,17 @@ WORKDAY_WORKERS     = 5
 # CXS list URL must be /wday/cxs/{tenant}/{site_id}/jobs (see ApplyPilot employers.yaml).
 
 WORKDAY_COMPANIES = [
+        # unverified rows from the WFH list
+    ("Lowe's", "https://lowes.wd5.myworkdayjobs.com/wday/cxs/lowes/LWS_External_CS/jobs"),
+    ("Elevance Health", "https://elevancehealth.wd1.myworkdayjobs.com/wday/cxs/elevancehealth/ANT/jobs"),
+    ("IQVIA", "https://iqvia.wd1.myworkdayjobs.com/wday/cxs/iqvia/IQVIA/jobs"),
+    ("Fiserv", "https://fiserv.wd5.myworkdayjobs.com/wday/cxs/fiserv/EXT/jobs"),
+    ("Concentrix", "https://concentrix.wd3.myworkdayjobs.com/wday/cxs/concentrix/Concentrix_Careers/jobs"),
+    ("Lumen", "https://lumen.wd1.myworkdayjobs.com/wday/cxs/lumen/Lumen/jobs"),
+    ("Verizon", "https://verizon.wd12.myworkdayjobs.com/wday/cxs/verizon/verizon-careers/jobs"),
+    ("Sun Life", "https://sunlife.wd3.myworkdayjobs.com/wday/cxs/sunlife/Experienced-Jobs/jobs"),
+    ("Conduent", "https://conduent.wd1.myworkdayjobs.com/wday/cxs/conduent/Careers/jobs"),
+    ("Yahoo", "https://ouryahoo.wd5.myworkdayjobs.com/wday/cxs/ouryahoo/careers/jobs"),
     # ── Original companies (working) ──
     ("BMO", "https://bmo.wd3.myworkdayjobs.com/wday/cxs/bmo/External/jobs"),
     ("Salesforce", "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/External_Career_Site/jobs"),
@@ -500,6 +511,8 @@ WORKABLE_COMPANIES = [
 # SMARTRECRUITERS COMPANIES (Public API — no auth required)
 # All 20 verified working via api.smartrecruiters.com
 # ═══════════════════════════════════════════════════════════════════════
+
+
 SMARTRECRUITERS_COMPANIES = [
     ("Visa", "visa"),
     ("Bosch", "bosch"),
@@ -522,6 +535,56 @@ SMARTRECRUITERS_COMPANIES = [
     ("Lyft", "lyft"),
     ("Robinhood", "robinhood"),
 ]  
+
+SR_API = "https://api.smartrecruiters.com/v1/companies/{cid}/postings"
+
+
+def _sr_get(url, params=None):
+    try:
+        r = requests.get(url, params=params, headers=_JSON_HEADERS, timeout=20)
+        return r.json() if r.status_code == 200 else None
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def _scrape_smartrecruiters_company(name, cid, get=_sr_get) -> list[dict]:
+    out, offset = [], 0
+    while offset < 300:
+        data = get(SR_API.format(cid=cid), {"country": "in", "limit": 100, "offset": offset}) or {}
+        items = data.get("content") or []
+        for p in items:
+            title = str(p.get("name") or "").strip()
+            if not title or not _title_ok(title):
+                continue
+            loc = p.get("location") or {}
+            place = ", ".join(x for x in (loc.get("city"), loc.get("region"), str(loc.get("country") or "").upper()) if x)
+            if place and not location_ok(place):
+                continue
+            pid = str(p.get("id") or "")
+            detail = get(f"{SR_API.format(cid=cid)}/{pid}", None) or {}
+            sections = (detail.get("jobAd") or {}).get("sections") or {}
+            desc = " ".join(_html_to_text((sections.get(k) or {}).get("text"))
+                            for k in ("jobDescription", "qualifications", "additionalInformation")).strip()
+            out.append({
+                "title": title, "company": name, "location": place or "India", "is_remote": bool(loc.get("remote")),
+                "job_url": str(detail.get("postingUrl") or f"https://jobs.smartrecruiters.com/{cid}/{pid}"),
+                "description": desc[:4000], "date_posted": str(p.get("releasedDate") or "")[:10],
+                "source": "smartrecruiters",
+            })
+        offset += len(items)
+        if not items or offset >= int(data.get("totalFound") or 0):
+            break
+    return out
+
+
+def _scrape_smartrecruiters() -> list[dict]:
+    logger.info("=== SmartRecruiters: %d companies (country=in) ===", len(SMARTRECRUITERS_COMPANIES))
+    results: list[dict] = []
+    for name, cid in SMARTRECRUITERS_COMPANIES:
+        results.extend(_scrape_smartrecruiters_company(name, cid))
+        time.sleep(1)
+    logger.info("SmartRecruiters: %d jobs", len(results))
+    return results
 
 ################################]
 
@@ -2918,6 +2981,7 @@ def gather_all_listings() -> list[dict]:
         ("Oracle HCM",        _scrape_oracle_hcm),
         ("BuiltIn",           _scrape_builtin),
         ("Remote boards", _scrape_remote_boards),
+        ("SmartRecruiters", _scrape_smartrecruiters),
       
     ]
 
