@@ -301,6 +301,7 @@ EXTRA_JUNK = [
 ]
 DEVSECOPS = _rx(r"devsecops")                  # kept for internships only
 SEC_WORDS = _rx(r"\b(?:cyber\w*|security|infosec|information|technology|tech|it)\b")
+INDIA_EVIDENCE = _rx(r"\b(?:india|bengaluru|bangalore|karnataka|blr|remote|work\s+from\s+home|wfh|worldwide|anywhere|global|apac)\b")
 CLEARANCE = _rx(r"security\s+clear(?:ed|ance)|\bsecret\s+clear|\bsc[\s-]cleared\b|\bdv[\s-]cleared\b|uk\s+(?:address|residen)|"
                 r"\bbpss\b|eligible\s+for\s+(?:uk\s+)?(?:sc|dv)\b|(?:us|u\.s\.)\s+citizen(?:ship)?\s+(?:is\s+)?(?:required|only)|"
                 r"must\s+be\s+(?:a\s+)?(?:us|u\.s\.)\s+citizen")
@@ -415,6 +416,8 @@ def evaluate(listing: dict) -> Verdict:
     loc = _clean(listing.get("location")) + (" remote" if listing.get("is_remote") else "")
     if not location_ok(loc):
         return out("location")
+    if loc.strip() and not INDIA_EVIDENCE.search(loc):
+        return out("location:no_india")        
     age = posted_age_days(listing.get("date_posted") or listing.get("posted_date"))
     if age is not None and age > MAX_AGE_DAYS:
         return out(f"age>{MAX_AGE_DAYS}d")
