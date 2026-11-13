@@ -1351,12 +1351,17 @@ async def _scrape_workday_company(
     filtered = filter_workday_jobs(
         records, title_keywords=title_keywords, allowed_locations=allowed_locations,
     )
+    sem = asyncio.Semaphore(4)
+
+    async def _detail(rec):
+        async with sem:
+            desc, locs = await _fetch_workday_detail(client, jobs_url, company_name, rec.pop("_posting"))
+        return rec, desc, locs
+
     kept, dropped = [], 0
-    for rec in filtered:
-        state = _workday_loc_state(rec["location"])
-        desc, locs = await _fetch_workday_detail(client, jobs_url, company_name, rec.pop("_posting"))
+    for rec, desc, locs in await asyncio.gather(*[_detail(r) for r in filtered]):
         rec["description"] = desc
-        if state == "maybe":
+        if _workday_loc_state(rec["location"]) == "maybe":
             ok = [x for x in locs if _INDIA_RE.search(x) and location_ok(x)]
             if not ok:
                 dropped += 1
@@ -1365,7 +1370,6 @@ async def _scrape_workday_company(
         kept.append(rec)
     filtered = kept
     logger.info("%s: %d dropped, no India location", company_name, dropped)
-    return filtered
 
 
 async def scrape_workday_jobs(
