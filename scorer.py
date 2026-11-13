@@ -12,7 +12,7 @@ from storage import normalize_url, load_known_urls, log_scored_urls
 import time
 import csv
 import html as _html
-import KNOWN_COMPANY_TITLES, _ct_key 
+from storage import KNOWN_COMPANY_TITLES, _ct_key 
 
 
 logger = logging.getLogger(__name__)
