@@ -56,12 +56,27 @@ WORKDAY_TITLE_KEYWORDS = (
 
 JOBRADAR_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
+_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|karnataka|blr)\b", re.I)
+_MULTI_LOC_RE = re.compile(r"^\s*(?:\d+\s+locations?|multiple\s+locations?)?\s*$", re.I)
+
+
+def _workday_loc_state(loc: str) -> str:
+    """yes: India is named and allowed. maybe: the list hides the places ('3 Locations' or empty). no: everything else."""
+    s = str(loc or "").strip()
+    if _MULTI_LOC_RE.match(s):
+        return "maybe"
+    return "yes" if _INDIA_RE.search(s) and location_ok(s) else "no"
+
+
 def _detail_locations(payload: dict) -> list[str]:
     info = payload.get("jobPostingInfo", {}) if isinstance(payload, dict) else {}
-    out = []
-    for v in [info.get("location")] + list(info.get("additionalLocations") or []):
+    country = info.get("country")
+    country = str(country.get("descriptor") if isinstance(country, dict) else country or "").strip()
+    out, primary = [], info.get("location")
+    for v in [primary] + list(info.get("additionalLocations") or []):
         if isinstance(v, str) and v.strip():
-            out.append(v.strip())
+            v = v.strip()
+            out.append(f"{v}, {country}" if (v == primary and country and country.lower() not in v.lower()) else v)
     return out
 
 
@@ -1127,7 +1142,7 @@ def filter_workday_jobs(
         location = str(job.get("location") or "").lower()
 
         title_ok = True if not title_keywords else any(k in title for k in title_keywords)
-        location_ok_flag = location_ok(job.get("location"))
+        location_ok_flag = _workday_loc_state(job.get("location")) != "no"
         #location_ok = True if not allowed_locations else any(c in location for c in allowed_locations)
         if title_ok and location_ok_flag:
             filtered.append(job)
@@ -1255,18 +1270,20 @@ async def _scrape_workday_company(
     filtered = filter_workday_jobs(
         records, title_keywords=title_keywords, allowed_locations=allowed_locations,
     )
-    kept = []
+    kept, dropped = [], 0
     for rec in filtered:
+        state = _workday_loc_state(rec["location"])
         desc, locs = await _fetch_workday_detail(client, jobs_url, company_name, rec.pop("_posting"))
         rec["description"] = desc
-        if locs:
-            ok_locs = [x for x in locs if location_ok(x)]
-            if not ok_locs:
+        if state == "maybe":
+            ok = [x for x in locs if _INDIA_RE.search(x) and location_ok(x)]
+            if not ok:
+                dropped += 1
                 continue
-            rec["location"] = " | ".join(ok_locs)
+            rec["location"] = " | ".join(ok)
         kept.append(rec)
     filtered = kept
-    logger.info("%s: %d jobs found (filtered)", company_name, len(filtered))
+    logger.info("%s: %d dropped, no India location", company_name, dropped)
     return filtered
 
 
