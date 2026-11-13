@@ -718,7 +718,6 @@ def _normalize_title_aggressive(title: str) -> str:
     # Remove grade/band/seniority indicators AGGRESSIVELY
     # This is the KEY fix for Deloitte jobs
     t = re.sub(r'\b(ssa|lsa|sa|tsa|asa|msa)\b', '', t, flags=re.IGNORECASE)  # All "SA" variants
-    t = re.sub(r'\b(associate|sr\.?|senior|junior|jr\.?|lead|principal|staff)\b', '', t, flags=re.IGNORECASE)
     
     # Remove company-specific prefixes
     t = re.sub(r'\busi\b', '', t, flags=re.IGNORECASE)
