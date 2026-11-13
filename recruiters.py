@@ -133,7 +133,7 @@ def build_contact_rows(listings, known, relevance=_default_relevance):
         if not ok:
             continue
         title = str(l.get("title") or "")
-        c = extract_contacts(f"{title}\n{l.get('description') or ''}", extra_emails=l.get("emails"))
+        c = extract_contacts(f"{title}\n{l.get('description') or ''}\n{l.get('tail') or ''}", extra_emails=l.get("emails"))
         if not c["emails"] and not c["phones"]:
             continue
         company = _TIER.sub("", str(l.get("company") or "").strip())
@@ -234,7 +234,7 @@ def save_contacts_and_targets(listings: list[dict]) -> None:
     known |= {v.strip() for v in ws.col_values(4)[1:] if v.strip()}
     rows = build_contact_rows(listings, known)
     if rows:
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        ws.append_rows(rows, value_input_option="RAW")
     logger.info("Recruiters tab: +%d contacts printed in postings (counts only, nothing else logged)", len(rows))
     wt = _ensure_tab(sh, TARGET_TAB, TARGET_HEADER)
     groups = build_target_groups(listings)
