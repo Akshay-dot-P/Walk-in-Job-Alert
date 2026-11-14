@@ -55,7 +55,7 @@ WORKDAY_TITLE_KEYWORDS = (
 
 JOBRADAR_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
-_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|karnataka|blr|remote\b", re.I)
+_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|karnataka|blr|remote)\b", re.I)
 _MULTI_LOC_RE = re.compile(r"^\s*(?:\d+\s+locations?|multiple\s+locations?)?\s*$", re.I)
 _REMOTE_RE = re.compile(r"\b(?:remote|work\s+from\s+home|wfh)\b", re.I)
 
@@ -1377,6 +1377,7 @@ async def _scrape_workday_company(
         kept.append(rec)
     filtered = kept
     logger.info("%s: %d dropped, no India location", company_name, dropped)
+    return filtered
 
 
 async def scrape_workday_jobs(
