@@ -45,18 +45,17 @@ from jobboards import fetch_company   # add to the imports at top
 # board types: "oracle", "atlassian" (the new ones), plus greenhouse/lever/ashby/workable
 JOBRADAR_COMPANIES = [
     {"name": "Atlassian", "board": "atlassian", "slug": "atlassian"},
-    # slug = "<oracle-host>/<siteNumber>"; this one is the docstring example, verify it
     {"name": "Oracle", "board": "oracle", "slug": "eeho.fa.us2.oraclecloud.com/CX_1"},
 ]
 
 WORKDAY_TITLE_KEYWORDS = (
-    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud", "identity",
-    "network", "audit", "privacy", "fraud", "aml", "threat", "detection", "forensic", "noc", "siem",
+    "security", "cyber", "soc", "risk", "compliance", "grc", "iam", "appsec", "cloud", "identity", "desk",
+    "network", "audit", "privacy", "fraud", "aml", "threat", "detection", "noc", "siem",
 )
 
 JOBRADAR_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
-_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|karnataka|blr)\b", re.I)
+_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|karnataka|blr|remote\b", re.I)
 _MULTI_LOC_RE = re.compile(r"^\s*(?:\d+\s+locations?|multiple\s+locations?)?\s*$", re.I)
 
 
@@ -185,7 +184,6 @@ WORKDAY_COMPANIES = [
     ("Workday", "https://workday.wd5.myworkdayjobs.com/wday/cxs/workday/Workday/jobs"),
     ("TELUS International", "https://telusinternational.wd3.myworkdayjobs.com/wday/cxs/telusinternational/External/jobs"),
     ("Magna", "https://magna.wd3.myworkdayjobs.com/wday/cxs/magna/Magna/jobs"),
-    ("TD Bank", "https://td.wd3.myworkdayjobs.com/wday/cxs/td/TD_Bank_Careers/jobs"),
     ("RBC", "https://rbc.wd3.myworkdayjobs.com/wday/cxs/rbc/RBCGLOBAL1/jobs"),
     
     # ── Big Tech & Cloud ──
@@ -599,14 +597,14 @@ def _scrape_smartrecruiters() -> list[dict]:
 WORKDAY_SEARCH_QUERIES = [
     "VAPT Intern",
     "Cybersecurity Intern",
+    "security Intern",
     "Networking Security Intern",
     "Cloud Security Engineer",
-    "Application Security Engineer",
     "SOC Analyst",
     "Information Security Analyst",
     "Cyber Security Analyst",
+    "Cyber Security Engineer",
     "Cloud Security Engineer",
-    "Container Security Engineer",
     "Data Security Engineer",
     "Risk Analyst",
     "Compliance Analyst",
@@ -614,6 +612,8 @@ WORKDAY_SEARCH_QUERIES = [
     "IAM Analyst", 
     "Network Engineer" ,
     "IT Audit",
+    "Desk Support",
+    "GRC analyst",
 ]
 
 
@@ -621,15 +621,15 @@ WORKDAY_ALLOWED_LOCATIONS = ("india", "bengaluru", "bangalore")
 GREENHOUSE_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
 FQ_FRESHER = (
-    '(fresher OR "entry level" OR "entry-level" OR junior OR trainee '
-    'OR graduate OR "0-2 years" OR "0 to 2 years" OR "upto 2 years" '
+    '(fresher OR "entry level" OR "entry-level" OR junior OR trainee OR associate '
+    'OR graduate OR "0-2 years" OR "0 to 2 years" OR "upto 2 years" OR "0-1 years" OR "1-2 years" OR "0-2 yrs" OR "0 to 2 yrs" OR "upto 2 yrs" OR "0-1 yrs" OR "1-2 yrs" '
     'OR "0-1 year" OR "less than 2 years" OR associate)'
 )
 
 FQ_INTERN = (
     '(intern OR internship OR stipend OR "6 month" OR "3 month" '
     'OR "summer intern" OR "winter intern" OR apprentice '
-    'OR fellowship OR "graduate trainee" OR "management trainee")'
+    'OR fellowship OR "graduate trainee" OR "trainee")'
 )
 
 FQ_ALL = (
@@ -793,6 +793,13 @@ LINKEDIN_POST_QUERIES = [
     "site:linkedin.com hiring bangalore IAM security analyst fresher",
     "site:linkedin.com opening bangalore cybersecurity entry level",
     "site:linkedin.com urgent hiring bangalore information security analyst",
+    "site:linkedin.com hiring bengaluru cybersecurity fresher 2026",
+    "site:linkedin.com hiring bengaluru SOC analyst fresher",
+    "site:linkedin.com hiring bengaluru GRC compliance analyst fresher",
+    "site:linkedin.com hiring bengaluru KYC AML fraud analyst fresher",
+    "site:linkedin.com hiring bengaluru IAM security analyst fresher",
+    "site:linkedin.com opening bengaluru cybersecurity entry level",
+    "site:linkedin.com urgent hiring bengaluru information security analyst",
     "site:linkedin.com bangalore immediate joining cybersecurity fresher",
     "site:linkedin.com bangalore SOC analyst hiring fresher junior",
     "site:linkedin.com bangalore VAPT penetration tester fresher opening",
