@@ -57,7 +57,7 @@ JOBRADAR_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
 _INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|karnataka|blr|remote\b", re.I)
 _MULTI_LOC_RE = re.compile(r"^\s*(?:\d+\s+locations?|multiple\s+locations?)?\s*$", re.I)
-
+_REMOTE_RE = re.compile(r"\b(?:remote|work\s+from\s+home|wfh)\b", re.I)
 
 def _workday_loc_state(loc: str) -> str:
     """yes: India is named and allowed. maybe: the list hides the places ('3 Locations' or empty). no: everything else."""
@@ -1852,10 +1852,15 @@ def _scrape_linkedin() -> list[dict]:
             n += 1
             logger.info("  [%d/%d] %s | %s…", n, total_terms, label, term[:50])
             batch = _run_scrape(["linkedin"], term, {"location": location})
-            if remote:
+            kept = batch
+            if remote:                       # keep only genuinely remote-looking results
+                kept = []
                 for r in batch:
-                    r["is_remote"] = True
-            new = [r for r in batch if r["job_url"] not in seen]
+                    loc = str(r.get("location") or "").strip().lower()
+                    if _REMOTE_RE.search(f"{r.get('title', '')} {loc}") or loc in ("", "india"):
+                        r["is_remote"] = True
+                        kept.append(r)
+            new = [r for r in kept if r["job_url"] not in seen]
             for r in new:
                 seen.add(r["job_url"])
             results.extend(new)
@@ -1988,7 +1993,7 @@ def fetch_linkedin_posts() -> list[dict]:
                     continue
                 seen.add(link)
                 valid += 1
-                results.append({"title": title, "company": "", "location": "Bangalore", "job_url": link,
+                results.append({"title": title, "company": "", "location": "Bengaluru", "job_url": link,
                                 "description": f"{title}. {desc[:600]}", "date_posted": entry.get("published", ""),
                                 "source": "linkedin_post"})
 
