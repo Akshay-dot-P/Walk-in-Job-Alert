@@ -304,6 +304,7 @@ EXTRA_JUNK = [
 DEVSECOPS = _rx(r"devsecops")                  # kept for internships only
 SEC_WORDS = _rx(r"\b(?:cyber\w*|security|infosec|information|technology|tech|it)\b")
 INDIA_EVIDENCE = _rx(r"\b(?:india|bengaluru|bangalore|karnataka|blr|remote|work\s+from\s+home|wfh|worldwide|anywhere|global|apac)\b")
+BLR_RE = _rx(r"\b(?:bengaluru|bangalore|bangaluru|karnataka|blr)\b")
 CLEARANCE = _rx(r"security\s+clear(?:ed|ance)|\bsecret\s+clear|\bsc[\s-]cleared\b|\bdv[\s-]cleared\b|uk\s+(?:address|residen)|"
                 r"\bbpss\b|eligible\s+for\s+(?:uk\s+)?(?:sc|dv)\b|(?:us|u\.s\.)\s+citizen(?:ship)?\s+(?:is\s+)?(?:required|only)|"
                 r"must\s+be\s+(?:a\s+)?(?:us|u\.s\.)\s+citizen")
@@ -415,6 +416,10 @@ def evaluate(listing: dict) -> Verdict:
         return out("title:bpo_voice")
     if not title_location_ok(title):
         return out("location:title")
+    src = str(listing.get("source", "")).lower()
+    loc_raw = _clean(listing.get("location"))
+    if src in ("linkedin", "naukri") and not listing.get("is_remote") and loc_raw and not BLR_RE.search(loc_raw):
+        return out("location:not_bengaluru")        
     loc = _clean(listing.get("location")) + (" remote" if listing.get("is_remote") else "")
     if not location_ok(loc):
         return out("location")
@@ -1155,10 +1160,12 @@ def score_listing(listing: dict, verdict: Verdict | None = None, use_llm: bool =
 
 
 _LINKEDIN_BLOCKED = False
+_LI_GONE_RE = re.compile(
+    r"job id provided may not be valid|posting has been removed|no longer accepting applications|unable to load the page", re.I)
 
 
-def fetch_linkedin_description(job_url: str) -> str:
-    """One request per NEW listing against LinkedIn's public guest endpoint. '' on any failure."""
+def fetch_linkedin_description(job_url: str):
+    """Description text; '' when unknown or blocked; None when the posting is gone (removed or closed)."""
     global _LINKEDIN_BLOCKED
     if _LINKEDIN_BLOCKED:
         return ""
@@ -1177,12 +1184,19 @@ def fetch_linkedin_description(job_url: str) -> str:
         logger.warning("LinkedIn description fetch blocked (HTTP %s), skipping it for the rest of this run",
                        r.status_code)
         return ""
+    if r.status_code in (404, 410):
+        return None
     if r.status_code != 200:
         return ""
     block = re.search(r"show-more-less-html__markup[^>]*>(.*?)</div>", r.text, re.S)
+    outside = r.text.replace(block.group(0), "") if block else r.text   # look for the markers outside the job text
+    if _LI_GONE_RE.search(outside):
+        return None
     body = block.group(1) if block else r.text
     text = _html.unescape(re.sub(r"<[^>]+>", " ", body))
     return re.sub(r"\s+", " ", text).strip()[:3000]
+
+
 
 
 
@@ -1270,6 +1284,11 @@ def _score_all_impl(listings: list, min_score: int = 4, known_urls: set | None =
         # LinkedIn search results carry no description, so fetch it for NEW listings only
         if str(listing.get("source", "")).lower() == "linkedin" and not listing.get("description"):
             desc = fetch_linkedin_description(url)
+            if desc is None:
+                logger.info("  GONE (removed or closed): %s", title[:55])
+                _audit("removed", "LinkedIn posting removed or closed", listing)
+                rejected.append((url, 0, title))
+                continue
             if desc:
                 listing["description"] = desc
                 time.sleep(2)
