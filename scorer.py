@@ -599,6 +599,7 @@ def reject_reason(listing: dict) -> str | None:
 
 
 def pre_filter(listings: list) -> list:
+    why = {}
     kept, dropped = [], []
     for l in listings:
         reason = reject_reason(l)
@@ -606,6 +607,7 @@ def pre_filter(listings: list) -> list:
             kept.append(l)
         else:
             dropped.append(l)
+            why[id(l)] = reason
             _audit("pre_filter", reason, l)
 
     total_by_src = Counter(l.get("source", "?") for l in listings)
@@ -618,8 +620,8 @@ def pre_filter(listings: list) -> list:
     logger.info("Pre-filter: %d/%d kept, %d dropped (%d dropped titles look relevant)",
                 len(kept), len(listings), len(dropped), len(suspects))
     for l in suspects[:40]:
-        logger.info("  dropped?: [%s] %s @ %s", l.get("source", "?"),
-                    sanitize(l.get("title", ""))[:60], sanitize(l.get("company", ""))[:25])
+        logger.info("  dropped?: [%s] %s @ %s -> %s", l.get("source", "?"),
+                    sanitize(l.get("title", ""))[:60], sanitize(l.get("company", ""))[:25], why[id(l)])
     return kept
 
 
