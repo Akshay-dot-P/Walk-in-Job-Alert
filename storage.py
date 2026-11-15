@@ -254,7 +254,6 @@ def load_known_urls() -> set[str]:
     except Exception as e:
         logger.warning("Pre-scoring dedup unavailable (sheet): %s", e)
         return known
-    seen_urls, _, _ = _build_seen_sets(ws)
     seen_urls, seen_ct, _ = _build_seen_sets(ws)
     KNOWN_COMPANY_TITLES.clear()
     KNOWN_COMPANY_TITLES.update(seen_ct)
