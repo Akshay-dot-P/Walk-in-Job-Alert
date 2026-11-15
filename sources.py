@@ -949,10 +949,12 @@ _HIRING_INTENT_RE = re.compile(
     r"stipend|trainee|apprentice\w*)\b", re.I)
 
 
+_JOBISH = re.compile(r"\b(?:hiring|intern(?:ship)?s?|analyst|engineer|security|cyber|soc|siem|grc|vapt|risk|compliance|audit\w*|fraud|walk[\s-]?in|opening|vacancy|job|jobs|fresher|trainee|associate|consultant|specialist|iam|appsec|cloud)\b", re.I)
+
+
 def _is_profile_headline(title: str) -> bool:
-    if _HIRING_INTENT_RE.search(title):
-        return False
-    return bool(PROFILE_HEADLINE_REGEX.match(title))
+    m = PROFILE_HEADLINE_REGEX.match(title)
+    return bool(m) and not _JOBISH.search(title[: m.end()])
 
 def _emails_text(v) -> str:
     if isinstance(v, (list, tuple, set)):
@@ -1984,6 +1986,8 @@ def fetch_linkedin_posts() -> list[dict]:
                 if reason:
                     rejects[reason] += 1
                     rej["garbage"] += 1
+                    if reason == "garbage" and rejects["garbage"] <= 8:
+                        logger.info("  garbage sample: %s | %s", title[:70], link[:70])                
                     continue
                 seen.add(link)
                 valid += 1
