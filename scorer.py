@@ -309,6 +309,18 @@ CLEARANCE = _rx(r"security\s+clear(?:ed|ance)|\bsecret\s+clear|\bsc[\s-]cleared\
                 r"\bbpss\b|eligible\s+for\s+(?:uk\s+)?(?:sc|dv)\b|(?:us|u\.s\.)\s+citizen(?:ship)?\s+(?:is\s+)?(?:required|only)|"
                 r"must\s+be\s+(?:a\s+)?(?:us|u\.s\.)\s+citizen")
 
+INDIAN_PLACES = _rx(
+    r"\b(?:chennai|madras|hyderabad|secunderabad|pune|mumbai|navi\s+mumbai|thane|new\s+delhi|delhi|noida|greater\s+noida|gurgaon|gurugram|"
+    r"faridabad|ghaziabad|kolkata|calcutta|howrah|ahmedabad|gandhinagar|surat|vadodara|baroda|rajkot|jaipur|jodhpur|udaipur|lucknow|kanpur|"
+    r"varanasi|agra|prayagraj|allahabad|meerut|indore|bhopal|nagpur|nashik|aurangabad|coimbatore|madurai|tiruchirappalli|trichy|salem|erode|"
+    r"tirunelveli|pondicherry|puducherry|kochi|cochin|ernakulam|thiruvananthapuram|trivandrum|kozhikode|calicut|thrissur|mysuru|mysore|"
+    r"mangaluru|mangalore|hubballi|hubli|dharwad|belagavi|belgaum|kalaburagi|visakhapatnam|vizag|vijayawada|guntur|tirupati|warangal|"
+    r"bhubaneswar|cuttack|patna|ranchi|jamshedpur|guwahati|chandigarh|mohali|panchkula|ludhiana|amritsar|jalandhar|dehradun|jammu|srinagar|"
+    r"raipur|goa|panaji|maharashtra|telangana|tamil\s+nadu|kerala|andhra\s+pradesh|gujarat|rajasthan|uttar\s+pradesh|madhya\s+pradesh|bihar|"
+    r"west\s+bengal|odisha|punjab|haryana|jharkhand|assam|uttarakhand|chhattisgarh|kashmir|district)\b")
+LOCAL_OK = _rx(r"\b(?:bengaluru|bangalore|blr)\b")
+REMOTE_WORD = _rx(r"\b(?:remote|work\s+from\s+home|wfh)\b")
+
 # fraud style roles must not be finance, accounting or CA roles
 FRAUD_FAMILY = _rx(rf"\b(?:{FRAUD})\b")
 FINANCE_CA_TITLE = _rx(r"\b(?:ca|cpa|cma|acca|chartered|accountants?|accounting|accounts\s+(?:payable|receivable|executive)|"
@@ -421,6 +433,9 @@ def evaluate(listing: dict) -> Verdict:
     if src in ("linkedin", "naukri") and not listing.get("is_remote") and loc_raw and not BLR_RE.search(loc_raw):
         return out("location:not_bengaluru")        
     loc = _clean(listing.get("location")) + (" remote" if listing.get("is_remote") else "")
+    raw_loc = _clean(listing.get("location"))
+    if INDIAN_PLACES.search(raw_loc) and not LOCAL_OK.search(raw_loc) and not REMOTE_WORD.search(f"{title} {raw_loc}"):
+        return out("location:other_city")    
     if not location_ok(loc):
         return out("location")
     if loc.strip() and not INDIA_EVIDENCE.search(loc):
