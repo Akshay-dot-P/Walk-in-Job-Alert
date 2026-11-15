@@ -1219,7 +1219,7 @@ def filter_workday_jobs(
         title = str(job.get("title") or "").lower()
         location = str(job.get("location") or "").lower()
 
-        title_ok = True if not title_keywords else any(k in title for k in title_keywords)
+        title_ok = True if not title_keywords else bool(_BIG_TITLE_RE.search(title))
         location_ok_flag = _workday_loc_state(job.get("location")) != "no"
         #location_ok = True if not allowed_locations else any(c in location for c in allowed_locations)
         if title_ok and location_ok_flag:
@@ -1349,9 +1349,7 @@ async def _scrape_workday_company(
         records, title_keywords=title_keywords, allowed_locations=allowed_locations,
     )
     sem = asyncio.Semaphore(4)
-    filtered = kept
-    logger.info("%s: kept %d, dropped %d (no India location)", company_name, len(kept), dropped)
-    return filtered
+
 
     async def _detail(rec):
         async with sem:
@@ -1369,7 +1367,7 @@ async def _scrape_workday_company(
             rec["location"] = " | ".join(ok)
         kept.append(rec)
     filtered = kept
-    logger.info("%s: %d dropped, no India location", company_name, dropped)
+    logger.info("%s: kept %d, dropped %d (no India location)", company_name, len(kept), dropped)
     return filtered
 
 
@@ -1962,7 +1960,6 @@ def fetch_linkedin_posts() -> list[dict]:
     results = []
     seen: set = set()
     rejects = Counter()
-    rej = Counter()
     for i, query in enumerate(LINKEDIN_POST_QUERIES):
         encoded = query.replace(" ", "+").replace(":", "%3A")
         url = (f"https://news.google.com/rss/search"
@@ -1985,7 +1982,6 @@ def fetch_linkedin_posts() -> list[dict]:
                         reason = "too_old"
                 if reason:
                     rejects[reason] += 1
-                    rej["garbage"] += 1
                     if reason == "garbage" and rejects["garbage"] <= 8:
                         logger.info("  garbage sample: %s | %s", title[:70], link[:70])                
                     continue
