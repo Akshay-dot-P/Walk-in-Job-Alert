@@ -314,7 +314,7 @@ FRAUD_FAMILY = _rx(rf"\b(?:{FRAUD})\b")
 FINANCE_CA_TITLE = _rx(r"\b(?:ca|cpa|cma|acca|chartered|accountants?|accounting|accounts\s+(?:payable|receivable|executive)|"
                        r"articled?|articleship|statutory|gst|tds|bookkeep\w*|ledger|reconciliations?|treasury|valuation|claims?|"
                        r"financial\s+(?:reporting|statements|accounting|audit)|finance|forensic\s+accounting)\b")
-FINANCE_CA_DESC = _rx(r"\b(?:chartered\s+accountants?|icai|cpa|acca|cma|articleship|statutory\s+audit|financial\s+statements|"
+FINANCE_CA_DESC = _rx(r"\b(?:degree\s+in\s+accounting|bachelor\S*\s+(?:degree\s+)?in\s+accounting|chartered\s+accountants?|icai|cpa|acca|cma|articleship|statutory\s+audit|financial\s+statements|"
                       r"general\s+ledger|bookkeeping|accounts\s+(?:payable|receivable)|"
                       r"ca\s+(?:inter|final|qualified|freshers?|preferred|required)|qualified\s+ca)\b")
 
@@ -451,6 +451,8 @@ def evaluate(listing: dict) -> Verdict:
         return out("junk:" + SOFT_JUNK.search(t).group(0).lower())
     if FRAUD_FAMILY.search(t) and (FINANCE_CA_TITLE.search(t) or FINANCE_CA_DESC.search(desc.lower())):
         return out("finance_ca")
+    if re.search(r"\baudit\w*", t) and not SEC_WORDS.search(t) and FINANCE_CA_DESC.search(desc.lower()):
+        return out("finance_audit")        
     if re.search(r"\brisk\b", t) and not SEC_WORDS.search(t) and len(FIN_RISK_DESC.findall(desc[:6000])) >= 2:
         return out("junk:fin_risk_desc")
     if str(listing.get("source", "")).lower() == "naukri":
