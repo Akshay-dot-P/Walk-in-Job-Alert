@@ -175,7 +175,6 @@ WORKDAY_COMPANIES = [
     ("Intel", "https://intel.wd1.myworkdayjobs.com/wday/cxs/intel/External/jobs"),
     ("NVIDIA", "https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs"),
     ("Mastercard", "https://mastercard.wd1.myworkdayjobs.com/wday/cxs/mastercard/CorporateCareers/jobs"),
-    ("PwC", "https://pwc.wd3.myworkdayjobs.com/wday/cxs/pwc/Global_Experienced_Careers/jobs"),
     ("FIS", "https://fis.wd5.myworkdayjobs.com/wday/cxs/fis/SearchJobs/jobs"),
     ("Thomson Reuters", "https://thomsonreuters.wd5.myworkdayjobs.com/wday/cxs/thomsonreuters/External_Career_Site/jobs"),
     ("Motorola Solutions", "https://motorolasolutions.wd5.myworkdayjobs.com/wday/cxs/motorolasolutions/Careers/jobs"),
@@ -184,7 +183,6 @@ WORKDAY_COMPANIES = [
     ("Workday", "https://workday.wd5.myworkdayjobs.com/wday/cxs/workday/Workday/jobs"),
     ("TELUS International", "https://telusinternational.wd3.myworkdayjobs.com/wday/cxs/telusinternational/External/jobs"),
     ("Magna", "https://magna.wd3.myworkdayjobs.com/wday/cxs/magna/Magna/jobs"),
-    ("RBC", "https://rbc.wd3.myworkdayjobs.com/wday/cxs/rbc/RBCGLOBAL1/jobs"),
     
     # ── Big Tech & Cloud ──
     #("Microsoft", "https://careers.microsoft.com/wday/cxs/microsoft/Global/jobs"),
@@ -274,7 +272,6 @@ WORKDAY_COMPANIES = [
     ("Barclays", "https://barclays.wd3.myworkdayjobs.com/wday/cxs/barclays/External_Career_Site_Barclays/jobs"),
     ("Wells Fargo", "https://wf.wd1.myworkdayjobs.com/wday/cxs/wf/WellsFargoJobs/jobs"),
     ("Bank of America", "https://ghr.wd1.myworkdayjobs.com/wday/cxs/ghr/Lateral-US/jobs"),
-    ("Accenture", "https://accenture.wd103.myworkdayjobs.com/wday/cxs/accenture/AccentureCareers/jobs"),
     ("HPE", "https://hpe.wd5.myworkdayjobs.com/wday/cxs/hpe/Jobsathpe/jobs"),
 ]
 
@@ -946,24 +943,15 @@ def _is_valid_post(title: str, url: str) -> bool:
     return True
 
 
+_HIRING_INTENT_RE = re.compile(
+    r"\b(hiring|we(?:'|\u2019)?re\s+hiring|we\s+are\s+hiring|opening|openings|vacanc\w+|walk[\s-]?in|looking\s+for|"
+    r"urgent|immediate(?:ly)?|join\s+us|job\s+alert|recruiting|requirement|apply|freshers?|intern(?:ship)?s?|"
+    r"stipend|trainee|apprentice\w*)\b", re.I)
+
+
 def _is_profile_headline(title: str) -> bool:
-    """
-    Return True if the title looks like a LinkedIn profile headline rather
-    than a job posting title. Used as a secondary filter after URL check.
-
-    Examples that return True (profiles — reject these):
-      "Sushmitha Sonkamble - SailPoint IdentityIQ/ISC Certified | IAM"
-      "Ashish Gangavaram, CISA - LinkedIn"
-      "Anand Kumar - Cyber Threat Intelligence @ adidas"
-      "Pranav Taskar - SOC Analyst L1 | SIEM (Splunk/Elastic)"
-      "Dhanushree S O - Security Engineer@Amazon | Masters in CS"
-
-    Examples that return False (job posts — keep these):
-      "We're Hiring! Junior Application Security Analyst"
-      "SOC Analyst L1 | Bangalore | Fresher Welcome"
-      "#Hiring: SIEM Administrator & SOC Analyst (L1)"
-      "Cyber Security Intern at Groww | Paid | Bangalore"
-    """
+    if _HIRING_INTENT_RE.search(title):
+        return False
     return bool(PROFILE_HEADLINE_REGEX.match(title))
 
 def _emails_text(v) -> str:
@@ -1359,6 +1347,9 @@ async def _scrape_workday_company(
         records, title_keywords=title_keywords, allowed_locations=allowed_locations,
     )
     sem = asyncio.Semaphore(4)
+    filtered = kept
+    logger.info("%s: kept %d, dropped %d (no India location)", company_name, len(kept), dropped)
+    return filtered
 
     async def _detail(rec):
         async with sem:
@@ -1969,6 +1960,7 @@ def fetch_linkedin_posts() -> list[dict]:
     results = []
     seen: set = set()
     rejects = Counter()
+    rej = Counter()
     for i, query in enumerate(LINKEDIN_POST_QUERIES):
         encoded = query.replace(" ", "+").replace(":", "%3A")
         url = (f"https://news.google.com/rss/search"
@@ -1991,6 +1983,7 @@ def fetch_linkedin_posts() -> list[dict]:
                         reason = "too_old"
                 if reason:
                     rejects[reason] += 1
+                    rej["garbage"] += 1
                     continue
                 seen.add(link)
                 valid += 1
@@ -2491,6 +2484,7 @@ def _scrape_amazon() -> list[dict]:
 EIGHTFOLD_SITES = [
     # (display name, careers base URL, eightfold domain)
     ("Microsoft", "https://apply.careers.microsoft.com", "microsoft.com"),
+    ("PayPal", "https://paypal.eightfold.ai", "paypal.com"),   # unverified
 ]
 EIGHTFOLD_QUERIES = ["security analyst", "cyber security", "security engineer", "SOC", "compliance",
                      "risk analyst", "fraud", "identity", "network engineer", "security intern"]
