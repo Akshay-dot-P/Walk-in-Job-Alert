@@ -55,17 +55,20 @@ WORKDAY_TITLE_KEYWORDS = (
 
 JOBRADAR_TITLE_KEYWORDS = WORKDAY_TITLE_KEYWORDS
 
-_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|karnataka|blr|remote)\b", re.I)
+_INDIA_RE = re.compile(r"\b(?:india|bengaluru|bangalore|karnataka|blr)\b", re.I)
+_FOREIGN_RE = re.compile(r"\b(?:us|usa|u\.s\.|united\s+states|uk|united\s+kingdom|canada|australia|germany|france|ireland|netherlands|spain|italy|poland|romania|israel|singapore|japan|china|mexico|brazil|argentina|philippines|emea|latam|europe|eu)\b", re.I)
 _MULTI_LOC_RE = re.compile(r"^\s*(?:\d+\s+locations?|multiple\s+locations?)?\s*$", re.I)
 _REMOTE_RE = re.compile(r"\b(?:remote|work\s+from\s+home|wfh)\b", re.I)
 
 def _workday_loc_state(loc: str) -> str:
-    """yes: India is named and allowed. maybe: the list hides the places ('3 Locations' or empty). no: everything else."""
     s = str(loc or "").strip()
-    if _MULTI_LOC_RE.match(s):
-        return "maybe"
-    return "yes" if _INDIA_RE.search(s) and location_ok(s) else "no"
-
+    if _MULTI_LOC_RE.match(s) or re.fullmatch(r"remote", s, re.I):
+        return "maybe"                                   # check the detail payload for the country
+    if _FOREIGN_RE.search(s) and not _INDIA_RE.search(s):
+        return "no"
+    if _INDIA_RE.search(s) and location_ok(s):
+        return "yes"
+    return "yes" if _REMOTE_RE.search(s) and not _FOREIGN_RE.search(s) else "no"
 
 def _detail_locations(payload: dict) -> list[str]:
     info = payload.get("jobPostingInfo", {}) if isinstance(payload, dict) else {}
@@ -943,10 +946,7 @@ def _is_valid_post(title: str, url: str) -> bool:
     return True
 
 
-_HIRING_INTENT_RE = re.compile(
-    r"\b(hiring|we(?:'|\u2019)?re\s+hiring|we\s+are\s+hiring|opening|openings|vacanc\w+|walk[\s-]?in|looking\s+for|"
-    r"urgent|immediate(?:ly)?|join\s+us|job\s+alert|recruiting|requirement|apply|freshers?|intern(?:ship)?s?|"
-    r"stipend|trainee|apprentice\w*)\b", re.I)
+
 
 
 _JOBISH = re.compile(r"\b(?:hiring|intern(?:ship)?s?|analyst|engineer|security|cyber|soc|siem|grc|vapt|risk|compliance|audit\w*|fraud|walk[\s-]?in|opening|vacancy|job|jobs|fresher|trainee|associate|consultant|specialist|iam|appsec|cloud)\b", re.I)
