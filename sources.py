@@ -1350,7 +1350,6 @@ async def _scrape_workday_company(
     )
     sem = asyncio.Semaphore(4)
 
-
     async def _detail(rec):
         async with sem:
             desc, locs = await _fetch_workday_detail(client, jobs_url, company_name, rec.pop("_posting"))
@@ -1366,9 +1365,8 @@ async def _scrape_workday_company(
                 continue
             rec["location"] = " | ".join(ok)
         kept.append(rec)
-    filtered = kept
     logger.info("%s: kept %d, dropped %d (no India location)", company_name, len(kept), dropped)
-    return filtered
+    return kept
 
 
 async def scrape_workday_jobs(
