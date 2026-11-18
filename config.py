@@ -1,6 +1,6 @@
 import re as _re
 
-MAX_AGE_DAYS = 31            # keep jobs up to 31 days old, never older
+MAX_AGE_DAYS = 28            # keep jobs up to 31 days old, never older
 EXP_MIN_ALLOWED = 2          # lower end of a stated range must be 0, 1 or 2
 EXP_MAX_ALLOWED = 5          # upper end must be 5 or less, so 2-5 is the widest range accepted
 ALLOWED_CITIES = ("bengaluru", "bangalore")
