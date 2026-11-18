@@ -267,7 +267,7 @@ HARD_JUNK = _rx(
     r"product\s+compliance|material\s+compliance|regulatory\s+affairs|environmental|safety\s+officer|"
     r"supply\s+chain|p&c|litigation|capital\s+markets?|regulatory\s+reporting|wealth|equity|investment|"
     r"audit\s+assistant|middle\s+office|securities|security\s+(?:master|valuations?)|slp|loss\s+prevention|"
-    r"physical\s+security|guard|watchman|facility|facilities|patrol|bouncer|armed|"
+    r"physical\s+security|cctv|guard|watchman|facility|facilities|patrol|bouncer|armed|"
     r"account\s+executives?|pre[\s-]?sales|insurance|financial\s+(?:security\s+)?advis\w+|bids?\s*(?:&|and)\s*proposals?|"
     r"cpu|gpu|hpc|asic|vlsi|rtl|fpga|silicon|firmware|hardware|network\s+transport)\b")
 SOFT_JUNK = _rx(
@@ -319,16 +319,14 @@ FINANCE_CA_DESC = _rx(r"\b(?:degree\s+in\s+accounting|bachelor\S*\s+(?:degree\s+
                       r"general\s+ledger|bookkeeping|accounts\s+(?:payable|receivable)|"
                       r"ca\s+(?:inter|final|qualified|freshers?|preferred|required)|qualified\s+ca)\b")
 
-# audit roles must come with IT context, in the title or in the description
+# audit and assurance roles: the TITLE must carry an explicit IT, cyber or security signal
 AUDIT_NEEDS_IT = os.environ.get("AUDIT_NEEDS_IT", "1").strip().lower() not in ("0", "false", "no", "off")
-AUDIT_TITLE    = _rx(r"\baudit\w*")
-AUDIT_IT_TITLE = _rx(r"\b(?:it|is|information|technology|tech|cyber\w*|infosec|security|itgc|systems?|cloud)\b")
-AUDIT_IT_DESC  = _rx(r"\b(?:information\s+technology|information\s+systems?|information\s+security|itgc|"
-                     r"it\s+general\s+controls?|general\s+(?:it|computer)\s+controls?|application\s+controls?|"
-                     r"it\s+audit|is\s+audit|cisa|cyber\w*|infosec|technology\s+(?:risk|audit|controls?)|"
-                     r"it\s+risk|it\s+controls?|cloud|iso\s*27001|nist|cobit|logical\s+access|access\s+controls?|"
-                     r"change\s+management)\b")
-AUDIT_IT_UPPER = re.compile(r"\bIT\b")     # case-sensitive on purpose: lowercase "it" is just a pronoun
+AUDIT_OR_ASSURANCE = _rx(r"\b(?:audit\w*|assurance)\b")
+AUDIT_IT_SIGNAL = _rx(
+    r"\b(?:it|is)\s+(?:audit\w*|assurance|risk|controls?|compliance)\b"
+    r"|\baudit\w*\W+(?:it|information\s+(?:systems?|technology|security))\b"
+    r"|\b(?:information\s+(?:systems?|technology|security)|technology|cyber\w*|cloud|digital|systems?)\s+(?:audit\w*|assurance|risk)\b"
+    r"|\bitgc\b|\bcisa\b|\bcyber\w*|\binfosec\b|\bsecurity\b|\bsox\s+it\b")
 
 # Naukri only: generic risk titles need a cyber/IT word
 NAUKRI_RISK = _rx(r"\brisk\b")
@@ -466,10 +464,8 @@ def evaluate(listing: dict) -> Verdict:
         return out("finance_ca")
     if re.search(r"\baudit\w*", t) and not SEC_WORDS.search(t) and FINANCE_CA_DESC.search(desc.lower()):
         return out("finance_audit")     
-    if AUDIT_NEEDS_IT and AUDIT_TITLE.search(t) and not AUDIT_IT_TITLE.search(t):
-        full = f"{desc} {_clean(listing.get('tail'))}".strip()
-        if full and not (AUDIT_IT_DESC.search(full) or AUDIT_IT_UPPER.search(full)):
-            return out("audit_no_it")        
+    if AUDIT_NEEDS_IT and AUDIT_OR_ASSURANCE.search(t) and not AUDIT_IT_SIGNAL.search(t):
+        return out("audit_no_it")       
     if re.search(r"\brisk\b", t) and not SEC_WORDS.search(t) and len(FIN_RISK_DESC.findall(desc[:6000])) >= 2:
         return out("junk:fin_risk_desc")
     if str(listing.get("source", "")).lower() == "naukri":
