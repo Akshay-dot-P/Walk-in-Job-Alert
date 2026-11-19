@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Walk-In Jobs · Bangalore</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#f6f7f5;
@@ -238,10 +240,105 @@ body{
 .updated-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}
 .res-count{font-size:.72rem;color:var(--t3);font-variant-numeric:tabular-nums;}
 .res-count strong{color:var(--t1);font-weight:650;}	
+
+:root{
+  --bg:#fafafa; --surface:#ffffff; --surface2:#f4f4f4; --surface3:#ececec;
+  --sep:#d8d8d8; --sep2:#e4e4e4;
+  --t1:#111111; --t2:#555555; --t3:#777777; --t4:#9a9a9a;
+  --blue:#111111; --blue2:#f1f1f1;
+  --r:6px; --r-sm:5px;
+  --mono:"JetBrains Mono","IBM Plex Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+html{font-size:14px;}
+body{font-family:var(--mono);background:var(--bg);color:var(--t1);letter-spacing:-.01em;}
+input,select,button,textarea{font-family:inherit;}
+
+/* hero banner */
+.ps-hero{max-width:1220px;margin:14px auto 0;padding:0 24px;}
+.ps-hero-in{background:#111;border-radius:8px;height:210px;display:flex;align-items:center;justify-content:center;gap:18px;color:#fff;}
+.ps-hero-in svg{width:56px;height:56px;flex-shrink:0;}
+.ps-hero-in b{font-size:3.4rem;font-weight:500;letter-spacing:-.04em;}
+.ps-hero-in b span{opacity:.55;}
+
+/* top bar, search, selects */
+.navbar{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none;border-bottom:1px solid var(--sep);}
+.nav-logo{font-weight:600;font-size:.88rem;}
+.nav-stat .nv{font-weight:600;}
+.nav-stat .nl,.sb-label,.fg{letter-spacing:.06em;}
+#q{background:#fff;border:1px solid var(--sep);border-radius:var(--r);}
+#q:focus{border-color:#111;background:#fff;}
+.sort-sel,.filter-select,.sb-select{background:#fff;border:1px solid var(--sep);border-radius:var(--r);color:var(--t2);}
+.sort-sel:focus,.filter-select:focus,.sb-select:focus{border-color:#111;background:#fff;}
+
+/* filter rail and chips */
+.filter-rail{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none;border-bottom:1px solid var(--sep);}
+.chip{border-radius:var(--r);}
+.chip:hover{background:#f0f0f0;}
+.chip.on{background:#fff;border-color:#111;color:#111;box-shadow:none;}
+.chip-link{color:var(--t2);}
+.chip-link.on{background:#fff;border-color:#111;color:#111;}
+
+/* sidebar */
+.sidebar{background:#fff;border:1px solid var(--sep);border-radius:var(--r);box-shadow:none;}
+.sb-check,.sb-reset{border-radius:var(--r);}
+
+/* big "N jobs" count and section headings */
+.updated-bar{align-items:flex-end;margin-bottom:10px;}
+.updated-right{order:-1;margin-right:auto;}
+.res-count{font-size:2.4rem;line-height:1.1;color:var(--t1);letter-spacing:-.03em;}
+.res-count strong{font-weight:400;}
+.updated-bar .ul{font-size:.72rem;}
+.section-head{border-bottom:0;padding:34px 0 8px;margin-bottom:0;align-items:baseline;gap:10px;}
+.sh-label{font-size:1.7rem;font-weight:400;letter-spacing:-.02em;text-transform:none;color:var(--t1);}
+.sh-sub{font-size:.76rem;color:var(--t4);}
+
+/* job rows: flat list with thin dividers instead of cards */
+.card{background:transparent;border:0;border-bottom:1px solid var(--sep);border-radius:0;box-shadow:none;
+  margin-bottom:0;padding:18px 2px;grid-template-columns:minmax(0,1fr) auto;gap:18px;}
+.card:hover{background:transparent;border-color:var(--sep);box-shadow:none;transform:none;}
+.card.is-invalid{background:transparent;border-color:var(--sep);}
+.logo-chip{display:none;}
+.card-left{gap:6px;}
+.card-title{font-size:1rem;font-weight:600;color:var(--t3);letter-spacing:-.01em;}
+.card:hover .card-title{color:var(--t1);}
+.co-row{font-size:.8rem;color:var(--t3);font-weight:400;}
+.co-tier{border:0;background:none;padding:0;font-size:.8rem;font-weight:400;color:var(--t3);}
+.tag-row{gap:0;}
+.tag{border:0;background:none;padding:0;border-radius:0;font-size:.78rem;font-weight:400;color:var(--t3);}
+.tag + .tag::before{content:"\00b7";margin:0 7px;color:var(--t4);}
+.tag-remote{color:var(--t1);background:none;border:0;font-weight:600;}
+.card-summary{font-size:.78rem;color:var(--t3);line-height:1.6;}
+.card-right{padding-top:2px;min-width:0;}
+.score-line{display:none;}
+.odds-pct{font-size:.74rem;color:var(--t4);}
+.new-badge,.applied-badge,.invalid-badge{border-radius:4px;letter-spacing:.04em;}
+
+/* buttons */
+.btn-apply{border-radius:var(--r);background:#111;color:#fff;border:1px solid #111;font-weight:600;}
+.btn-apply:hover{background:#333;border-color:#333;transform:none;}
+.btn-sm{border-radius:var(--r);background:#fff;border:1px solid var(--sep);color:var(--t2);}
+.btn-sm:hover{border-color:#111;color:#111;background:#fff;}
+.btn-mark-applied,.btn-mark-invalid{background:#fff;}
+::-webkit-scrollbar-thumb{background:#cfcfcf;}
+
+@media(max-width:600px){
+  .card{grid-template-columns:minmax(0,1fr);gap:10px;}
+  .card-right{grid-column:1;justify-content:flex-start;}
+  .res-count{font-size:1.8rem;}
+  .ps-hero{padding:0 16px;}
+  .ps-hero-in{height:150px;}
+  .ps-hero-in b{font-size:2rem;}
+}
+	
 </style>
 </head>
 <body>
-
+<header class="ps-hero">
+  <div class="ps-hero-in">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="#fff"/><path d="M14 52 38 18M26 56 50 22" stroke="#111" stroke-width="5" stroke-linecap="round"/></svg>
+    <b>Walk-In Jobs<span> BLR</span></b>
+  </div>
+</header>
 <nav class="navbar">
   <div class="nav-inner">
     <div class="nav-logo">Walk-In Jobs<span> BLR</span></div>
