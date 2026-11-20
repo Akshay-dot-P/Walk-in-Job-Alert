@@ -389,6 +389,10 @@ body{font-size:var(--fs-md);line-height:1.5;}
   .res-count strong{font-size:28px;}
   .sh-label{font-size:22px;}
 }	
+/* full-bleed hero */
+.ps-hero{max-width:none;margin:0;padding:0;}
+.ps-hero-in{border-radius:0;height:180px;}
+	
 </style>
 </head>
 <body>
@@ -398,7 +402,6 @@ body{font-size:var(--fs-md);line-height:1.5;}
     <b>Walk-In Jobs<span> BLR</span></b>
   </div>
 </header>
-<div class="search-box"> ... </div>
 
 <div class="filter-rail">
   <div class="filter-inner">
@@ -781,8 +784,7 @@ function render(){
   const empty  = document.getElementById('empty');
 
   document.getElementById('shownCount').textContent = sorted.length;
-  document.getElementById('totalCount').textContent = JOBS.filter(j => !isInvalid(j)).length;
-  document.getElementById('newCount').textContent = JOBS.filter(isNewJob).length;
+
 
   if(!sorted.length){ feed.innerHTML=''; empty.style.display='block'; return; }
   empty.style.display='none';
@@ -849,8 +851,7 @@ function render(){
   feed.innerHTML = html;
 }
 
-document.getElementById('totalCount').textContent = JOBS.filter(j => !isInvalid(j)).length;
-document.getElementById('newCount').textContent   = JOBS.filter(isNewJob).length;
+
 document.getElementById('updatedAt').textContent  = GEN_DATE;
 
 document.getElementById('domainSel').addEventListener('change', e => {
@@ -871,7 +872,6 @@ document.getElementById('q').addEventListener('input', e => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { searchQ = e.target.value.trim(); render(); }, 150);
 });
-document.getElementById('sortSel').addEventListener('change', e => { sortBy = e.target.value; render(); });
 
 document.getElementById('feed').addEventListener('click', e => {
   const invalidBtn = e.target.closest('[data-invalid-key]');
