@@ -898,6 +898,84 @@ function render(){
   feed.innerHTML = html;
 }
 
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const cl  = v => (v && v !== 'null') ? String(v) : '';
+
+function renderDetail(j){
+  const name = stripTier(j.company), tier = getTier(j.company);
+  const loc  = cl(j.location) || 'Bengaluru';
+  const pct  = j.hireability != null ? Math.round(j.hireability / 7 * 100) : null;
+  const key  = encodeURIComponent(jobKey(j));
+  const applied = isApplied(j), invalid = isInvalid(j);
+
+  const rows = [
+    ['Company',     name],
+    ['Tier',        TIER_LABEL[tier] || ''],
+    ['Domain',      cl(j.domain)],
+    ['Location',    loc + (isRemote(j) && !/remote/i.test(loc) ? ' · Remote' : '')],
+    ['Experience',  cl(j.experience_required)],
+    ['Salary',      cl(j.salary_range)],
+    ['Posted',      cl(j.posted_date).slice(0, 10)],
+    ['Source',      srcLabel(j.source)],
+    ['Match',       pct != null ? pct + '%' : ''],
+    ['Credibility', j.credibility != null ? j.credibility : ''],
+    ['Applied on',  applied ? cl(j.applied_at).slice(0, 10) : '']
+  ].filter(r => r[1] !== '');
+
+  document.getElementById('detailView').innerHTML = `
+    <a class="back" href="#" data-back>‹ Back to jobs</a>
+    <div class="d-head">
+      <div>
+        <h2 class="d-title">${esc(j.job_title)}</h2>
+        <p class="d-loc">${esc(loc)}</p>
+      </div>
+      <a class="btn-main" href="${esc(j.apply_url)}" target="_blank" rel="noopener">Apply</a>
+    </div>
+    <div class="d-badges">
+      ${isNewJob(j) ? '<span class="new-badge">New</span>' : ''}
+      ${applied ? '<span class="applied-badge">Applied</span>' : ''}
+      ${invalid ? '<span class="invalid-badge">Invalid</span>' : ''}
+    </div>
+    <div class="d-body">
+      <p>${esc(cl(j.summary) || 'No description was captured for this listing.')}</p>
+      <p>The full description is on the original posting: <a href="${esc(j.apply_url)}" target="_blank" rel="noopener">open the listing</a>.</p>
+      <h3>Details</h3>
+      <dl class="d-grid">${rows.map(r => `<dt>${esc(r[0])}</dt><dd>${esc(r[1])}</dd>`).join('')}</dl>
+      <div class="d-actions">
+        ${invalid
+          ? `<button type="button" class="btn-sm btn-mark-applied" data-valid-key="${key}">${CHECK_ICO} Mark valid</button>`
+          : `<button type="button" class="btn-sm btn-mark-applied ${applied ? 'is-applied' : ''}" data-apply-key="${key}">${CHECK_ICO} ${applied ? 'Undo' : 'Mark applied'}</button>
+             <button type="button" class="btn-sm btn-mark-invalid" data-invalid-key="${key}">Invalid</button>`}
+        ${cl(j.resume_doc_link) ? `<a href="${esc(j.resume_doc_link)}" target="_blank" rel="noopener" class="btn-sm">${DOC_ICO} Resume .doc</a>` : ''}
+        ${cl(j.resume_pdf_link) ? `<a href="${esc(j.resume_pdf_link)}" download="Akshay_P_Resume.pdf" rel="noopener" class="btn-sm">${DOC_ICO} .pdf</a>` : ''}
+      </div>
+    </div>`;
+}
+
+/* #job-<n> opens a job; anything else shows the list */
+let listScroll = 0, cameFromList = false;
+function currentJob(){
+  const m = location.hash.match(/^#job-(\d+)$/);
+  return m ? JOBS[parseInt(m[1], 10)] : null;
+}
+function route(){
+  const j = currentJob();
+  const list = document.getElementById('listView'), det = document.getElementById('detailView');
+  if(j){
+    if(!list.hidden){ listScroll = window.scrollY; cameFromList = true; }
+    list.hidden = true; det.hidden = false;
+    renderDetail(j);
+    window.scrollTo(0, 0);
+  } else {
+    det.hidden = true; list.hidden = false;
+    render();
+    requestAnimationFrame(() => window.scrollTo(0, listScroll));
+  }
+}
+function refresh(){ const j = currentJob(); if(j) renderDetail(j); else render(); }
+window.addEventListener('hashchange', route);
+document.addEventListener('keydown', e => { if(e.key === 'Escape' && currentJob()) history.back(); });
+	
 
 document.getElementById('updatedAt').textContent  = GEN_DATE;
 
@@ -920,59 +998,55 @@ document.getElementById('q').addEventListener('input', e => {
   searchTimer = setTimeout(() => { searchQ = e.target.value.trim(); render(); }, 150);
 });
 
-document.getElementById('feed').addEventListener('click', e => {
-  const invalidBtn = e.target.closest('[data-invalid-key]');
-  const validBtn = e.target.closest('[data-valid-key]');
-  const btn = e.target.closest('[data-apply-key]');
-  if(invalidBtn || validBtn){
-    const key = decodeURIComponent((invalidBtn || validBtn).dataset.invalidKey || (invalidBtn || validBtn).dataset.validKey || '');
-    const job = JOBS.find(j => jobKey(j) === key);
-    if(!job) return;
-    if(invalidBtn){
-      job.status = 'Invalid';
-      job.invalid_at = new Date().toISOString();
-      appliedKeys.delete(key);
-      invalidKeys.add(key);
-      validKeys.delete(key);
-      saveStoredKeys(APPLIED_STORE_KEY, appliedKeys);
-      saveStoredKeys(INVALID_STORE_KEY, invalidKeys);
-      saveStoredKeys(VALID_STORE_KEY, validKeys);
-      syncStatusToSheet(job, 'Invalid', 'mark_invalid');
-    } else {
-      job.status = 'New';
-      job.invalid_at = '';
-      invalidKeys.delete(key);
-      validKeys.add(key);
-      saveStoredKeys(INVALID_STORE_KEY, invalidKeys);
-      saveStoredKeys(VALID_STORE_KEY, validKeys);
-      syncStatusToSheet(job, 'New', 'mark_valid');
-    }
-    render();
+document.addEventListener('click', e => {
+  if(e.target.closest('[data-back]')){
+    e.preventDefault();
+    if(cameFromList && history.length > 1) history.back(); else location.hash = '';
     return;
   }
-  if(!btn) return;
-  const key = decodeURIComponent(btn.dataset.applyKey || '');
-  const job = JOBS.find(j => jobKey(j) === key);
-  if(!job) return;
-  if(isApplied(job)){
-    job.status = 'New';
-    job.applied_at = '';
-    appliedKeys.delete(key);
-    saveStoredKeys(APPLIED_STORE_KEY, appliedKeys);
-    syncStatusToSheet(job, 'New', 'undo_applied');
-  } else {
-    job.status = 'Applied';
-    job.applied_at = new Date().toISOString();
-    appliedKeys.add(key);
-    saveStoredKeys(APPLIED_STORE_KEY, appliedKeys);
-    syncStatusToSheet(job, 'Applied', 'mark_applied');
+
+  const invalidBtn = e.target.closest('[data-invalid-key]');
+  const validBtn   = e.target.closest('[data-valid-key]');
+  const applyBtn   = e.target.closest('[data-apply-key]');
+
+  if(invalidBtn || validBtn || applyBtn){
+    const b = invalidBtn || validBtn || applyBtn;
+    const key = decodeURIComponent(b.dataset.invalidKey || b.dataset.validKey || b.dataset.applyKey || '');
+    const job = JOBS.find(j => jobKey(j) === key);
+    if(!job) return;
+
+    if(invalidBtn){
+      job.status = 'Invalid'; job.invalid_at = new Date().toISOString();
+      appliedKeys.delete(key); invalidKeys.add(key); validKeys.delete(key);
+      saveStoredKeys(APPLIED_STORE_KEY, appliedKeys); saveStoredKeys(INVALID_STORE_KEY, invalidKeys); saveStoredKeys(VALID_STORE_KEY, validKeys);
+      syncStatusToSheet(job, 'Invalid', 'mark_invalid');
+    } else if(validBtn){
+      job.status = 'New'; job.invalid_at = '';
+      invalidKeys.delete(key); validKeys.add(key);
+      saveStoredKeys(INVALID_STORE_KEY, invalidKeys); saveStoredKeys(VALID_STORE_KEY, validKeys);
+      syncStatusToSheet(job, 'New', 'mark_valid');
+    } else if(isApplied(job)){
+      job.status = 'New'; job.applied_at = '';
+      appliedKeys.delete(key); saveStoredKeys(APPLIED_STORE_KEY, appliedKeys);
+      syncStatusToSheet(job, 'New', 'undo_applied');
+    } else {
+      job.status = 'Applied'; job.applied_at = new Date().toISOString();
+      appliedKeys.add(key); saveStoredKeys(APPLIED_STORE_KEY, appliedKeys);
+      syncStatusToSheet(job, 'Applied', 'mark_applied');
+    }
+    refresh();
+    return;
   }
-  render();
+
+  // click anywhere on a row (not on a link/button) opens the job
+  const card = e.target.closest('#feed .card');
+  if(card && !e.target.closest('a, button')) location.hash = 'job-' + card.dataset.id;
 });
 
 
-buildSidebar(); updateResetBtn();	
-render();
+
+buildSidebar(); updateResetBtn();
+route();
 </script>
 </body>
 </html>
