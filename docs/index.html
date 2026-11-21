@@ -661,7 +661,6 @@ function buildCard(j, animIdx){
 }
 
 const SECTIONS = [
-  { id:'fresh', test: j => isNewJob(j) },
   { id:'top',    label:'Top Matches',       sub:'— Excellent fit',        test: j => (j.hireability||0) >= 5.5 },
   { id:'strong', label:'Strong Matches',    sub:'— Good fit, some gaps',  test: j => (j.hireability||0) >= 4 && (j.hireability||0) < 5.5 },
   { id:'maybe',  label:'Potential Matches', sub:'— Worth exploring',       test: j => (j.hireability||0) >= 2.5 && (j.hireability||0) < 4 },
