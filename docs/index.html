@@ -396,6 +396,30 @@ body{font-size:var(--fs-md);line-height:1.5;}
 /* full-bleed hero */
 .ps-hero{max-width:none;margin:0;padding:0;}
 .ps-hero-in{border-radius:0;height:180px;}
+
+
+
+/* ===== filters back on the left, same flat style: paste last inside <style> ===== */
+:root{--col:1180px;}
+.layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:40px;align-items:start;max-width:var(--col);margin:0 auto;padding:8px 24px 96px;}
+.filter-inner{max-width:var(--col);}
+.sidebar{display:block;position:sticky;top:24px;margin-top:36px;padding:20px;max-height:calc(100vh - 48px);overflow:auto;
+  background:#fff;border:1px solid var(--sep);border-radius:var(--r);box-shadow:none;}
+.sb-head{gap:10px;padding-bottom:14px;margin-bottom:4px;}
+.sb-head svg{width:18px;height:18px;}
+.sb-title{font-size:var(--fs-md);font-weight:600;}
+.sb-sub{font-size:var(--fs-xs);color:var(--t3);}
+.sb-label{font-size:var(--fs-xs);font-weight:600;letter-spacing:0;text-transform:none;color:var(--t2);margin:18px 0 6px;}
+.sb-select{font-size:var(--fs-sm);padding:10px 12px;background:#fff;border:1px solid var(--sep);border-radius:var(--r);}
+.sb-check{margin-top:20px;padding:12px 14px;border-radius:var(--r);}
+.sb-check b{font-size:var(--fs-sm);font-weight:600;}
+.sb-check small{font-size:var(--fs-xs);}
+.sb-reset{margin-top:20px;padding:10px;font-size:var(--fs-xs);border-radius:var(--r);}
+.sb-reset:not(:disabled):hover{border-color:#111;color:#111;}
+@media(max-width:900px){
+  .layout{grid-template-columns:minmax(0,1fr);gap:0;padding:8px 16px 72px;}
+  .sidebar{position:static;margin-top:24px;max-height:none;}
+}
 	
 </style>
 </head>
@@ -782,43 +806,38 @@ function getFiltered(){
 }
 
 function render(){
-  const raw    = getFiltered();
-  const sorted = applySort(raw);
+  const sorted = getFiltered();
   const feed   = document.getElementById('feed');
   const empty  = document.getElementById('empty');
 
   document.getElementById('shownCount').textContent = sorted.length;
-
+  document.getElementById('totalCount').textContent = JOBS.filter(j => !isInvalid(j)).length;
+  document.getElementById('newCount').textContent   = JOBS.filter(isNewJob).length;
 
   if(!sorted.length){ feed.innerHTML=''; empty.style.display='block'; return; }
   empty.style.display='none';
 
-  const showingOnlyApplied = statusF.toLowerCase() === 'applied';
-  const showingOnlyInvalid = statusF.toLowerCase() === 'invalid';
-  const appliedJobs = (statusF === 'all' || showingOnlyApplied) ? sorted.filter(isApplied) : [];
-  const invalidJobs = showingOnlyInvalid ? sorted.filter(isInvalid) : [];
+  // new scraped jobs first, then everything else newest scraped first
+  const list = [...sorted].sort((a,b) => (Number(isNewJob(b)) - Number(isNewJob(a))) || (b._idx - a._idx));
 
-  if(sortBy !== 'default'){
-    let html='', animI=0;
-    const visibleJobs = (showingOnlyApplied || showingOnlyInvalid) ? [] : sorted.filter(j => !isApplied(j) && !isInvalid(j));
-    visibleJobs.forEach(j => { html += buildCard(j, animI++); });
-    if(appliedJobs.length){
-      html += `<div class="section-head">
-        <span class="sh-label">Applied Jobs</span>
-        <span class="sh-sub"> — ${appliedJobs.length} tracked</span>
-      </div>`;
-      appliedJobs.forEach(j => { html += buildCard(j, animI++); });
-    }
-    if(invalidJobs.length){
-      html += `<div class="section-head">
-        <span class="sh-label">Invalid Jobs</span>
-        <span class="sh-sub"> — ${invalidJobs.length} hidden from My Jobs</span>
-      </div>`;
-      invalidJobs.forEach(j => { html += buildCard(j, animI++); });
-    }
-    feed.innerHTML = html;
-    return;
+  const onlyApplied = statusF.toLowerCase() === 'applied';
+  const onlyInvalid = statusF.toLowerCase() === 'invalid';
+  const open    = (onlyApplied || onlyInvalid) ? [] : list.filter(j => !isApplied(j) && !isInvalid(j));
+  const applied = (statusF === 'all' || onlyApplied) ? list.filter(isApplied) : [];
+  const invalid = onlyInvalid ? list.filter(isInvalid) : [];
+
+  let html = '', i = 0;
+  open.forEach(j => { html += buildCard(j, i++); });
+  if(applied.length){
+    html += `<div class="section-head"><span class="sh-label">Applied Jobs</span><span class="sh-sub">${applied.length} tracked</span></div>`;
+    applied.forEach(j => { html += buildCard(j, i++); });
   }
+  if(invalid.length){
+    html += `<div class="section-head"><span class="sh-label">Invalid Jobs</span><span class="sh-sub">${invalid.length} hidden</span></div>`;
+    invalid.forEach(j => { html += buildCard(j, i++); });
+  }
+  feed.innerHTML = html;
+}
 
   let html='', animI=0, remaining=(showingOnlyApplied || showingOnlyInvalid) ? [] : sorted.filter(j => !isApplied(j) && !isInvalid(j));
 
