@@ -863,40 +863,8 @@ function render(){
   feed.innerHTML = html;
 }
 
-  let html='', animI=0, remaining=(showingOnlyApplied || showingOnlyInvalid) ? [] : sorted.filter(j => !isApplied(j) && !isInvalid(j));
 
-  SECTIONS.forEach(sec => {
-    const group = remaining.filter(sec.test);
-    remaining   = remaining.filter(j => !sec.test(j));
-    if(!group.length) return;
-    const gs = [...group].sort((a,b) => b._idx - a._idx);
-    html += `<div class="section-head">
-      <span class="sh-label">${sec.label}</span>
-      ${sec.sub ? `<span class="sh-sub"> ${sec.sub}</span>` : ''}
-    </div>`;
-    gs.forEach(j => { html += buildCard(j, animI++); });
-  });
 
-  if(appliedJobs.length){
-    const appliedSorted = [...appliedJobs].sort((a,b) => b._idx - a._idx);
-    html += `<div class="section-head">
-      <span class="sh-label">Applied Jobs</span>
-      <span class="sh-sub"> — ${appliedSorted.length} tracked</span>
-    </div>`;
-    appliedSorted.forEach(j => { html += buildCard(j, animI++); });
-  }
-
-  if(invalidJobs.length){
-    const invalidSorted = [...invalidJobs].sort((a,b) => b._idx - a._idx);
-    html += `<div class="section-head">
-      <span class="sh-label">Invalid Jobs</span>
-      <span class="sh-sub"> — ${invalidSorted.length} hidden from My Jobs</span>
-    </div>`;
-    invalidSorted.forEach(j => { html += buildCard(j, animI++); });
-  }
-
-  feed.innerHTML = html;
-}
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const cl  = v => (v && v !== 'null') ? String(v) : '';
