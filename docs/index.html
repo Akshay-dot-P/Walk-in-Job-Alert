@@ -697,15 +697,6 @@ function buildCard(j, animIdx){
         ${invalid ? '<span class="invalid-badge">Invalid</span>' : ''}
       </div>
       <div class="card-meta">${meta}</div>
-      <div class="card-actions">
-        <a href="${j.apply_url}" target="_blank" rel="noopener" class="btn-apply">Apply</a>
-        ${invalid
-          ? `<button type="button" class="btn-sm btn-mark-applied" data-valid-key="${key}">${CHECK_ICO} Mark valid</button>`
-          : `<button type="button" class="btn-sm btn-mark-applied ${applied ? 'is-applied' : ''}" data-apply-key="${key}">${CHECK_ICO} ${applied ? 'Undo' : 'Mark applied'}</button>
-             <button type="button" class="btn-sm btn-mark-invalid" data-invalid-key="${key}">Invalid</button>`}
-        ${j.resume_doc_link ? `<a href="${j.resume_doc_link}" target="_blank" rel="noopener" class="btn-sm">${DOC_ICO} Resume .doc</a>` : ''}
-        ${j.resume_pdf_link ? `<a href="${j.resume_pdf_link}" download="Akshay_P_Resume.pdf" rel="noopener" class="btn-sm">${DOC_ICO} .pdf</a>` : ''}
-      </div>
     </div>
   </div>`;
 }
@@ -841,8 +832,9 @@ function render(){
   if(!sorted.length){ feed.innerHTML=''; empty.style.display='block'; return; }
   empty.style.display='none';
 
-  // newly scraped jobs first, then everything else, newest first
-  const list = [...sorted].sort((a,b) => (Number(isNewJob(b)) - Number(isNewJob(a))) || (b._idx - a._idx));
+  // newest posted date first: today, then yesterday, then the day before, and so on
+  const list = [...sorted].sort((a,b) =>
+    (b.posted_date || '').localeCompare(a.posted_date || '') || (b._idx - a._idx));
 
   const onlyApplied = statusF.toLowerCase() === 'applied';
   const onlyInvalid = statusF.toLowerCase() === 'invalid';
