@@ -907,7 +907,6 @@ function renderDetail(j){
     </div>
     <div class="d-body">
       <p>${esc(cl(j.summary) || 'No description was captured for this listing.')}</p>
-      <p>The full description is on the original posting: <a href="${esc(j.apply_url)}" target="_blank" rel="noopener">open the listing</a>.</p>
       <h3>Details</h3>
       <dl class="d-grid">${rows.map(r => `<dt>${esc(r[0])}</dt><dd>${esc(r[1])}</dd>`).join('')}</dl>
       <div class="d-actions">
