@@ -444,6 +444,15 @@ body{font-size:var(--fs-md);line-height:1.5;}
 .d-grid dd{overflow-wrap:anywhere;}
 .d-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:34px;padding-top:24px;border-top:1px solid var(--sep);}
 @media(max-width:700px){.d-head{flex-direction:column;}.d-title{font-size:24px;}.d-grid{grid-template-columns:110px minmax(0,1fr);}}
+
+
+
+/* keep the New / Applied / Invalid badge on the same line as the end of the title */
+.title-row{display:block;}
+.title-row .card-title{display:inline;}
+.title-row .new-badge,
+.title-row .applied-badge,
+.title-row .invalid-badge{display:inline-block;vertical-align:middle;margin:0 0 0 8px;}
 	
 </style>
 </head>
